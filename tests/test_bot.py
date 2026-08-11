@@ -147,7 +147,7 @@ class TestCategoryAPriceWorkflow(unittest.IsolatedAsyncioTestCase):
         )
 
         # Verify prompt message (555) deleted
-        context.bot.delete_message.assert_called_once_with(
+        context.bot.delete_message.assert_any_call(
             chat_id=-100123456,
             message_id=555
         )

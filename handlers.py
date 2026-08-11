@@ -651,6 +651,7 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
     action_str = "updated to" if is_edit else "set to"
 
     target_msg_id = session.get("button_msg_id") or order.price_msg_id
+    price_edited = False
 
     if target_msg_id:
         try:
@@ -662,28 +663,22 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
             )
             logger.info(f"[PRICE] Updated price message #{target_msg_id} in Client Group: '{new_price_text}' and removed button.")
             await update_order_price(order.id, text, price_msg_id=target_msg_id)
+            price_edited = True
         except Exception as e:
             logger.warning(f"[PRICE] Could not edit original price message #{target_msg_id}: {e}")
-            try:
-                sent_price_msg = await context.bot.send_message(
-                    chat_id=session["chat_id"],
-                    text=new_price_text,
-                    reply_to_message_id=order.original_message_id or reply_msg_id
-                )
-                await update_order_price(order.id, text, price_msg_id=sent_price_msg.message_id)
-            except Exception as ex:
-                logger.exception(f"[PRICE] Failed to post price message fallback: {ex}")
-                return
-    else:
+
+    if not price_edited:
         try:
+            reply_target = order.original_message_id or reply_msg_id
             sent_price_msg = await context.bot.send_message(
                 chat_id=session["chat_id"],
                 text=new_price_text,
-                reply_to_message_id=order.original_message_id or reply_msg_id
+                reply_to_message_id=reply_target
             )
             await update_order_price(order.id, text, price_msg_id=sent_price_msg.message_id)
-        except Exception as e:
-            logger.exception(f"[PRICE] Failed to post price message fallback: {e}")
+            logger.info(f"[PRICE] Sent new custom price message #{sent_price_msg.message_id} in Client Group: '{new_price_text}'.")
+        except Exception as ex:
+            logger.exception(f"[PRICE] Failed to post price message fallback: {ex}")
             return
 
     # Delete temporary prompt message ("Enter order price:")
@@ -696,6 +691,15 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
             )
         except Exception:
             pass
+
+    # Delete admin's typed text message ("15.5") so no extra text remains at the bottom
+    try:
+        await context.bot.delete_message(
+            chat_id=session["chat_id"],
+            message_id=message.message_id
+        )
+    except Exception:
+        pass
 
     # Log required format:
     # [PRICE]
