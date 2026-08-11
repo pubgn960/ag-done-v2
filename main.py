@@ -32,6 +32,7 @@ from handlers import (
     price_input_text_handler,
     loader_issue_callback_handler,
     customer_confirmation_callback_handler,
+    redeliver_callback_handler,
     unknown_package_price_callback_handler,
     loader_pkg_toggle_callback_handler,
     loader_pkg_confirm_callback_handler,
