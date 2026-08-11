@@ -876,6 +876,48 @@ class TestMultiPackageDeliveryWorkflow(unittest.TestCase):
         self.assertIsNotNone(kb)
         self.assertEqual(kb.inline_keyboard[0][0].text, "⬜ 5040")
 
+    def test_loader_order_card_redesign_layout(self):
+        import json
+        from utils import parse_test_order_packages, format_full_loader_order_card
+
+        raw_msg = (
+            "Facebook\n\n"
+            "Email:\nedge1@gmail.com\n\n"
+            "Password:\nHello123\n\n"
+            "Recovery Codes:\n123456\n654321\n\n"
+            "Order:\n10800+5040+2400"
+        )
+        p = parse_test_order_packages(raw_msg)
+        items = p["packages"]
+
+        class MockOrder:
+            def __init__(self):
+                self.raw_text = raw_msg
+                self.email = "edge1@gmail.com"
+                self.package_progress = json.dumps(items)
+                self.price = "114.5"
+
+        order = MockOrder()
+        card_text = format_full_loader_order_card(order)
+
+        # Verify layout order
+        self.assertIn("📋 ORDER DETAILS", card_text)
+        self.assertIn("🎮 Platform:\nFacebook", card_text)
+        self.assertIn("📧 Email:\nedge1@gmail.com", card_text)
+        self.assertIn("🔑 Password:\nHello123", card_text)
+        self.assertIn("Recovery Codes:\n123456\n654321", card_text)
+
+        self.assertIn("📦 PACKAGE STATUS", card_text)
+        self.assertIn("⬜ 10800 CP", card_text)
+        self.assertIn("⬜ 5040 CP", card_text)
+        self.assertIn("⬜ 2400 CP", card_text)
+        self.assertIn("💰 Total Price: 114.5$", card_text)
+
+        # Verify ORDER DETAILS is BEFORE PACKAGE STATUS
+        idx_details = card_text.index("📋 ORDER DETAILS")
+        idx_status = card_text.index("📦 PACKAGE STATUS")
+        self.assertTrue(idx_details < idx_status)
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

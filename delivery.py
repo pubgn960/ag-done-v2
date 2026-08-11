@@ -37,6 +37,7 @@ from utils import (
     format_package_summary_and_price,
     format_package_progress_summary,
     format_loader_card_summary,
+    format_full_loader_order_card,
     build_loader_package_keyboard,
     mark_selected_packages_delivered,
     advance_package_progress,
@@ -298,7 +299,7 @@ async def deliver_order_by_id(
         # Update Loader Group Order Card in-place
         if order.loader_message_id and loader_group_id:
             try:
-                loader_summary = format_loader_card_summary(updated_items, order.price)
+                loader_summary = format_full_loader_order_card(order)
                 loader_kb = build_loader_package_keyboard(order.id, updated_items, None)
                 try:
                     await bot.edit_message_caption(chat_id=loader_group_id, message_id=order.loader_message_id, caption=loader_summary, reply_markup=loader_kb)

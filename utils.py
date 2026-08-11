@@ -623,15 +623,75 @@ def update_unknown_package_price(progress_data: Any, target_pkg: str, price_val:
     return items, round(new_total, 2), has_remaining_unpriced
 
 
-def format_loader_card_summary(progress_data: Any, total_price: Optional[float] = None) -> str:
+def format_order_details_block(raw_text: Optional[str], fallback_email: Optional[str] = None) -> str:
     """
-    Formats the Loader Group order card text showing:
+    Extracts and formats the top ORDER DETAILS block from raw_text.
+    Preserves Platform, Nick/Username, Email, Password, Recovery Codes, 2FA, etc.
+    Strips out the Order/Package section so package status appears in PACKAGE STATUS.
+    """
+    if not raw_text:
+        email_str = fallback_email or "No Email"
+        return f"📧 Email:\n{email_str}"
+
+    lines = raw_text.splitlines()
+    details_lines = []
+    in_order_sec = False
+
+    OTHER_SECTION_HEADERS = (
+        "email:", "mail:", "password:", "pass:", "pwd:", "recovery:",
+        "recovery code:", "recovery codes:", "backup codes:", "2fa:",
+        "authenticator:", "phone:", "uid:", "account id:", "nickname:", "username:",
+        "nick:", "platform:", "login:"
+    )
+
+    for line in lines:
+        line_strip = line.strip()
+        line_lower = line_strip.lower()
+
+        if re.match(r'^(?:order|packages|package|cp)\s*[:=\-]', line_lower) or line_lower in ("order", "package", "packages", "cp", "order:", "package:", "packages:", "cp:"):
+            in_order_sec = True
+            continue
+        elif not in_order_sec and not any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) and not re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', line_strip):
+            if re.search(r'\b(?:108000|96000|72000|48000|43200|38400|24000|21600|19200|16800|14400|12000|10800|9600|7200|5040|2400|880|420|80)\b', line_lower):
+                in_order_sec = True
+                continue
+
+        if in_order_sec:
+            if any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS):
+                in_order_sec = False
+            else:
+                continue
+
+        if line_lower in ("facebook", "fb", "meta", "activision", "activision id") or line_lower.startswith("platform:"):
+            p_name = line_strip.split(":", 1)[-1].strip() if ":" in line_strip else line_strip
+            details_lines.append(f"🎮 Platform:\n{p_name}" if p_name else "🎮 Platform:")
+        elif line_lower.startswith("nick:") or line_lower.startswith("nickname:") or line_lower.startswith("username:"):
+            n_val = line_strip.split(":", 1)[-1].strip()
+            details_lines.append(f"👤 Nick:\n{n_val}" if n_val else "👤 Nick:")
+        elif line_lower.startswith("email:") or line_lower.startswith("mail:"):
+            e_val = line_strip.split(":", 1)[-1].strip()
+            details_lines.append(f"📧 Email:\n{e_val}" if e_val else "📧 Email:")
+        elif line_lower.startswith("password:") or line_lower.startswith("pass:") or line_lower.startswith("pwd:"):
+            p_val = line_strip.split(":", 1)[-1].strip()
+            details_lines.append(f"🔑 Password:\n{p_val}" if p_val else "🔑 Password:")
+        else:
+            details_lines.append(line_strip)
+
+    res_text = "\n".join([l for l in details_lines if l.strip()])
+    if fallback_email and fallback_email.lower() not in res_text.lower():
+        res_text = f"📧 Email:\n{fallback_email}\n\n" + res_text
+
+    return res_text
+
+
+def format_package_status_block(progress_data: Any, total_price: Optional[float] = None) -> str:
+    """
+    Formats the PACKAGE STATUS section of the Loader Order Card showing:
     - Delivered packages with ✅
     - Selected packages with ☑
     - Pending packages with ⬜
-    - Remaining packages list if partial delivery
-    - '🎉 Order Completed' when all packages are delivered
     - Total price
+    - '🎉 Order Completed' when all packages are delivered
     """
     import json
     if isinstance(progress_data, str):
@@ -650,13 +710,10 @@ def format_loader_card_summary(progress_data: Any, total_price: Optional[float] 
             return f"💰 Total Price: {t_str}"
         return ""
 
-    title = "📦 Package" if len(items) == 1 else "📦 Package(s)"
-    lines = [title, ""]
-
+    lines = []
     all_delivered = True
     calc_total = 0.0
     has_unpriced = False
-    remaining_packages = []
 
     for item in items:
         pkg_name = item.get("package", "")
@@ -672,11 +729,9 @@ def format_loader_card_summary(progress_data: Any, total_price: Optional[float] 
         elif status == "Selected":
             checkbox = "☑"
             all_delivered = False
-            remaining_packages.append(pkg_display)
         else: # Pending or Unpriced
             checkbox = "⬜"
             all_delivered = False
-            remaining_packages.append(pkg_display)
 
         if status == "Unpriced" or unit_price is None:
             has_unpriced = True
@@ -685,13 +740,6 @@ def format_loader_card_summary(progress_data: Any, total_price: Optional[float] 
             item_total = unit_price * qty
             calc_total += item_total
             lines.append(f"{checkbox} {pkg_display}")
-
-    if all_delivered and not has_unpriced:
-        lines.append("")
-        lines.append("🎉 Order Completed")
-    elif remaining_packages and len(remaining_packages) < len(items):
-        lines.append("")
-        lines.append(f"Remaining Packages: {', '.join(remaining_packages)}")
 
     final_total = total_price if (total_price is not None and not has_unpriced) else calc_total
     total_str = f"{final_total:g}$" if isinstance(final_total, float) else f"{final_total}$"
@@ -702,7 +750,58 @@ def format_loader_card_summary(progress_data: Any, total_price: Optional[float] 
     else:
         lines.append(f"💰 Total Price: {total_str}")
 
+    if all_delivered and not has_unpriced:
+        lines.append("")
+        lines.append("🎉 Order Completed")
+
     return "\n".join(lines)
+
+
+def format_full_loader_order_card(order: Any) -> str:
+    """
+    Renders the complete Loader Order Card containing:
+    1. ORDER DETAILS block (Platform, Nick, Email, Password, Recovery Codes)
+    2. PACKAGE STATUS block (⬜/☑/✅ checkboxes, Total Price, 🎉 Order Completed)
+    """
+    raw_text = getattr(order, "raw_text", "") or ""
+    email = getattr(order, "email", "") or ""
+    package_progress = getattr(order, "package_progress", None)
+    price = getattr(order, "price", None)
+
+    details_block = format_order_details_block(raw_text, email)
+    status_block = format_package_status_block(package_progress, price)
+
+    return (
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📋 ORDER DETAILS\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"{details_block}\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📦 PACKAGE STATUS\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"{status_block}"
+    )
+
+
+def format_loader_card_summary(progress_data: Any, total_price: Optional[float] = None, raw_text: Optional[str] = None, email: Optional[str] = None) -> str:
+    """
+    Formats the Loader Group order card text.
+    If raw_text is provided, includes full ORDER DETAILS block at the top.
+    """
+    if raw_text:
+        details_block = format_order_details_block(raw_text, email)
+        status_block = format_package_status_block(progress_data, total_price)
+        return (
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📋 ORDER DETAILS\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"{details_block}\n\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📦 PACKAGE STATUS\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"{status_block}"
+        )
+    return format_package_status_block(progress_data, total_price)
 
 
 def build_loader_package_keyboard(order_id: int, progress_data: Any, active_loader_id: Optional[int] = None) -> Optional[InlineKeyboardMarkup]:

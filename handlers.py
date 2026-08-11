@@ -91,6 +91,7 @@ from utils import (
     parse_test_order_packages,
     format_package_progress_summary,
     format_loader_card_summary,
+    format_full_loader_order_card,
     build_loader_package_keyboard,
     toggle_package_selection,
     cancel_loader_selections,
@@ -996,7 +997,7 @@ async def loader_pkg_toggle_callback_handler(update: Update, context: ContextTyp
     await update_order_package_progress(order.id, new_json)
     order.package_progress = new_json
 
-    card_text = format_loader_card_summary(updated_items, order.price)
+    card_text = format_full_loader_order_card(order)
     new_kb = build_loader_package_keyboard(order.id, updated_items, user.id)
 
     try:
@@ -1101,7 +1102,7 @@ async def loader_pkg_cancel_callback_handler(update: Update, context: ContextTyp
     await update_order_package_progress(order.id, new_json)
     order.package_progress = new_json
 
-    card_text = format_loader_card_summary(updated_items, order.price)
+    card_text = format_full_loader_order_card(order)
     new_kb = build_loader_package_keyboard(order.id, updated_items, user.id)
 
     try:
