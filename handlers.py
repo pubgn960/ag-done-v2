@@ -84,7 +84,8 @@ from utils import (
     get_memory_usage_mb,
     is_railway_environment,
     get_db_type_name,
-    get_test_price
+    get_test_price,
+    calculate_test_price
 )
 
 logger = logging.getLogger(__name__)
@@ -259,9 +260,9 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             category="A"
         )
 
-        # TEST IMPLEMENTATION (Proof of Concept):
-        # Auto-detect 2400 CP test price (returns numeric float 15.5 or None)
-        test_price_val = get_test_price(text_content)
+        # TEST IMPLEMENTATION (Proof of Concept Calculator):
+        # Auto-detect test price for supported packages and quantities (returns float total or None)
+        test_price_val = calculate_test_price(text_content)
         if test_price_val is not None:
             init_price_str = f"{test_price_val:g}" if isinstance(test_price_val, float) else str(test_price_val)
             await update_order_price(order.id, price_str=init_price_str)

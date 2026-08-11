@@ -27,7 +27,7 @@ from database import (
     update_order_price
 )
 from models import Order, Image
-from utils import safe_set_message_reaction, get_test_price
+from utils import safe_set_message_reaction, get_test_price, calculate_test_price
 
 logger = logging.getLogger(__name__)
 
@@ -160,11 +160,11 @@ async def deliver_order_by_id(
     caption_email = extract_last_email(caption_text)
     email_for_caption = caption_email if caption_email else order.email
 
-    # TEST IMPLEMENTATION (Proof of Concept):
-    # Detect automatic price for 2400 CP package variations (returns numeric float 15.5 or None)
+    # TEST IMPLEMENTATION (Proof of Concept Calculator):
+    # Detect automatic price for all supported package variations and quantities (returns numeric float total or None)
     # Uses complete order content (caption text, package description, email, or order.price)
     full_order_content = f"{caption_text or ''}\n{order.package or ''}\n{order.email or ''}"
-    test_price_val = get_test_price(full_order_content)
+    test_price_val = calculate_test_price(full_order_content)
     auto_price_added = False
 
     if test_price_val is not None:

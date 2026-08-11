@@ -520,40 +520,91 @@ class TestTwoGroupDatabaseWorkflow(unittest.IsolatedAsyncioTestCase):
 
 
 class TestPOCOrderPriceDetection(unittest.TestCase):
-    """Tests for POC automatic price detection helper get_test_price()."""
+    """Tests for POC automatic price detection & calculator helper calculate_test_price()."""
 
-    def test_get_test_price_variations(self):
-        from utils import get_test_price
+    def test_single_packages(self):
+        from utils import calculate_test_price
 
-        variations = [
-            "2400",
-            "2.4k",
-            "2,400",
-            "2400cp",
-            "2400 CP",
-            "Order: 2400 CP\nEmail: test@gmail.com",
-            "Please send 2.4k cp package"
-        ]
+        cases = {
+            "10800": 63.5,
+            "10.8k": 63.5,
+            "10,800": 63.5,
+            "10800 CP": 63.5,
+            "5040": 32.0,
+            "5.04k": 32.0,
+            "5,040": 32.0,
+            "2400": 15.5,
+            "2.4k": 15.5,
+            "2,400": 15.5,
+            "2400 CP": 15.5,
+            "880": 8.0,
+            "880 CP": 8.0,
+            "420": 4.5,
+            "420 CP": 4.5,
+            "80": 1.0,
+            "80 CP": 1.0
+        }
 
-        for text in variations:
-            price = get_test_price(text)
-            self.assertEqual(price, 15.5, f"Failed matching 2400 CP variation for text: {text}")
+        for text, expected in cases.items():
+            price = calculate_test_price(text)
+            self.assertEqual(price, expected, f"Single package match failed for '{text}'")
 
-    def test_get_test_price_non_matching(self):
-        from utils import get_test_price
+    def test_mixed_packages(self):
+        from utils import calculate_test_price
 
-        non_matching = [
-            "10800 CP",
-            "5000 CP",
+        mixed_cases = {
+            "10800+2400": 79.0,          # 63.5 + 15.5
+            "2400+880": 23.5,            # 15.5 + 8
+            "2400+420+80": 21.0,         # 15.5 + 4.5 + 1
+            "5040+2400+880": 55.5,       # 32 + 15.5 + 8
+            "10800+5040+2400+880+420+80": 124.5  # 63.5+32+15.5+8+4.5+1
+        }
+
+        for text, expected in mixed_cases.items():
+            price = calculate_test_price(text)
+            self.assertEqual(price, expected, f"Mixed package match failed for '{text}'")
+
+    def test_quantities(self):
+        from utils import calculate_test_price
+
+        qty_cases = {
+            "2400x2": 31.0,               # 15.5 * 2
+            "2400 x2": 31.0,              # 15.5 * 2
+            "2x2400": 31.0,               # 15.5 * 2
+            "2 x 2400": 31.0,             # 15.5 * 2
+            "2400x2 + 880x3": 55.0,       # (15.5*2) + (8*3) = 31 + 24
+            "2x10800 + 3x420": 140.5      # (63.5*2) + (4.5*3) = 127 + 13.5 = 140.5
+        }
+
+        for text, expected in qty_cases.items():
+            price = calculate_test_price(text)
+            self.assertAlmostEqual(price, expected, places=2, msg=f"Quantity match failed for '{text}'")
+
+    def test_false_match_rejections(self):
+        from utils import calculate_test_price
+
+        rejected = [
+            "800",          # Must NOT match 80
+            "400",          # Must NOT match 2400
+            "1800",         # Must NOT match 80
+            "5000 CP",      # Unsupported package
             "1000",
             "abc@gmail.com",
             None,
             ""
         ]
 
-        for text in non_matching:
-            price = get_test_price(text)
-            self.assertIsNone(price, f"Should return None for non-matching text: {text}")
+        for text in rejected:
+            price = calculate_test_price(text)
+            self.assertIsNone(price, f"Should reject false match / unsupported text: '{text}'")
+
+        # Specific false-subtoken checks:
+        # 10800 must NOT match 80 or 800
+        self.assertEqual(calculate_test_price("10800"), 63.5)
+        # 2400 must NOT match 400
+        self.assertEqual(calculate_test_price("2400"), 15.5)
+        # 880 must NOT match 80
+        self.assertEqual(calculate_test_price("880"), 8.0)
 
 
 if __name__ == "__main__":

@@ -225,39 +225,89 @@ def get_db_type_name() -> str:
     return "Unknown DB"
 
 
-def get_test_price(order_text: Optional[str]) -> Optional[float]:
-    """
-    TEST IMPLEMENTATION (Proof of Concept):
-    Automatic price detection for 2400 CP package variations:
-    - 2400
-    - 2.4k
-    - 2,400
-    - 2400cp
-    - 2400 CP
+TEST_PACKAGE_PRICES = {
+    "10800": 63.5,
+    "5040": 32.0,
+    "2400": 15.5,
+    "880": 8.0,
+    "420": 4.5,
+    "80": 1.0,
+}
 
-    Isolated helper designed to be replaced with a database lookup later.
-    Uses the complete order content for package detection.
+PACKAGE_REGEX = re.compile(
+    r'(?:'
+    r'\b(?P<qty_before>\d+)\s*[*xX×]\s*(?P<pkg_after>10800|5040|2400|880|420|80)\s*(?:cp)?\b'
+    r'|'
+    r'\b(?P<pkg_before>10800|5040|2400|880|420|80)\s*(?:cp)?\s*[*xX×]\s*(?P<qty_after>\d+)\b'
+    r'|'
+    r'\b(?P<pkg_standalone>10800|5040|2400|880|420|80)\s*(?:cp)?\b'
+    r')',
+    re.IGNORECASE
+)
+
+
+def calculate_test_price(order_text: Optional[str]) -> Optional[float]:
+    """
+    TEST IMPLEMENTATION (Proof of Concept Calculator):
+    Scans the complete order text, detects ALL supported packages and quantities,
+    sums the total price, and returns the total as a float.
+
+    Supported TEST Package Prices:
+    - 10800 -> 63.5
+    - 5040 -> 32.0
+    - 2400 -> 15.5
+    - 880 -> 8.0
+    - 420 -> 4.5
+    - 80 -> 1.0
+
+    Prevents false matches (e.g. 10800 will NOT match 80; 2400 will NOT match 400; 880 will NOT match 80).
+    Isolated helper function designed to be replaced with a database lookup table later.
 
     Args:
         order_text (Optional[str]): Complete order text content.
 
     Returns:
-        Optional[float]: Numeric float 15.5 if 2400 CP package is detected, None otherwise.
+        Optional[float]: Total price float if at least one valid package is detected, None otherwise.
     """
     if not order_text:
         return None
 
-    text_clean = order_text.lower().strip()
+    # Pre-process & normalize text
+    raw_text = order_text.lower().strip()
+    raw_text = re.sub(r'\b10\.8k\b', '10800', raw_text)
+    raw_text = re.sub(r'\b5\.04k\b', '5040', raw_text)
+    raw_text = re.sub(r'\b2\.4k\b', '2400', raw_text)
+    raw_text = re.sub(r'\b(\d+),(\d+)\b', r'\1\2', raw_text)
 
-    # Regex patterns matching 2400 CP variations
-    patterns = [
-        r'\b2400\s*(cp)?\b',
-        r'\b2\.4k\s*(cp)?\b',
-        r'\b2,400\s*(cp)?\b'
-    ]
+    total_price = 0.0
+    matches_found = 0
 
-    for pat in patterns:
-        if re.search(pat, text_clean):
-            return 15.5
+    for match in PACKAGE_REGEX.finditer(raw_text):
+        gd = match.groupdict()
+
+        if gd.get("pkg_after"):
+            pkg = gd["pkg_after"]
+            qty = int(gd["qty_before"])
+        elif gd.get("pkg_before"):
+            pkg = gd["pkg_before"]
+            qty = int(gd["qty_after"])
+        elif gd.get("pkg_standalone"):
+            pkg = gd["pkg_standalone"]
+            qty = 1
+        else:
+            continue
+
+        unit_price = TEST_PACKAGE_PRICES.get(pkg)
+        if unit_price is not None:
+            total_price += unit_price * qty
+            matches_found += 1
+
+    if matches_found > 0:
+        return round(total_price, 2)
 
     return None
+
+
+def get_test_price(order_text: Optional[str]) -> Optional[float]:
+    """Backward-compatible alias for calculate_test_price."""
+    return calculate_test_price(order_text)
