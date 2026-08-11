@@ -690,7 +690,7 @@ def format_package_status_block(progress_data: Any, total_price: Optional[float]
     - Delivered packages with ✅
     - Selected packages with ☑
     - Pending packages with ⬜
-    - Total price
+    - NO price values displayed (Prices hidden from loaders)
     - '🎉 Order Completed' when all packages are delivered
     """
     import json
@@ -705,21 +705,15 @@ def format_package_status_block(progress_data: Any, total_price: Optional[float]
         items = []
 
     if not items:
-        if total_price is not None:
-            t_str = f"{total_price:g}$" if isinstance(total_price, float) else f"{total_price}$"
-            return f"💰 Total Price: {t_str}"
         return ""
 
     lines = []
     all_delivered = True
-    calc_total = 0.0
-    has_unpriced = False
 
     for item in items:
         pkg_name = item.get("package", "")
         qty = item.get("qty", 1)
         status = item.get("status", "Pending")
-        unit_price = item.get("unit_price")
 
         qty_str = f" ×{qty}" if qty > 1 else ""
         pkg_display = f"{pkg_name} CP{qty_str}"
@@ -733,24 +727,12 @@ def format_package_status_block(progress_data: Any, total_price: Optional[float]
             checkbox = "⬜"
             all_delivered = False
 
-        if status == "Unpriced" or unit_price is None:
-            has_unpriced = True
+        if status == "Unpriced":
             lines.append(f"❓ {pkg_display}")
         else:
-            item_total = unit_price * qty
-            calc_total += item_total
             lines.append(f"{checkbox} {pkg_display}")
 
-    final_total = total_price if (total_price is not None and not has_unpriced) else calc_total
-    total_str = f"{final_total:g}$" if isinstance(final_total, float) else f"{final_total}$"
-
-    lines.append("")
-    if has_unpriced:
-        lines.append(f"💰 Known Total: {total_str}")
-    else:
-        lines.append(f"💰 Total Price: {total_str}")
-
-    if all_delivered and not has_unpriced:
+    if all_delivered:
         lines.append("")
         lines.append("🎉 Order Completed")
 
@@ -874,8 +856,8 @@ def build_loader_package_keyboard(order_id: int, progress_data: Any, active_load
             items = []
     elif isinstance(progress_data, list):
         items = progress_data
-    else:
-        items = []
+    if not items or len(items) <= 1:
+        return None
 
     toggle_buttons = []
     for idx, item in enumerate(items):

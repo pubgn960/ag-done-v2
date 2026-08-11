@@ -769,18 +769,14 @@ class TestMultiPackageDeliveryWorkflow(unittest.TestCase):
     """Tests multi-package delivery selection workflow for Loader Group."""
 
     def test_single_package_workflow(self):
-        from utils import parse_test_order_packages, build_loader_package_keyboard, toggle_package_selection, mark_selected_packages_delivered, format_loader_card_summary
+        from utils import parse_test_order_packages, build_loader_package_keyboard, mark_selected_packages_delivered, format_loader_card_summary
 
         p = parse_test_order_packages("Order:\n2400")
         items = p["packages"]
 
+        # Single package orders (len <= 1) do NOT show selection buttons
         kb0 = build_loader_package_keyboard(1, items, active_loader_id=10)
-        self.assertIsNotNone(kb0)
-        self.assertEqual(len(kb0.inline_keyboard[0]), 1)
-        self.assertIn("⬜ 2400", kb0.inline_keyboard[0][0].text)
-
-        items, status = toggle_package_selection(items, 0, loader_id=10)
-        self.assertEqual(status, "Selected")
+        self.assertIsNone(kb0)
 
         items, is_all, del_cnt = mark_selected_packages_delivered(items, loader_id=10)
         self.assertTrue(is_all)
@@ -911,7 +907,7 @@ class TestMultiPackageDeliveryWorkflow(unittest.TestCase):
         self.assertIn("⬜ 10800 CP", card_text)
         self.assertIn("⬜ 5040 CP", card_text)
         self.assertIn("⬜ 2400 CP", card_text)
-        self.assertIn("💰 Total Price: 114.5$", card_text)
+        self.assertNotIn("💰 Total Price", card_text)
 
         # Verify ORDER DETAILS is BEFORE PACKAGE STATUS
         idx_details = card_text.index("📋 ORDER DETAILS")
@@ -1029,6 +1025,32 @@ class TestDeliverySessionRouting(unittest.TestCase):
 
         card = format_full_loader_order_card(MockOrder())
         self.assertIn("🎉 Order Completed", card)
+
+    def test_single_package_order_bypasses_delivery_session_and_keyboard(self):
+        import json
+        from utils import parse_test_order_packages, build_loader_package_keyboard, format_full_loader_order_card
+
+        raw = "Facebook\nEmail:\nsingle@gmail.com\nPassword:\n123456\nOrder:\n2400"
+        parsed = parse_test_order_packages(raw)
+        items = parsed["packages"]
+
+        # 1. Single package orders (1 item) return None for keyboard (NO buttons)
+        kb = build_loader_package_keyboard(42, items)
+        self.assertIsNone(kb)
+
+        # 2. Loader card hides price
+        class MockOrder:
+            def __init__(self):
+                self.raw_text = raw
+                self.email = "single@gmail.com"
+                self.package_progress = json.dumps(items)
+                self.price = "17"
+
+        card = format_full_loader_order_card(MockOrder())
+        self.assertIn("📦 PACKAGE STATUS", card)
+        self.assertIn("⬜ 2400 CP", card)
+        self.assertNotIn("💰 Total Price", card)
+        self.assertNotIn("17$", card)
 
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
