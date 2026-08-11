@@ -95,7 +95,8 @@ def _migrate_orders_schema(sync_conn: Any) -> None:
     columns_to_add = [
         ("raw_text", "TEXT"),
         ("issue_state", "VARCHAR(50)"),
-        ("last_issue_type", "VARCHAR(50)")
+        ("last_issue_type", "VARCHAR(50)"),
+        ("package_progress", "TEXT")
     ]
 
     is_postgres = "postgres" in str(sync_conn.engine.url).lower()
@@ -681,7 +682,8 @@ async def create_order(
     package: str = "",
     status: str = "Pending",
     category: str = "A",
-    raw_text: Optional[str] = None
+    raw_text: Optional[str] = None,
+    package_progress: Optional[str] = None
 ) -> Order:
     """
     Creates a new Order record and returns generated Order object.
@@ -701,6 +703,7 @@ async def create_order(
             image_count=0,
             media_group_id=None,
             raw_text=raw_text,
+            package_progress=package_progress,
             fingerprint=None,
             created_at=datetime.now(timezone.utc)
         )
@@ -1107,4 +1110,21 @@ async def update_order_issue_state(order_id: int, issue_state: str, issue_type: 
         res = await session.execute(stmt_sel)
         updated = res.unique().scalar_one_or_none()
         logger.info(f"[LOADER_ISSUE] Order #{order_id} issue_state updated to '{issue_state}' (Issue Type: '{issue_type}').")
+        return updated
+
+
+async def update_order_package_progress(order_id: int, package_progress: str) -> Optional[Order]:
+    """
+    Updates the JSON package_progress tracking data for an Order.
+    Returns the updated Order object.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = update(Order).where(Order.id == order_id).values(package_progress=package_progress)
+        await session.execute(stmt)
+        await session.commit()
+
+        stmt_sel = select(Order).options(joinedload(Order.images)).where(Order.id == order_id)
+        res = await session.execute(stmt_sel)
+        updated = res.unique().scalar_one_or_none()
+        logger.info(f"[PACKAGE_TRACKING] Order #{order_id} package_progress updated.")
         return updated

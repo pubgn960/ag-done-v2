@@ -377,6 +377,11 @@ def calculate_test_price(order_text: Optional[str]) -> Optional[float]:
     return parsed["total_price"] if parsed else None
 
 
+def get_test_price(order_text: Optional[str]) -> Optional[float]:
+    """Backward-compatible alias for calculate_test_price."""
+    return calculate_test_price(order_text)
+
+
 def format_package_summary_and_price(parsed_data: Dict[str, Any]) -> str:
     """
     Formats detected packages and total price into customer/delivery text block.
@@ -419,9 +424,116 @@ def format_package_summary_and_price(parsed_data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def get_test_price(order_text: Optional[str]) -> Optional[float]:
-    """Backward-compatible alias for calculate_test_price."""
-    return calculate_test_price(order_text)
+def format_package_progress_summary(progress_data: Any, total_price: float) -> str:
+    """
+    Formats package progress tracking checkboxes and status line with total price.
+
+    Example Initial:
+    📦 Packages
+
+    ☐ 2400 CP
+    ☐ 880 CP
+    ☐ 420 CP
+
+    💰 Total Price: 28$
+
+    Example Partial:
+    📦 Packages
+
+    ✅ 2400 CP
+    ☐ 880 CP
+    ☐ 420 CP
+
+    💰 Total Price: 28$
+
+    Example Complete:
+    📦 Packages
+
+    ✅ 2400 CP
+    ✅ 880 CP
+    ✅ 420 CP
+
+    🎉 All Packages Delivered
+
+    💰 Total Price: 28$
+    """
+    import json
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    total_str = f"{total_price:g}$" if isinstance(total_price, float) else f"{total_price}$"
+
+    if not items:
+        return f"💰 Total Price: {total_str}"
+
+    title = "📦 Package" if len(items) == 1 else "📦 Packages"
+    lines = [title, ""]
+
+    all_delivered = True
+
+    for item in items:
+        pkg_name = item.get("package", "")
+        qty = item.get("qty", 1)
+        status = item.get("status", "Pending")
+
+        is_done = (status == "Delivered")
+        checkbox = "✅" if is_done else "☐"
+
+        if not is_done:
+            all_delivered = False
+
+        qty_str = f" ×{qty}" if qty > 1 else ""
+        lines.append(f"{checkbox} {pkg_name} CP{qty_str}")
+
+    if all_delivered:
+        lines.append("")
+        lines.append("🎉 All Packages Delivered")
+
+    lines.append("")
+    lines.append(f"💰 Total Price: {total_str}")
+
+    return "\n".join(lines)
+
+
+def advance_package_progress(progress_data: Any) -> Tuple[Any, bool]:
+    """
+    Advances package delivery progress state by marking the next pending package item as 'Delivered'.
+    Returns (updated_items, is_all_delivered).
+    """
+    import json
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    if not items:
+        return items, True
+
+    updated_one = False
+    for item in items:
+        if item.get("status") != "Delivered":
+            item["status"] = "Delivered"
+            updated_one = True
+            break
+
+    if not updated_one:
+        for item in items:
+            item["status"] = "Delivered"
+
+    all_done = all(item.get("status") == "Delivered" for item in items)
+    return items, all_done
 
 
 def normalize_order_content_for_dedup(text_content: Optional[str]) -> str:

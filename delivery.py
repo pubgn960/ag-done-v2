@@ -7,6 +7,7 @@ Includes structured logging tags ([DELIVERY], [REACTION], [PRICE]).
 """
 
 import html
+import json
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -24,7 +25,8 @@ from database import (
     get_current_settings,
     mark_order_delivered,
     delete_orders_by_email,
-    update_order_price
+    update_order_price,
+    update_order_package_progress
 )
 from models import Order, Image
 from utils import (
@@ -32,7 +34,9 @@ from utils import (
     get_test_price,
     calculate_test_price,
     parse_test_order_packages,
-    format_package_summary_and_price
+    format_package_summary_and_price,
+    format_package_progress_summary,
+    advance_package_progress
 )
 
 logger = logging.getLogger(__name__)
@@ -166,18 +170,45 @@ async def deliver_order_by_id(
     caption_email = extract_last_email(caption_text)
     email_for_caption = caption_email if caption_email else order.email
 
-    # TEST IMPLEMENTATION (Proof of Concept Calculator & Package Summary):
-    # Detect automatic package summary and price for all supported package variations and quantities
+    # TEST IMPLEMENTATION (Proof of Concept Calculator & Package Progress Tracking):
+    # Detect automatic package summary, progress states, and total price
     # Uses complete order content (caption text, package description, email, or order.price)
     full_order_content = f"{caption_text or ''}\n{order.package or ''}\n{order.email or ''}"
     parsed_pkg = parse_test_order_packages(full_order_content)
     auto_price_added = False
 
     if parsed_pkg is not None:
-        summary_block = format_package_summary_and_price(parsed_pkg)
-        price_str = f"{parsed_pkg['total_price']:g}"
+        total_price = parsed_pkg["total_price"]
+
+        # Parse or initialize package_progress items
+        if order.package_progress:
+            try:
+                progress_items = json.loads(order.package_progress)
+            except Exception:
+                progress_items = [
+                    {"package": item["package"], "qty": item["qty"], "unit_price": item["unit_price"], "status": "Pending"}
+                    for item in parsed_pkg["packages"]
+                ]
+        else:
+            progress_items = [
+                {"package": item["package"], "qty": item["qty"], "unit_price": item["unit_price"], "status": "Pending"}
+                for item in parsed_pkg["packages"]
+            ]
+
+        # Advance package progress by marking the next pending item as Delivered
+        updated_items, _ = advance_package_progress(progress_items)
+        updated_progress_json = json.dumps(updated_items)
+
+        # Save updated progress in DB
+        await update_order_package_progress(order.id, updated_progress_json)
+
+        # Format package progress summary block with checkboxes (☐ / ✅) and status
+        summary_block = format_package_progress_summary(updated_items, total_price)
+        price_str = f"{total_price:g}"
+
         if "💰 Price:" not in email_for_caption and "📦 Package" not in email_for_caption:
             email_for_caption = f"{email_for_caption}\n\n{summary_block}"
+
         if not order.price:
             await update_order_price(order.id, price_str=price_str)
         auto_price_added = True

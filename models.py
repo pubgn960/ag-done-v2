@@ -140,6 +140,7 @@ class Order(Base):
     raw_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     issue_state: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     last_issue_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    package_progress: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

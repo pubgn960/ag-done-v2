@@ -634,6 +634,38 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         f5 = format_package_summary_and_price(p5)
         self.assertEqual(f5, "📦 Package(s):\n• 880 CP\n• 2400 CP\n\n💰 Price: 23.5$")
 
+    def test_package_progress_tracking(self):
+        from utils import parse_test_order_packages, format_package_progress_summary, advance_package_progress
+
+        parsed = parse_test_order_packages("2400+880+420")
+        items = [
+            {"package": item["package"], "qty": item["qty"], "unit_price": item["unit_price"], "status": "Pending"}
+            for item in parsed["packages"]
+        ]
+        total_price = parsed["total_price"]
+
+        # Initial State: all pending
+        s0 = format_package_progress_summary(items, total_price)
+        self.assertEqual(s0, "📦 Packages\n\n☐ 2400 CP\n☐ 880 CP\n☐ 420 CP\n\n💰 Total Price: 28$")
+
+        # Delivery 1: advance 2400 to Delivered
+        items1, done1 = advance_package_progress(items)
+        self.assertFalse(done1)
+        s1 = format_package_progress_summary(items1, total_price)
+        self.assertEqual(s1, "📦 Packages\n\n✅ 2400 CP\n☐ 880 CP\n☐ 420 CP\n\n💰 Total Price: 28$")
+
+        # Delivery 2: advance 880 to Delivered
+        items2, done2 = advance_package_progress(items1)
+        self.assertFalse(done2)
+        s2 = format_package_progress_summary(items2, total_price)
+        self.assertEqual(s2, "📦 Packages\n\n✅ 2400 CP\n✅ 880 CP\n☐ 420 CP\n\n💰 Total Price: 28$")
+
+        # Delivery 3: advance 420 to Delivered (all done)
+        items3, done3 = advance_package_progress(items2)
+        self.assertTrue(done3)
+        s3 = format_package_progress_summary(items3, total_price)
+        self.assertEqual(s3, "📦 Packages\n\n✅ 2400 CP\n✅ 880 CP\n✅ 420 CP\n\n🎉 All Packages Delivered\n\n💰 Total Price: 28$")
+
 
 class TestExactContentDeduplication(unittest.IsolatedAsyncioTestCase):
     """Tests exact content deduplication ensuring zero false positives."""

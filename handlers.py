@@ -88,9 +88,11 @@ from utils import (
     get_db_type_name,
     get_test_price,
     calculate_test_price,
+    parse_test_order_packages,
     LoaderIssueType,
     LOADER_ISSUE_CONFIG
 )
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +259,16 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.warning(f"[PAYMENT] Order #{order.id} registered as Category B, but Payment Review Group is not configured yet!")
 
     else:
+        # Parse initial package progress
+        parsed_init_pkg = parse_test_order_packages(text_content)
+        init_progress_json = None
+        if parsed_init_pkg:
+            init_progress_items = [
+                {"package": item["package"], "qty": item["qty"], "unit_price": item["unit_price"], "status": "Pending"}
+                for item in parsed_init_pkg["packages"]
+            ]
+            init_progress_json = json.dumps(init_progress_items)
+
         # Category A Workflow: Forward directly to Loader Group, set status 'Pending'
         order = await create_order(
             email=email,
@@ -265,14 +277,14 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             package=package_desc,
             status="Pending",
             category="A",
-            raw_text=text_content
+            raw_text=text_content,
+            package_progress=init_progress_json
         )
 
-        # TEST IMPLEMENTATION (Proof of Concept Calculator):
-        # Auto-detect test price for supported packages and quantities (returns float total or None)
-        test_price_val = calculate_test_price(text_content)
-        if test_price_val is not None:
-            init_price_str = f"{test_price_val:g}" if isinstance(test_price_val, float) else str(test_price_val)
+        # Auto-detect test price for supported packages and quantities
+        if parsed_init_pkg:
+            test_price_val = parsed_init_pkg["total_price"]
+            init_price_str = f"{test_price_val:g}"
             await update_order_price(order.id, price_str=init_price_str)
 
         loader_group_id = BOT_SETTINGS["delivery_group_id"]
