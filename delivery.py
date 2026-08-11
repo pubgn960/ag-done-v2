@@ -211,12 +211,16 @@ async def deliver_order_by_id(
 
         # Format package summary block with detected packages and price
         summary_block = format_package_summary_and_price(parsed_pkg)
-        price_str = f"{total_price:g}"
+        price_str = None
+        if isinstance(total_price, (int, float)):
+            price_str = f"{total_price:g}"
+        elif parsed_pkg.get("known_total", 0.0) > 0:
+            price_str = f"{parsed_pkg['known_total']:g}"
 
         if "💰 Price:" not in email_for_caption and "📦 Package" not in email_for_caption:
             email_for_caption = f"{email_for_caption}\n\n{summary_block}"
 
-        if not order.price:
+        if price_str and not order.price:
             await update_order_price(order.id, price_str=price_str)
         auto_price_added = True
     elif order.price:

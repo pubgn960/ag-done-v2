@@ -691,6 +691,33 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         self.assertIn("☐ 880 CP", s1)
         self.assertIn("💰 Total Price: 110$", s1)
 
+    def test_unknown_package_non_crashing_combinations(self):
+        from utils import parse_test_order_packages
+
+        inputs = [
+            "2400+880",
+            "15000+2400",
+            "15000",
+            "15000+3600+2400"
+        ]
+
+        for inp in inputs:
+            p = parse_test_order_packages(inp)
+            self.assertIsNotNone(p, f"Parser returned None for valid input '{inp}'")
+
+            t_val = p.get("total_price")
+            k_val = p.get("known_total")
+
+            if isinstance(t_val, (int, float)):
+                p_str = f"{t_val:g}"
+                self.assertIsNotNone(p_str)
+            else:
+                self.assertIsNone(t_val)
+
+            if isinstance(k_val, (int, float)):
+                k_str = f"{k_val:g}"
+                self.assertIsNotNone(k_str)
+
     def test_exact_non_redundant_package_detection(self):
         from utils import parse_test_order_packages, calculate_test_price
 

@@ -89,6 +89,8 @@ from utils import (
     get_test_price,
     calculate_test_price,
     parse_test_order_packages,
+    format_package_progress_summary,
+    get_unknown_package_keyboard,
     LoaderIssueType,
     LOADER_ISSUE_CONFIG
 )
@@ -281,11 +283,32 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             package_progress=init_progress_json
         )
 
-        # Auto-detect test price for supported packages and quantities
+        # Auto-detect price for supported packages and unknown package prompts
         if parsed_init_pkg:
-            test_price_val = parsed_init_pkg["total_price"]
-            init_price_str = f"{test_price_val:g}"
-            await update_order_price(order.id, price_str=init_price_str)
+            test_price_val = parsed_init_pkg.get("total_price")
+            known_total = parsed_init_pkg.get("known_total", 0.0)
+
+            if isinstance(test_price_val, (int, float)):
+                init_price_str = f"{test_price_val:g}"
+                await update_order_price(order.id, price_str=init_price_str)
+            elif known_total > 0:
+                init_price_str = f"{known_total:g}"
+                await update_order_price(order.id, price_str=init_price_str)
+
+            # If unpriced unknown packages exist, attach interactive unknown price button
+            if parsed_init_pkg.get("has_unknown"):
+                unk_kb = get_unknown_package_keyboard(order.id, parsed_init_pkg["packages"])
+                if unk_kb:
+                    try:
+                        summary_msg = await context.bot.send_message(
+                            chat_id=chat.id,
+                            text=format_package_progress_summary(parsed_init_pkg["packages"], known_total if known_total > 0 else None),
+                            reply_to_message_id=message.message_id,
+                            reply_markup=unk_kb
+                        )
+                        await update_order_price(order.id, price_msg_id=summary_msg.message_id)
+                    except Exception as ex_unk:
+                        logger.warning(f"Failed to post unknown package price prompt button: {ex_unk}")
 
         loader_group_id = BOT_SETTINGS["delivery_group_id"]
         if loader_group_id:
