@@ -1,6 +1,6 @@
 # Telegram Email Image Delivery Bot (v1.3.0) 🚀
 
-[![Python CI](https://github.com/pubgn960/telegram-email-delivery-bot/actions/workflows/python.yml/badge.svg)](https://github.com/pubgn960/telegram-email-delivery-bot/actions/workflows/python.yml)
+[![Python CI](https://github.com/pubgn960/smartbot-v2/actions/workflows/python.yml/badge.svg)](https://github.com/pubgn960/smartbot-v2/actions/workflows/python.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Railway Deploy](https://railway.app/button.svg)](https://railway.app/)
