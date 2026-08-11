@@ -9,7 +9,7 @@ import time
 import logging
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from telegram import Update, Bot, ReactionTypeEmoji
+from telegram import Update, Bot, ReactionTypeEmoji, InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
 from database import AUTH_USERS_CACHE
 
@@ -317,13 +317,13 @@ PACKAGE_REGEX = re.compile(
 
 def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, Any]]:
     """
-    Parses complete order text to detect all supported packages, quantities, and prices.
+    Parses complete order text to detect BOTH known and unknown packages and quantities.
     Normalizes all supported separators (+, comma, &, /, newline, spaces) into '+' before matching.
     Preserves exact order of appearance in original text.
 
     Returns:
-        Optional[Dict[str, Any]]: Structured dictionary with 'packages' list and 'total_price' float,
-        or None if no supported package is found.
+        Optional[Dict[str, Any]]: Structured dictionary with 'packages' list, 'known_total' float,
+        'has_unknown' bool, and 'total_price' float (if all priced), or None if no supported package is found.
     """
     if not order_text:
         return None
@@ -345,39 +345,87 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
     raw_text = re.sub(r'[,&/\n\r+|]+', '+', raw_text)
     raw_text = re.sub(r'\s+', '+', raw_text)
 
+    segments = [s.strip() for s in raw_text.split('+') if s.strip()]
+
     detected = []
-    total_price = 0.0
+    known_total = 0.0
+    has_unknown = False
 
-    for match in PACKAGE_REGEX.finditer(raw_text):
+    segment_regex = re.compile(
+        r'^(?:'
+        r'(?P<num1>\d+)(?:cp)?[*xX×](?P<num2>\d+)(?:cp)?'
+        r'|'
+        r'(?P<pkg_standalone>\d+)(?:cp)?'
+        r')$',
+        re.IGNORECASE
+    )
+
+    for seg in segments:
+        match = segment_regex.match(seg)
+        if not match:
+            continue
+
         gd = match.groupdict()
+        qty = 1
+        pkg = None
 
-        if gd.get("pkg_after"):
-            pkg = gd["pkg_after"]
-            qty = int(gd["qty_before"])
-        elif gd.get("pkg_before"):
-            pkg = gd["pkg_before"]
-            qty = int(gd["qty_after"])
-        elif gd.get("pkg_standalone"):
+        if gd.get("pkg_standalone"):
             pkg = gd["pkg_standalone"]
             qty = 1
-        else:
+        elif gd.get("num1") and gd.get("num2"):
+            n1 = int(gd["num1"])
+            n2 = int(gd["num2"])
+
+            if str(n2) in TEST_PACKAGE_PRICES:
+                pkg = str(n2)
+                qty = n1
+            elif str(n1) in TEST_PACKAGE_PRICES:
+                pkg = str(n1)
+                qty = n2
+            else:
+                if n1 >= n2:
+                    pkg = str(n1)
+                    qty = n2
+                else:
+                    pkg = str(n2)
+                    qty = n1
+
+        if not pkg:
             continue
 
         unit_price = TEST_PACKAGE_PRICES.get(pkg)
-        if unit_price is not None:
+        is_known = (unit_price is not None)
+
+        if is_known:
             item_total = unit_price * qty
-            total_price += item_total
+            known_total += item_total
             detected.append({
                 "package": pkg,
                 "qty": qty,
+                "known": True,
                 "unit_price": unit_price,
-                "total": item_total
+                "total": item_total,
+                "status": "Pending"
+            })
+        else:
+            if int(pkg) < 10:
+                continue
+            has_unknown = True
+            detected.append({
+                "package": pkg,
+                "qty": qty,
+                "known": False,
+                "unit_price": None,
+                "total": None,
+                "status": "Unpriced"
             })
 
     if detected:
         return {
             "packages": detected,
-            "total_price": round(total_price, 2)
+            "known_total": round(known_total, 2),
+            "has_unknown": has_unknown,
+            "total_price": round(known_total, 2) if not has_unknown else None
         }
 
     return None
@@ -386,7 +434,11 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
 def calculate_test_price(order_text: Optional[str]) -> Optional[float]:
     """Calculates total test price using single shared parser parse_test_order_packages."""
     parsed = parse_test_order_packages(order_text)
-    return parsed["total_price"] if parsed else None
+    if parsed and not parsed.get("has_unknown"):
+        return parsed["total_price"]
+    elif parsed and parsed.get("known_total", 0.0) > 0:
+        return parsed["known_total"]
+    return None
 
 
 def get_test_price(order_text: Optional[str]) -> Optional[float]:
@@ -397,22 +449,9 @@ def get_test_price(order_text: Optional[str]) -> Optional[float]:
 def format_package_summary_and_price(parsed_data: Dict[str, Any]) -> str:
     """
     Formats detected packages and total price into customer/delivery text block.
-
-    Example Single Package:
-    📦 Package:
-    • 2400 CP
-
-    💰 Price: 15.5$
-
-    Example Multiple Packages:
-    📦 Package(s):
-    • 2400 CP ×2
-    • 880 CP
-
-    💰 Price: 23.5$
     """
     pkgs = parsed_data.get("packages", [])
-    total = parsed_data.get("total_price", 0.0)
+    total = parsed_data.get("total_price") or parsed_data.get("known_total", 0.0)
 
     total_str = f"{total:g}$" if isinstance(total, float) else f"{total}$"
 
@@ -425,10 +464,12 @@ def format_package_summary_and_price(parsed_data: Dict[str, Any]) -> str:
     for item in pkgs:
         pkg_name = item["package"]
         qty = item["qty"]
-        if qty > 1:
-            lines.append(f"• {pkg_name} CP ×{qty}")
+        qty_str = f" ×{qty}" if qty > 1 else ""
+        u_price = item.get("unit_price")
+        if u_price is not None:
+            lines.append(f"• {pkg_name} CP{qty_str}")
         else:
-            lines.append(f"• {pkg_name} CP")
+            lines.append(f"❓ {pkg_name} CP{qty_str}")
 
     lines.append("")
     lines.append(f"💰 Price: {total_str}")
@@ -436,38 +477,9 @@ def format_package_summary_and_price(parsed_data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_package_progress_summary(progress_data: Any, total_price: float) -> str:
+def format_package_progress_summary(progress_data: Any, total_price: Optional[float] = None) -> str:
     """
-    Formats package progress tracking checkboxes and status line with total price.
-
-    Example Initial:
-    📦 Packages
-
-    ☐ 2400 CP
-    ☐ 880 CP
-    ☐ 420 CP
-
-    💰 Total Price: 28$
-
-    Example Partial:
-    📦 Packages
-
-    ✅ 2400 CP
-    ☐ 880 CP
-    ☐ 420 CP
-
-    💰 Total Price: 28$
-
-    Example Complete:
-    📦 Packages
-
-    ✅ 2400 CP
-    ✅ 880 CP
-    ✅ 420 CP
-
-    🎉 All Packages Delivered
-
-    💰 Total Price: 28$
+    Formats package progress tracking checkboxes, unknown package statuses, and total price calculation.
     """
     import json
     if isinstance(progress_data, str):
@@ -480,38 +492,114 @@ def format_package_progress_summary(progress_data: Any, total_price: float) -> s
     else:
         items = []
 
-    total_str = f"{total_price:g}$" if isinstance(total_price, float) else f"{total_price}$"
-
     if not items:
-        return f"💰 Total Price: {total_str}"
+        if total_price is not None:
+            t_str = f"{total_price:g}$" if isinstance(total_price, float) else f"{total_price}$"
+            return f"💰 Total Price: {t_str}"
+        return ""
 
     title = "📦 Package" if len(items) == 1 else "📦 Packages"
     lines = [title, ""]
 
     all_delivered = True
+    calc_total = 0.0
+    has_unpriced = False
 
     for item in items:
         pkg_name = item.get("package", "")
         qty = item.get("qty", 1)
         status = item.get("status", "Pending")
+        unit_price = item.get("unit_price")
 
         is_done = (status == "Delivered")
-        checkbox = "✅" if is_done else "☐"
-
         if not is_done:
             all_delivered = False
 
         qty_str = f" ×{qty}" if qty > 1 else ""
-        lines.append(f"{checkbox} {pkg_name} CP{qty_str}")
 
-    if all_delivered:
+        if status == "Unpriced" or unit_price is None:
+            has_unpriced = True
+            lines.append(f"❓ {pkg_name} CP{qty_str}")
+        else:
+            item_total = unit_price * qty
+            calc_total += item_total
+            checkbox = "✅" if is_done else "☐"
+            lines.append(f"{checkbox} {pkg_name} CP{qty_str}")
+
+    if all_delivered and not has_unpriced:
         lines.append("")
         lines.append("🎉 All Packages Delivered")
 
+    final_total = total_price if (total_price is not None and not has_unpriced) else calc_total
+    total_str = f"{final_total:g}$" if isinstance(final_total, float) else f"{final_total}$"
+
     lines.append("")
-    lines.append(f"💰 Total Price: {total_str}")
+    if has_unpriced:
+        lines.append(f"💰 Known Total: {total_str}")
+    else:
+        lines.append(f"💰 Total Price: {total_str}")
 
     return "\n".join(lines)
+
+
+def get_unknown_package_keyboard(order_id: int, progress_data: Any) -> Optional[InlineKeyboardMarkup]:
+    """
+    Returns an inline keyboard with '📝 Add Unknown Package Price' button if any unpriced package exists.
+    """
+    import json
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    for item in items:
+        if item.get("status") == "Unpriced" or item.get("unit_price") is None:
+            pkg_name = item.get("package", "")
+            return InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"📝 Add Price for {pkg_name}", callback_data=f"add_unk_price:{order_id}:{pkg_name}")]
+            ])
+    return None
+
+
+def update_unknown_package_price(progress_data: Any, target_pkg: str, price_val: float) -> Tuple[List[Dict[str, Any]], float, bool]:
+    """
+    Updates the price for a specific unknown package item in progress_data.
+    Returns (updated_items, new_total_price, has_remaining_unpriced).
+    """
+    import json
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    for item in items:
+        if str(item.get("package")) == str(target_pkg) and (item.get("status") == "Unpriced" or item.get("unit_price") is None):
+            item["unit_price"] = price_val
+            item["total"] = price_val * item.get("qty", 1)
+            item["status"] = "Pending"
+            break
+
+    # Calculate new total
+    new_total = 0.0
+    has_remaining_unpriced = False
+    for item in items:
+        u_price = item.get("unit_price")
+        if u_price is not None and item.get("status") != "Unpriced":
+            new_total += u_price * item.get("qty", 1)
+        else:
+            has_remaining_unpriced = True
+
+    return items, round(new_total, 2), has_remaining_unpriced
 
 
 def advance_package_progress(progress_data: Any) -> Tuple[Any, bool]:

@@ -821,11 +821,66 @@ async def price_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
             logger.exception(f"[PRICE] Failed to send price custom prompt: {e}")
 
 
+async def unknown_package_price_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles '📝 Add Unknown Package Price' button callbacks.
+    Callback data format: add_unk_price:<order_id>:<package_name>
+    Prompts admin with ForceReply to enter the price for the unknown package.
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("add_unk_price:"):
+        return
+
+    user = update.effective_user
+    if not user or not (is_admin(user.id) or is_delivery_user(user.id)):
+        try:
+            await query.answer("⛔ Only authorized admins can set package prices.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    parts = query.data.split(":")
+    if len(parts) < 3 or not parts[1].isdigit():
+        return
+
+    order_id = int(parts[1])
+    pkg_name = parts[2]
+
+    order = await get_order_by_id(order_id)
+    if not order:
+        try:
+            await query.answer("❌ Order not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    target_chat_id = query.message.chat_id
+
+    try:
+        prompt_msg = await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=f"Enter the price for package: {pkg_name}",
+            reply_to_message_id=query.message.message_id,
+            reply_markup=ForceReply(selective=True)
+        )
+        PRICE_INPUT_SESSION[order.id] = {
+            "order_id": order.id,
+            "chat_id": target_chat_id,
+            "prompt_msg_id": prompt_msg.message_id,
+            "button_msg_id": query.message.message_id,
+            "unknown_pkg": pkg_name,
+            "is_unknown": True,
+            "created_at": datetime.now(timezone.utc)
+        }
+        await query.answer("Reply prompt opened!")
+        logger.info(f"[UNKNOWN_PKG] Prompted admin for Order #{order.id} package '{pkg_name}' price (Prompt Msg ID: {prompt_msg.message_id}).")
+    except Exception as e:
+        logger.exception(f"[UNKNOWN_PKG] Failed to prompt for unknown package price: {e}")
+
+
 async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles admin text input for Category A Price setting and editing in Client Group.
-    Enforces Bug 2 Fix: Entry MUST be a reply to the bot's prompt message ('Enter order price:' or 'Enter new price:').
-    Ignores unreplied text or non-matching replies completely.
+    Handles admin text input for Category A Price setting, editing, and Unknown Package pricing.
     """
     user = update.effective_user
     message = update.effective_message
@@ -901,6 +956,47 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
     if not order:
         PRICE_INPUT_SESSION.pop(target_order_id, None)
         await message.reply_text(f"❌ Order #{target_order_id} not found.")
+        return
+
+    # Handle Unknown Package Price Input
+    if session.get("is_unknown") and session.get("unknown_pkg"):
+        price_val = float(text)
+        pkg_name = session["unknown_pkg"]
+        updated_items, new_total, has_unpriced = update_unknown_package_price(order.package_progress, pkg_name, price_val)
+        updated_json = json.dumps(updated_items)
+
+        await update_order_package_progress(order.id, updated_json)
+        await update_order_price(order.id, f"{new_total:g}")
+
+        new_summary_block = format_package_progress_summary(updated_items, new_total)
+        new_kb = get_unknown_package_keyboard(order.id, updated_items)
+
+        target_msg_id = session.get("button_msg_id") or order.price_msg_id
+        if target_msg_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=session["chat_id"],
+                    message_id=target_msg_id,
+                    text=new_summary_block,
+                    reply_markup=new_kb
+                )
+                logger.info(f"[UNKNOWN_PKG] Updated package '{pkg_name}' price to {price_val}$ on Order #{order.id}. New Total: {new_total}$.")
+            except Exception as e:
+                logger.warning(f"[UNKNOWN_PKG] Could not edit price message #{target_msg_id}: {e}")
+
+        # Delete prompt message
+        prompt_msg_id = session.get("prompt_msg_id")
+        if prompt_msg_id:
+            try:
+                await context.bot.delete_message(chat_id=session["chat_id"], message_id=prompt_msg_id)
+            except Exception:
+                pass
+        try:
+            await context.bot.delete_message(chat_id=session["chat_id"], message_id=message.message_id)
+        except Exception:
+            pass
+
+        PRICE_INPUT_SESSION.pop(target_order_id, None)
         return
 
     is_edit = session.get("is_edit", False) or bool(order.price)

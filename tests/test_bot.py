@@ -636,6 +636,46 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         # 880 must NOT match 80
         self.assertEqual(calculate_test_price("880"), 8.0)
 
+    def test_unknown_package_detection_and_pricing(self):
+        from utils import (
+            parse_test_order_packages,
+            format_package_progress_summary,
+            get_unknown_package_keyboard,
+            update_unknown_package_price
+        )
+
+        # 1. Input with mixed known and unknown: 7200+2400+880
+        p = parse_test_order_packages("7200+2400+880")
+        self.assertIsNotNone(p)
+        self.assertTrue(p["has_unknown"])
+        self.assertEqual(p["known_total"], 23.5)
+        self.assertEqual(len(p["packages"]), 3)
+        self.assertEqual(p["packages"][0]["package"], "7200")
+        self.assertFalse(p["packages"][0]["known"])
+
+        # 2. Format initial state
+        items = p["packages"]
+        s0 = format_package_progress_summary(items, p["known_total"])
+        self.assertIn("❓ 7200 CP", s0)
+        self.assertIn("💰 Known Total: 23.5$", s0)
+
+        # 3. Check unknown package keyboard
+        kb = get_unknown_package_keyboard(101, items)
+        self.assertIsNotNone(kb)
+        self.assertIn("add_unk_price:101:7200", kb.inline_keyboard[0][0].callback_data)
+
+        # 4. Admin enters price 48 for 7200
+        updated_items, new_total, has_remaining = update_unknown_package_price(items, "7200", 48.0)
+        self.assertFalse(has_remaining)
+        self.assertEqual(new_total, 71.5)  # 48 + 15.5 + 8 = 71.5
+
+        # 5. Format updated state
+        s1 = format_package_progress_summary(updated_items, new_total)
+        self.assertIn("☐ 7200 CP", s1)
+        self.assertIn("☐ 2400 CP", s1)
+        self.assertIn("☐ 880 CP", s1)
+        self.assertIn("💰 Total Price: 71.5$", s1)
+
     def test_exact_non_redundant_package_detection(self):
         from utils import parse_test_order_packages, calculate_test_price
 
