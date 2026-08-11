@@ -170,10 +170,10 @@ async def deliver_order_by_id(
     caption_email = extract_last_email(caption_text)
     email_for_caption = caption_email if caption_email else order.email
 
-    # TEST IMPLEMENTATION (Proof of Concept Calculator & Package Progress Tracking):
-    # Detect automatic package summary, progress states, and total price
-    # Uses complete order content (caption text, package description, email, or order.price)
-    full_order_content = f"{caption_text or ''}\n{order.package or ''}\n{order.email or ''}"
+    # TEST IMPLEMENTATION (Proof of Concept Calculator & Package Summary):
+    # Detect automatic package summary and price for all supported package variations and quantities
+    # Uses complete order content (caption text, package description, email, order.raw_text, or order.price)
+    full_order_content = f"{caption_text or ''}\n{order.package or ''}\n{order.email or ''}\n{order.raw_text or ''}"
     parsed_pkg = parse_test_order_packages(full_order_content)
     auto_price_added = False
 
@@ -202,8 +202,8 @@ async def deliver_order_by_id(
         # Save updated progress in DB
         await update_order_package_progress(order.id, updated_progress_json)
 
-        # Format package progress summary block with checkboxes (☐ / ✅) and status
-        summary_block = format_package_progress_summary(updated_items, total_price)
+        # Format package summary block with detected packages and price
+        summary_block = format_package_summary_and_price(parsed_pkg)
         price_str = f"{total_price:g}"
 
         if "💰 Price:" not in email_for_caption and "📦 Package" not in email_for_caption:
