@@ -170,10 +170,16 @@ async def deliver_order_by_id(
     caption_email = extract_last_email(caption_text)
     email_for_caption = caption_email if caption_email else order.email
 
-    # TEST IMPLEMENTATION (Proof of Concept Calculator & Package Summary):
-    # Detect automatic package summary and price for all supported package variations and quantities
-    # Uses complete order content (caption text, package description, email, order.raw_text, or order.price)
-    full_order_content = f"{caption_text or ''}\n{order.package or ''}\n{order.email or ''}\n{order.raw_text or ''}"
+    # Construct single non-redundant order text for parser (prevents text duplication)
+    if order.raw_text and order.raw_text.strip():
+        full_order_content = order.raw_text.strip()
+    elif caption_text and caption_text.strip():
+        full_order_content = caption_text.strip()
+    elif order.package and order.package.strip():
+        full_order_content = order.package.strip()
+    else:
+        full_order_content = ""
+
     parsed_pkg = parse_test_order_packages(full_order_content)
     auto_price_added = False
 

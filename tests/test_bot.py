@@ -606,6 +606,25 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         # 880 must NOT match 80
         self.assertEqual(calculate_test_price("880"), 8.0)
 
+    def test_exact_non_redundant_package_detection(self):
+        from utils import parse_test_order_packages, calculate_test_price
+
+        # 1. 2400+880+420 -> Expected 3 distinct packages, total price 28.0$
+        p1 = parse_test_order_packages("2400+880+420")
+        self.assertIsNotNone(p1)
+        self.assertEqual(len(p1["packages"]), 3)
+        self.assertEqual([item["package"] for item in p1["packages"]], ["2400", "880", "420"])
+        self.assertEqual(p1["total_price"], 28.0)
+        self.assertEqual(calculate_test_price("2400+880+420"), 28.0)
+
+        # 2. 2400+2400+880 -> Expected 3 packages preserving intentional duplicate 2400s, total price 39.0$
+        p2 = parse_test_order_packages("2400+2400+880")
+        self.assertIsNotNone(p2)
+        self.assertEqual(len(p2["packages"]), 3)
+        self.assertEqual([item["package"] for item in p2["packages"]], ["2400", "2400", "880"])
+        self.assertEqual(p2["total_price"], 39.0)
+        self.assertEqual(calculate_test_price("2400+2400+880"), 39.0)
+
     def test_package_summary_formatting(self):
         from utils import parse_test_order_packages, format_package_summary_and_price
 
