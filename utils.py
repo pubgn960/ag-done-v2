@@ -318,6 +318,7 @@ PACKAGE_REGEX = re.compile(
 def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, Any]]:
     """
     Parses complete order text to detect all supported packages, quantities, and prices.
+    Normalizes all supported separators (+, comma, &, /, newline, spaces) into '+' before matching.
     Preserves exact order of appearance in original text.
 
     Returns:
@@ -328,10 +329,21 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
         return None
 
     raw_text = order_text.lower().strip()
+
+    # 1. Normalize shorthand notation and thousands formatting
     raw_text = re.sub(r'\b10\.8k\b', '10800', raw_text)
     raw_text = re.sub(r'\b5\.04k\b', '5040', raw_text)
     raw_text = re.sub(r'\b2\.4k\b', '2400', raw_text)
-    raw_text = re.sub(r'\b(\d+),(\d+)\b', r'\1\2', raw_text)
+    raw_text = re.sub(r'\b10,800\b', '10800', raw_text)
+    raw_text = re.sub(r'\b5,040\b', '5040', raw_text)
+    raw_text = re.sub(r'\b2,400\b', '2400', raw_text)
+
+    # 2. Normalize spaces around quantity multipliers (e.g. '2400 x 2' -> '2400x2', '2 x 2400' -> '2x2400')
+    raw_text = re.sub(r'\s*([*xX×])\s*', r'\1', raw_text)
+
+    # 3. Normalize ALL supported package separators (+, ,, &, /, newline, remaining whitespace) into '+'
+    raw_text = re.sub(r'[,&/\n\r+|]+', '+', raw_text)
+    raw_text = re.sub(r'\s+', '+', raw_text)
 
     detected = []
     total_price = 0.0

@@ -564,6 +564,36 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
             price = calculate_test_price(text)
             self.assertEqual(price, expected, f"Mixed package match failed for '{text}'")
 
+    def test_mixed_separators_normalization(self):
+        from utils import parse_test_order_packages, calculate_test_price
+
+        # 1. 10800,5040&2400/880+420 -> Expected 5 packages: 10800, 5040, 2400, 880, 420 = 123.5$
+        p1 = parse_test_order_packages("10800,5040&2400/880+420")
+        self.assertIsNotNone(p1)
+        self.assertEqual([item["package"] for item in p1["packages"]], ["10800", "5040", "2400", "880", "420"])
+        self.assertEqual(p1["total_price"], 123.5)
+
+        # 2. 10800\n5040\n2400\n880\n420 -> Expected 5 packages = 123.5$
+        p2 = parse_test_order_packages("10800\n5040\n2400\n880\n420")
+        self.assertIsNotNone(p2)
+        self.assertEqual([item["package"] for item in p2["packages"]], ["10800", "5040", "2400", "880", "420"])
+        self.assertEqual(p2["total_price"], 123.5)
+
+        # 3. 10800/5040+2400 -> Expected 10800, 5040, 2400 = 111.0$
+        p3 = parse_test_order_packages("10800/5040+2400")
+        self.assertIsNotNone(p3)
+        self.assertEqual([item["package"] for item in p3["packages"]], ["10800", "5040", "2400"])
+        self.assertEqual(p3["total_price"], 111.0)
+
+        # 4. 2400,880 -> Expected 2400, 880 = 23.5$
+        self.assertEqual(calculate_test_price("2400,880"), 23.5)
+
+        # 5. 2400&880 -> Expected 2400, 880 = 23.5$
+        self.assertEqual(calculate_test_price("2400&880"), 23.5)
+
+        # 6. 2400\n880 -> Expected 2400, 880 = 23.5$
+        self.assertEqual(calculate_test_price("2400\n880"), 23.5)
+
     def test_quantities(self):
         from utils import calculate_test_price
 
