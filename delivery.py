@@ -240,21 +240,39 @@ async def deliver_order_by_id(
         else:
             logger.warning("Reaction not supported.")
 
-    # 4. Reaction On Loader Delivery Message & Plain Notice to Loader Group (NO Price UI in Loader Group!)
-    target_loader_msg_id = loader_reply_msg_id or order.loader_message_id
-    if loader_group_id and target_loader_msg_id:
-        loader_reacted = await safe_set_message_reaction(
-            bot=bot,
-            chat_id=loader_group_id,
-            message_id=target_loader_msg_id,
-            emoji="❤️",
-            fallback_emoji=None,
-            log_tag="[REACTION]"
-        )
-        if loader_reacted:
-            logger.info("[REACTION] ❤️ Loader delivery")
-        else:
-            logger.warning("Reaction not supported.")
+    # 4. Reaction On Loader Messages & Plain Notice to Loader Group
+    if loader_group_id:
+        target_reply_target = loader_reply_msg_id or order.loader_message_id
+
+        # A. React ❤️ to the bot-generated order card message in Loader Group (order.loader_message_id)
+        if order.loader_message_id:
+            bot_msg_reacted = await safe_set_message_reaction(
+                bot=bot,
+                chat_id=loader_group_id,
+                message_id=order.loader_message_id,
+                emoji="❤️",
+                fallback_emoji=None,
+                log_tag="[REACTION]"
+            )
+            if bot_msg_reacted:
+                logger.info("[REACTION] ❤️ Added to loader order message.")
+            else:
+                logger.warning("Reaction to loader order message failed or not supported.")
+
+        # B. React ❤️ to the loader's uploaded screenshot/reply message (loader_reply_msg_id)
+        if loader_reply_msg_id and loader_reply_msg_id != order.loader_message_id:
+            loader_screenshot_reacted = await safe_set_message_reaction(
+                bot=bot,
+                chat_id=loader_group_id,
+                message_id=loader_reply_msg_id,
+                emoji="❤️",
+                fallback_emoji=None,
+                log_tag="[REACTION]"
+            )
+            if loader_screenshot_reacted:
+                logger.info("[REACTION] ❤️ Added to loader screenshot.")
+            else:
+                logger.warning("Reaction to loader screenshot failed or not supported.")
 
         loader_notice = (
             f"✅ <b>DELIVERED</b>\n\n"
@@ -266,7 +284,7 @@ async def deliver_order_by_id(
             await bot.send_message(
                 chat_id=loader_group_id,
                 text=loader_notice,
-                reply_to_message_id=target_loader_msg_id,
+                reply_to_message_id=target_reply_target,
                 parse_mode="HTML"
             )
         except Exception as e:
