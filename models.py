@@ -7,7 +7,7 @@ Multi Loader Approval System, and Category A Only Price Workflow with prompt & c
 
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy import String, Integer, BigInteger, DateTime, ForeignKey, Index
+from sqlalchemy import String, Text, Integer, BigInteger, DateTime, ForeignKey, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -137,6 +137,7 @@ class Order(Base):
     price_msg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     image_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     media_group_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    raw_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

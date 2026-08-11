@@ -311,3 +311,19 @@ def calculate_test_price(order_text: Optional[str]) -> Optional[float]:
 def get_test_price(order_text: Optional[str]) -> Optional[float]:
     """Backward-compatible alias for calculate_test_price."""
     return calculate_test_price(order_text)
+
+
+def normalize_order_content_for_dedup(text_content: Optional[str]) -> str:
+    """
+    Normalizes order text content strictly for exact duplicate detection.
+    Strips leading/trailing whitespace, converts to lowercase, and collapses extra internal spaces/newlines.
+    Preserves all actual letters, numbers, symbols, packages, UIDs, usernames, passwords, and recovery codes intact.
+    Any 1-character difference in content will produce a different normalized string.
+    """
+    if not text_content:
+        return ""
+
+    text = text_content.lower().strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    normalized_lines = [re.sub(r'[ \t]+', ' ', line) for line in lines]
+    return "\n".join(normalized_lines)

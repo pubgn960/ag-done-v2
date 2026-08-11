@@ -80,6 +80,12 @@ async def init_db() -> None:
     logger.info("Initializing database tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Safe migration: Ensure raw_text column exists on existing orders table
+        try:
+            from sqlalchemy import text
+            await conn.execute(text("ALTER TABLE orders ADD COLUMN raw_text TEXT;"))
+        except Exception:
+            pass
     logger.info("Database initialized successfully.")
 
     await get_or_create_settings()
@@ -636,7 +642,8 @@ async def create_order(
     original_message_id: Optional[int] = None,
     package: str = "",
     status: str = "Pending",
-    category: str = "A"
+    category: str = "A",
+    raw_text: Optional[str] = None
 ) -> Order:
     """
     Creates a new Order record and returns generated Order object.
@@ -655,6 +662,7 @@ async def create_order(
             price=None,
             image_count=0,
             media_group_id=None,
+            raw_text=raw_text,
             fingerprint=None,
             created_at=datetime.now(timezone.utc)
         )
@@ -707,6 +715,37 @@ async def get_pending_order_by_email(email: str) -> Optional[Order]:
         )
         res = await session.execute(stmt)
         return res.unique().scalars().first()
+
+
+async def get_exact_duplicate_pending_order(email: str, text_content: str) -> Optional[Order]:
+    """
+    Retrieves an active Pending Order matching email AND having 100% identical normalized content.
+    Prevents false positives when a customer submits different packages, UIDs, usernames, or passwords under the same email.
+    """
+    if not text_content:
+        return None
+
+    from utils import normalize_order_content_for_dedup
+
+    email_clean = email.lower().strip()
+    new_norm = normalize_order_content_for_dedup(text_content)
+
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(Order)
+            .where(Order.email == email_clean, Order.status.in_(["Pending", "Pending Approval", "Pending Payment"]))
+            .order_by(Order.created_at.desc())
+        )
+        res = await session.execute(stmt)
+        pending_orders = list(res.scalars().all())
+
+        for order in pending_orders:
+            existing_text = order.raw_text or f"Package: {order.package or ''}\nEmail: {order.email or ''}"
+            existing_norm = normalize_order_content_for_dedup(existing_text)
+            if existing_norm == new_norm:
+                return order
+
+    return None
 
 
 async def get_order_by_loader_msg_id(loader_msg_id: int) -> Optional[Order]:

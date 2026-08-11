@@ -607,5 +607,77 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         self.assertEqual(calculate_test_price("880"), 8.0)
 
 
+class TestExactContentDeduplication(unittest.IsolatedAsyncioTestCase):
+    """Tests exact content deduplication ensuring zero false positives."""
+
+    def test_normalize_order_content_for_dedup(self):
+        from utils import normalize_order_content_for_dedup
+
+        # Package difference -> Different
+        self.assertNotEqual(
+            normalize_order_content_for_dedup("Email: abc@gmail.com\nPackage: 10800"),
+            normalize_order_content_for_dedup("Email: abc@gmail.com\nPackage: 7200")
+        )
+
+        # Combination difference -> Different
+        self.assertNotEqual(
+            normalize_order_content_for_dedup("Package: 2400"),
+            normalize_order_content_for_dedup("Package: 2400+880")
+        )
+
+        # Email difference -> Different
+        self.assertNotEqual(
+            normalize_order_content_for_dedup("Email: abc@gmail.com"),
+            normalize_order_content_for_dedup("Email: abcd@gmail.com")
+        )
+
+        # Username difference -> Different
+        self.assertNotEqual(
+            normalize_order_content_for_dedup("Username: Black2868"),
+            normalize_order_content_for_dedup("Username: Black2869")
+        )
+
+        # Password difference -> Different
+        self.assertNotEqual(
+            normalize_order_content_for_dedup("Password: password1"),
+            normalize_order_content_for_dedup("Password: password2")
+        )
+
+        # Insignificant whitespace/casing difference -> Identical
+        t1 = "Email: ABC@gmail.com\n\n  Package:  10800 CP  "
+        t2 = "email: abc@gmail.com\npackage: 10800 cp"
+        self.assertEqual(
+            normalize_order_content_for_dedup(t1),
+            normalize_order_content_for_dedup(t2)
+        )
+
+    async def test_get_exact_duplicate_pending_order(self):
+        from database import create_order, get_exact_duplicate_pending_order, delete_orders_by_email
+
+        email = "dedup_test_user@example.com"
+        await delete_orders_by_email(email)
+
+        # 1. Create initial order for 10800 package
+        order1_text = f"Email: {email}\nPackage: 10800\nUID: 12345"
+        await create_order(
+            email=email,
+            package="10800",
+            status="Pending",
+            raw_text=order1_text
+        )
+
+        # 2. Check second order for 7200 package -> MUST NOT be duplicate!
+        order2_text = f"Email: {email}\nPackage: 7200\nUID: 12345"
+        dup_check_2 = await get_exact_duplicate_pending_order(email, order2_text)
+        self.assertIsNone(dup_check_2, "Different package (10800 vs 7200) MUST NOT trigger duplicate warning!")
+
+        # 3. Check third order with EXACT same content -> MUST be duplicate!
+        dup_check_3 = await get_exact_duplicate_pending_order(email, order1_text)
+        self.assertIsNotNone(dup_check_3, "Identical content MUST trigger duplicate warning!")
+
+        # Clean up
+        await delete_orders_by_email(email)
+
+
 if __name__ == "__main__":
     unittest.main()

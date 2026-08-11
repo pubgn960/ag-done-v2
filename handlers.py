@@ -54,6 +54,7 @@ from database import (
     set_order_loader_message_id,
     get_order_by_id,
     get_pending_order_by_email,
+    get_exact_duplicate_pending_order,
     get_order_by_loader_msg_id,
     get_pending_orders,
     get_delivered_orders,
@@ -158,17 +159,19 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Determine Group Category ('A' or 'B')
     category = CLIENT_GROUPS_CACHE.get(chat.id, "A")
 
-    # Check Duplicate Pending Order
-    existing_pending = await get_pending_order_by_email(email)
+    # Check Duplicate Pending Order - Strict Content Deduplication (No False Positives)
+    # Only triggers when all important fields (Package, UID, Email, Username, Password, etc.) are 100% identical
+    existing_pending = await get_exact_duplicate_pending_order(email, text_content)
     if existing_pending:
-        logger.info(f"[CLIENT] Duplicate pending order detected for email '{email}'. Prompting customer in Client Group.")
+        logger.info(f"[CLIENT] Exact duplicate pending order detected for email '{email}'. Prompting customer in Client Group.")
         dup_order = await create_order(
             email=email,
             client_chat_id=chat.id,
             original_message_id=message.message_id,
             package=package_desc,
             status="Duplicate_Pending",
-            category=category
+            category=category,
+            raw_text=text_content
         )
         keyboard = InlineKeyboardMarkup([
             [
@@ -208,7 +211,8 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             original_message_id=message.message_id,
             package=package_desc,
             status="Pending Approval",
-            category="B"
+            category="B",
+            raw_text=text_content
         )
 
         payment_group_id = BOT_SETTINGS["payment_review_group_id"] or Config.PAYMENT_REVIEW_GROUP_ID
@@ -257,7 +261,8 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             original_message_id=message.message_id,
             package=package_desc,
             status="Pending",
-            category="A"
+            category="A",
+            raw_text=text_content
         )
 
         # TEST IMPLEMENTATION (Proof of Concept Calculator):
