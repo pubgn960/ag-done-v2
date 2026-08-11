@@ -202,14 +202,22 @@ class MediaGroupCollector:
             return
 
         if updated_order:
-            # Trigger automatic delivery to Client Group
+            # Construct Image objects for ONLY newly uploaded session items
+            from models import Image as ImageModel
+            session_images = [
+                ImageModel(order_id=order_id, telegram_file_id=it[0], file_type=it[1])
+                for it in file_items
+            ]
+
+            # Trigger automatic delivery to Client Group with ONLY the newly uploaded session images
             from delivery import deliver_order_by_id
             await deliver_order_by_id(
                 bot=bot,
                 order_id=order_id,
                 loader_chat_id=loader_chat_id,
                 loader_reply_msg_id=loader_msg_id,
-                caption_text=combined_caption
+                caption_text=combined_caption,
+                session_images=session_images
             )
 
 

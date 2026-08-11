@@ -990,6 +990,45 @@ class TestDeliverySessionRouting(unittest.TestCase):
         self.assertIn("☐ 2400 CP", summary)
         self.assertNotIn("🎉 All Packages Delivered", summary)
 
+    def test_delivery_session_image_isolation_and_final_completion(self):
+        import json
+        from utils import parse_test_order_packages, mark_selected_packages_delivered, format_package_progress_summary, format_full_loader_order_card
+
+        raw = "Order:\n10800+5040"
+        parsed = parse_test_order_packages(raw)
+        items = parsed["packages"]
+
+        # Session 1: Deliver 10800
+        items[0]["status"] = "Selected"
+        session1_selected = [items[0]]
+        updated_1, is_all_1, del_1 = mark_selected_packages_delivered(items, loader_id=1, selected_items=session1_selected)
+
+        self.assertEqual(del_1, 1)
+        self.assertFalse(is_all_1)
+        self.assertEqual(updated_1[0]["status"], "Delivered")
+        self.assertEqual(updated_1[1]["status"], "Pending")
+
+        # Session 2: Deliver 5040 (last package)
+        updated_1[1]["status"] = "Selected"
+        session2_selected = [updated_1[1]]
+        updated_2, is_all_2, del_2 = mark_selected_packages_delivered(updated_1, loader_id=1, selected_items=session2_selected)
+
+        self.assertEqual(del_2, 1)
+        self.assertTrue(is_all_2)  # ALL packages delivered now!
+        self.assertEqual(updated_2[0]["status"], "Delivered")
+        self.assertEqual(updated_2[1]["status"], "Delivered")
+
+        # Verify final loader card text includes Order Completed
+        class MockOrder:
+            def __init__(self):
+                self.raw_text = raw
+                self.email = "final@example.com"
+                self.package_progress = json.dumps(updated_2)
+                self.price = "97.5"
+
+        card = format_full_loader_order_card(MockOrder())
+        self.assertIn("🎉 Order Completed", card)
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

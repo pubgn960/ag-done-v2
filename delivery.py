@@ -102,7 +102,8 @@ async def deliver_order_by_id(
     loader_chat_id: Optional[int] = None,
     loader_reply_msg_id: Optional[int] = None,
     target_delivery_chat_id: Optional[int] = None,
-    caption_text: Optional[str] = None
+    caption_text: Optional[str] = None,
+    session_images: Optional[List[Image]] = None
 ) -> bool:
     """
     Delivers stored image albums for an order to the Client Group, placing Email as the caption
@@ -113,8 +114,18 @@ async def deliver_order_by_id(
     - Category B: Attaches NO Price buttons, keeping existing Category B workflow unchanged.
     """
     order = await get_order_by_id(order_id)
+    auto_price_added = False
 
-    if not order or not order.images:
+    if not order:
+        logger.warning(f"[DELIVERY] Delivery attempted for Order #{order_id} but order was not found.")
+        return False
+
+    if session_images is not None and len(session_images) > 0:
+        all_images: List[Image] = list(session_images)
+    else:
+        all_images = list(order.images) if order.images else []
+
+    if not all_images:
         logger.warning(f"[DELIVERY] Delivery attempted for Order #{order_id} but no stored images were found.")
         if loader_chat_id and loader_reply_msg_id:
             try:
@@ -172,7 +183,6 @@ async def deliver_order_by_id(
                 pass
         return False
 
-    all_images: List[Image] = list(order.images)
     total_images = len(all_images)
 
     # Determine Email for First Image Caption: extract last email from loader caption or fallback to DB order.email
@@ -227,6 +237,9 @@ async def deliver_order_by_id(
         parsed_pkg = parse_test_order_packages(full_content)
         if parsed_pkg and parsed_pkg.get("total_price"):
             await update_order_price(order.id, price_str=f"{parsed_pkg['total_price']:g}")
+            auto_price_added = True
+    else:
+        auto_price_added = True
 
     logger.info(f"[DELIVERY] Delivering Order #{order_id} ({total_images} images, caption email: '{email_for_caption}') to Client Group {client_chat_id}")
 

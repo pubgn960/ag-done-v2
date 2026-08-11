@@ -987,10 +987,12 @@ def get_loader_selected_packages(progress_data: Any, loader_id: int) -> List[Dic
     return [it for it in items if it.get("status") == "Selected" and it.get("selected_by_loader") == loader_id]
 
 
-def mark_selected_packages_delivered(progress_data: Any, loader_id: int) -> Tuple[List[Dict[str, Any]], bool, int]:
+def mark_selected_packages_delivered(progress_data: Any, loader_id: int = 0, selected_items: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Dict[str, Any]], bool, int]:
     """
-    Marks all packages currently selected by loader_id as 'Delivered'.
-    If no packages were explicitly selected by loader_id, advances the next pending package.
+    Marks selected packages as 'Delivered'.
+    If selected_items is provided, matches items by package name/qty.
+    Otherwise matches items with status == 'Selected'.
+    If no items were selected, advances the next pending package item.
     Returns (updated_items, is_all_completed, delivered_count).
     """
     import json
@@ -1009,11 +1011,26 @@ def mark_selected_packages_delivered(progress_data: Any, loader_id: int) -> Tupl
     now_iso = datetime.now(timezone.utc).isoformat()
     delivered_count = 0
 
-    for item in items:
-        if item.get("status") == "Selected" and item.get("selected_by_loader") == loader_id:
-            item["status"] = "Delivered"
-            item["delivery_time"] = now_iso
-            delivered_count += 1
+    target_pkg_names = []
+    if selected_items:
+        for s in selected_items:
+            if s.get("package"):
+                target_pkg_names.append(str(s.get("package")))
+
+    if target_pkg_names:
+        for item in items:
+            pkg_name = str(item.get("package", ""))
+            if pkg_name in target_pkg_names and item.get("status") != "Delivered":
+                item["status"] = "Delivered"
+                item["delivery_time"] = now_iso
+                delivered_count += 1
+                target_pkg_names.remove(pkg_name)
+    else:
+        for item in items:
+            if item.get("status") == "Selected" and (loader_id == 0 or item.get("selected_by_loader") == loader_id or item.get("selected_by_loader") is None):
+                item["status"] = "Delivered"
+                item["delivery_time"] = now_iso
+                delivered_count += 1
 
     # Fallback: if loader hadn't clicked toggle buttons before replying with screenshot, mark next pending package
     if delivered_count == 0:
