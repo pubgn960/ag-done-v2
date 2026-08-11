@@ -408,21 +408,68 @@ class TestBotSettingsCache(unittest.IsolatedAsyncioTestCase):
 
 
 class TestKeywordDetector(unittest.TestCase):
-    """Tests keyword-based order detection."""
+    """Tests strict 4-condition order detection (Platform + Login + Password + Package)."""
 
-    def test_keyword_matches(self):
-        # Match cases
-        self.assertTrue(contains_order_keyword("10800 CP\nabc@gmail.com")[0])
-        self.assertTrue(contains_order_keyword("Login:\ntest@hotmail.com")[0])
-        self.assertTrue(contains_order_keyword("UID:\n123456\nEmail:\nabc@outlook.com")[0])
-        self.assertTrue(contains_order_keyword("Login: test+1234")[0])
-        self.assertTrue(contains_order_keyword("myemail@yahoo.co.pk")[0])
+    def test_valid_orders(self):
+        # 1. Valid Facebook Order
+        fb_order = (
+            "Facebook\n\n"
+            "Email:\nabc@gmail.com\n\n"
+            "Password:\nHello123\n\n"
+            "Order:\n2400+880"
+        )
+        self.assertTrue(contains_order_keyword(fb_order)[0])
 
-    def test_keyword_ignores(self):
-        # Ignore cases
-        self.assertFalse(contains_order_keyword("Need CP")[0])
-        self.assertFalse(contains_order_keyword("Hello")[0])
-        self.assertFalse(contains_order_keyword("10800 CP")[0])
+        # 2. Valid Activision Order
+        act_order = (
+            "Activision\n\n"
+            "Email:\nplayer@hotmail.com\n\n"
+            "Password:\nGame123\n\n"
+            "Recovery Codes:\n123456\n\n"
+            "Order:\n10800+5040"
+        )
+        self.assertTrue(contains_order_keyword(act_order)[0])
+
+        # 3. Valid Order with International Phone Number (+92)
+        phone_order = (
+            "FB Login\n"
+            "Phone: +92 300 1234567\n"
+            "Email: user@yahoo.com\n"
+            "Password: secretpassword\n"
+            "Package: 2400"
+        )
+        self.assertTrue(contains_order_keyword(phone_order)[0])
+
+        # 4. Valid Order with Outlook, iCloud, Proton
+        self.assertTrue(contains_order_keyword("Meta\nEmail: a@outlook.com\nPwd: 123\n2400 CP")[0])
+        self.assertTrue(contains_order_keyword("Activision ID\nEmail: a@icloud.com\n2FA: 999\n10800")[0])
+        self.assertTrue(contains_order_keyword("FB\nEmail: a@proton.me\nLogin: pass12\n880")[0])
+
+    def test_invalid_messages_eliminated(self):
+        # Package-only messages
+        self.assertFalse(contains_order_keyword("2400+880")[0])
+        self.assertFalse(contains_order_keyword("108000")[0])
+        self.assertFalse(contains_order_keyword("7200")[0])
+
+        # Email-only messages
+        self.assertFalse(contains_order_keyword("gmail.com")[0])
+        self.assertFalse(contains_order_keyword("user@gmail.com")[0])
+
+        # Password-only messages
+        self.assertFalse(contains_order_keyword("Password:123456")[0])
+
+        # Platform-only messages
+        self.assertFalse(contains_order_keyword("Facebook")[0])
+        self.assertFalse(contains_order_keyword("Activision ID")[0])
+
+        # Missing Password/Detail
+        self.assertFalse(contains_order_keyword("Facebook\nEmail: abc@gmail.com\n2400+880")[0])
+
+        # Missing Package
+        self.assertFalse(contains_order_keyword("Facebook\nEmail: abc@gmail.com\nPassword: 123")[0])
+
+        # Missing Platform
+        self.assertFalse(contains_order_keyword("Email: abc@gmail.com\nPassword: 123\n2400+880")[0])
 
 
 class TestEmailOrderPackageParser(unittest.TestCase):

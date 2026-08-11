@@ -417,8 +417,11 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
                 "status": "Pending"
             })
         else:
-            if int(pkg) < 10:
+            has_cp = bool(re.search(r'cp', seg, re.IGNORECASE))
+            pkg_int = int(pkg)
+            if not has_cp and pkg_int < 400:
                 continue
+
             has_unknown = True
             detected.append({
                 "package": pkg,
