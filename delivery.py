@@ -36,6 +36,9 @@ from utils import (
     parse_test_order_packages,
     format_package_summary_and_price,
     format_package_progress_summary,
+    format_loader_card_summary,
+    build_loader_package_keyboard,
+    mark_selected_packages_delivered,
     advance_package_progress,
     get_unknown_package_keyboard
 )
@@ -269,8 +272,43 @@ async def deliver_order_by_id(
         if sent:
             delivered_count += len(batch)
 
-    # 2. Mark order status as Delivered in DB
-    updated_order = await mark_order_delivered(order.id)
+    # 2. Mark package progress as Delivered and update Order cards
+    if order.package_progress:
+        try:
+            progress_items = json.loads(order.package_progress)
+        except Exception:
+            progress_items = []
+        
+        updated_items, is_all_completed, delivered_cnt = mark_selected_packages_delivered(progress_items, loader_id=0)
+        updated_progress_json = json.dumps(updated_items)
+        await update_order_package_progress(order.id, updated_progress_json)
+        
+        if is_all_completed:
+            await mark_order_delivered(order.id)
+            logger.info(f"[PACKAGE_COMPLETION] Order #{order.id} ALL packages delivered! Status marked Completed.")
+
+        # Update Client Group Summary card if price_msg_id exists
+        if order.price_msg_id and client_chat_id:
+            try:
+                client_summary = format_package_progress_summary(updated_items, order.price)
+                await bot.edit_message_text(chat_id=client_chat_id, message_id=order.price_msg_id, text=client_summary)
+            except Exception as e_c:
+                logger.warning(f"Failed to edit Client Group progress card: {e_c}")
+
+        # Update Loader Group Order Card in-place
+        if order.loader_message_id and loader_group_id:
+            try:
+                loader_summary = format_loader_card_summary(updated_items, order.price)
+                loader_kb = build_loader_package_keyboard(order.id, updated_items, None)
+                try:
+                    await bot.edit_message_caption(chat_id=loader_group_id, message_id=order.loader_message_id, caption=loader_summary, reply_markup=loader_kb)
+                except Exception:
+                    await bot.edit_message_text(chat_id=loader_group_id, message_id=order.loader_message_id, text=loader_summary, reply_markup=loader_kb)
+            except Exception as e_l:
+                logger.warning(f"Failed to edit Loader Group progress card: {e_l}")
+    else:
+        await mark_order_delivered(order.id)
+
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     logger.info(f"[DELIVERY] Images sent | Order #{order.id} ({delivered_count}/{total_images} images) delivered to Client Group {client_chat_id}.")
 

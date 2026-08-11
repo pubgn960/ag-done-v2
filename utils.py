@@ -623,10 +623,15 @@ def update_unknown_package_price(progress_data: Any, target_pkg: str, price_val:
     return items, round(new_total, 2), has_remaining_unpriced
 
 
-def advance_package_progress(progress_data: Any) -> Tuple[Any, bool]:
+def format_loader_card_summary(progress_data: Any, total_price: Optional[float] = None) -> str:
     """
-    Advances package delivery progress state by marking the next pending package item as 'Delivered'.
-    Returns (updated_items, is_all_delivered).
+    Formats the Loader Group order card text showing:
+    - Delivered packages with ✅
+    - Selected packages with ☑
+    - Pending packages with ⬜
+    - Remaining packages list if partial delivery
+    - '🎉 Order Completed' when all packages are delivered
+    - Total price
     """
     import json
     if isinstance(progress_data, str):
@@ -640,20 +645,264 @@ def advance_package_progress(progress_data: Any) -> Tuple[Any, bool]:
         items = []
 
     if not items:
-        return items, True
+        if total_price is not None:
+            t_str = f"{total_price:g}$" if isinstance(total_price, float) else f"{total_price}$"
+            return f"💰 Total Price: {t_str}"
+        return ""
 
-    updated_one = False
+    title = "📦 Package" if len(items) == 1 else "📦 Package(s)"
+    lines = [title, ""]
+
+    all_delivered = True
+    calc_total = 0.0
+    has_unpriced = False
+    remaining_packages = []
+
     for item in items:
-        if item.get("status") != "Delivered":
-            item["status"] = "Delivered"
-            updated_one = True
-            break
+        pkg_name = item.get("package", "")
+        qty = item.get("qty", 1)
+        status = item.get("status", "Pending")
+        unit_price = item.get("unit_price")
 
-    if not updated_one:
+        qty_str = f" ×{qty}" if qty > 1 else ""
+        pkg_display = f"{pkg_name} CP{qty_str}"
+
+        if status == "Delivered":
+            checkbox = "✅"
+        elif status == "Selected":
+            checkbox = "☑"
+            all_delivered = False
+            remaining_packages.append(pkg_display)
+        else: # Pending or Unpriced
+            checkbox = "⬜"
+            all_delivered = False
+            remaining_packages.append(pkg_display)
+
+        if status == "Unpriced" or unit_price is None:
+            has_unpriced = True
+            lines.append(f"❓ {pkg_display}")
+        else:
+            item_total = unit_price * qty
+            calc_total += item_total
+            lines.append(f"{checkbox} {pkg_display}")
+
+    if all_delivered and not has_unpriced:
+        lines.append("")
+        lines.append("🎉 Order Completed")
+    elif remaining_packages and len(remaining_packages) < len(items):
+        lines.append("")
+        lines.append(f"Remaining Packages: {', '.join(remaining_packages)}")
+
+    final_total = total_price if (total_price is not None and not has_unpriced) else calc_total
+    total_str = f"{final_total:g}$" if isinstance(final_total, float) else f"{final_total}$"
+
+    lines.append("")
+    if has_unpriced:
+        lines.append(f"💰 Known Total: {total_str}")
+    else:
+        lines.append(f"💰 Total Price: {total_str}")
+
+    return "\n".join(lines)
+
+
+def build_loader_package_keyboard(order_id: int, progress_data: Any, active_loader_id: Optional[int] = None) -> Optional[InlineKeyboardMarkup]:
+    """
+    Renders package selection toggle buttons and action buttons for the Loader Group.
+    Delivered packages are removed and NEVER shown.
+    Pending packages show: [ ⬜ 2400 ]
+    Selected packages show: [ ☑ 2400 ] if selected by active_loader_id, or [ 🔒 2400 ] if selected by another loader.
+    Bottom row: [ ✅ Confirm Delivery ] [ ❌ Cancel Selection ]
+    """
+    import json
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    toggle_buttons = []
+    for idx, item in enumerate(items):
+        status = item.get("status", "Pending")
+        if status == "Delivered":
+            continue
+
+        pkg_name = item.get("package", "")
+        qty = item.get("qty", 1)
+        qty_str = f" ×{qty}" if qty > 1 else ""
+
+        selected_by = item.get("selected_by_loader")
+
+        if status == "Selected":
+            if active_loader_id and selected_by and selected_by != active_loader_id:
+                label = f"🔒 {pkg_name}{qty_str}"
+            else:
+                label = f"☑ {pkg_name}{qty_str}"
+        else:
+            label = f"⬜ {pkg_name}{qty_str}"
+
+        toggle_buttons.append(InlineKeyboardButton(label, callback_data=f"pkg_toggle:{order_id}:{idx}"))
+
+    if not toggle_buttons:
+        return None
+
+    keyboard_rows = []
+    row = []
+    for btn in toggle_buttons:
+        row.append(btn)
+        if len(row) == 3:
+            keyboard_rows.append(row)
+            row = []
+    if row:
+        keyboard_rows.append(row)
+
+    action_row = [
+        InlineKeyboardButton("✅ Confirm Delivery", callback_data=f"pkg_confirm:{order_id}"),
+        InlineKeyboardButton("❌ Cancel Selection", callback_data=f"pkg_cancel:{order_id}")
+    ]
+    keyboard_rows.append(action_row)
+
+    return InlineKeyboardMarkup(keyboard_rows)
+
+
+def toggle_package_selection(progress_data: Any, target_idx: int, loader_id: int) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Toggles selection state for item at target_idx.
+    Returns (updated_items, status_code).
+    """
+    import json
+    from datetime import datetime, timezone
+
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    if target_idx < 0 or target_idx >= len(items):
+        return items, "Invalid"
+
+    item = items[target_idx]
+    current_status = item.get("status", "Pending")
+    selected_by = item.get("selected_by_loader")
+
+    if current_status == "Delivered":
+        return items, "Delivered"
+
+    if current_status == "Selected":
+        if selected_by and selected_by != loader_id:
+            return items, "Locked"
+        item["status"] = "Pending"
+        item["selected_by_loader"] = None
+        item["selected_time"] = None
+        return items, "Deselected"
+    else:
+        item["status"] = "Selected"
+        item["selected_by_loader"] = loader_id
+        item["selected_time"] = datetime.now(timezone.utc).isoformat()
+        return items, "Selected"
+
+
+def cancel_loader_selections(progress_data: Any, loader_id: int) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Resets any package items selected by loader_id back to 'Pending'.
+    Returns (updated_items, reset_count).
+    """
+    import json
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    count = 0
+    for item in items:
+        if item.get("status") == "Selected" and item.get("selected_by_loader") == loader_id:
+            item["status"] = "Pending"
+            item["selected_by_loader"] = None
+            item["selected_time"] = None
+            count += 1
+
+    return items, count
+
+
+def get_loader_selected_packages(progress_data: Any, loader_id: int) -> List[Dict[str, Any]]:
+    """
+    Returns list of package items currently marked 'Selected' by loader_id.
+    """
+    import json
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    return [it for it in items if it.get("status") == "Selected" and it.get("selected_by_loader") == loader_id]
+
+
+def mark_selected_packages_delivered(progress_data: Any, loader_id: int) -> Tuple[List[Dict[str, Any]], bool, int]:
+    """
+    Marks all packages currently selected by loader_id as 'Delivered'.
+    If no packages were explicitly selected by loader_id, advances the next pending package.
+    Returns (updated_items, is_all_completed, delivered_count).
+    """
+    import json
+    from datetime import datetime, timezone
+
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    delivered_count = 0
+
+    for item in items:
+        if item.get("status") == "Selected" and item.get("selected_by_loader") == loader_id:
+            item["status"] = "Delivered"
+            item["delivery_time"] = now_iso
+            delivered_count += 1
+
+    # Fallback: if loader hadn't clicked toggle buttons before replying with screenshot, mark next pending package
+    if delivered_count == 0:
         for item in items:
-            item["status"] = "Delivered"
+            if item.get("status") != "Delivered":
+                item["status"] = "Delivered"
+                item["selected_by_loader"] = loader_id
+                item["delivery_time"] = now_iso
+                delivered_count += 1
+                break
 
-    all_done = all(item.get("status") == "Delivered" for item in items)
+    is_all_completed = all(it.get("status") == "Delivered" for it in items)
+    return items, is_all_completed, delivered_count
+
+
+def advance_package_progress(progress_data: Any) -> Tuple[Any, bool]:
+    """
+    Backward-compatible helper: Advances package delivery progress state by marking the next pending package item as 'Delivered'.
+    Returns (updated_items, is_all_delivered).
+    """
+    items, all_done, _ = mark_selected_packages_delivered(progress_data, loader_id=0)
     return items, all_done
 
 

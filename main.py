@@ -32,8 +32,10 @@ from handlers import (
     price_input_text_handler,
     loader_issue_callback_handler,
     customer_confirmation_callback_handler,
-    redeliver_callback_handler,
     unknown_package_price_callback_handler,
+    loader_pkg_toggle_callback_handler,
+    loader_pkg_confirm_callback_handler,
+    loader_pkg_cancel_callback_handler,
     category_a_command,
     category_b_command,
     category_check_command,
@@ -235,6 +237,9 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(customer_confirmation_callback_handler, pattern="^cust_confirm:"))
     application.add_handler(CallbackQueryHandler(redeliver_callback_handler, pattern="^redeliver_"))
     application.add_handler(CallbackQueryHandler(unknown_package_price_callback_handler, pattern="^add_unk_price:"))
+    application.add_handler(CallbackQueryHandler(loader_pkg_toggle_callback_handler, pattern="^pkg_toggle:"))
+    application.add_handler(CallbackQueryHandler(loader_pkg_confirm_callback_handler, pattern="^pkg_confirm:"))
+    application.add_handler(CallbackQueryHandler(loader_pkg_cancel_callback_handler, pattern="^pkg_cancel:"))
 
     # Register price_input_text_handler first for reply messages
     application.add_handler(

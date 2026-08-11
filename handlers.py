@@ -90,10 +90,17 @@ from utils import (
     calculate_test_price,
     parse_test_order_packages,
     format_package_progress_summary,
+    format_loader_card_summary,
+    build_loader_package_keyboard,
+    toggle_package_selection,
+    cancel_loader_selections,
+    get_loader_selected_packages,
+    mark_selected_packages_delivered,
     get_unknown_package_keyboard,
     LoaderIssueType,
     LOADER_ISSUE_CONFIG
 )
+from database import update_order_package_progress
 import json
 
 logger = logging.getLogger(__name__)
@@ -313,17 +320,26 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         loader_group_id = BOT_SETTINGS["delivery_group_id"]
         if loader_group_id:
             try:
+                loader_kb = None
+                if init_progress_json:
+                    try:
+                        loader_kb = build_loader_package_keyboard(order.id, json.loads(init_progress_json))
+                    except Exception:
+                        pass
+
                 try:
                     forwarded_msg = await context.bot.copy_message(
                         chat_id=loader_group_id,
                         from_chat_id=chat.id,
-                        message_id=message.message_id
+                        message_id=message.message_id,
+                        reply_markup=loader_kb
                     )
                 except Exception as e_copy:
                     logger.exception(f"copy_message failed: {e_copy}. Fallback to raw text send_message.")
                     forwarded_msg = await context.bot.send_message(
                         chat_id=loader_group_id,
-                        text=text_content
+                        text=text_content,
+                        reply_markup=loader_kb
                     )
 
                 await set_order_loader_message_id(order.id, forwarded_msg.message_id, loader_group_id=loader_group_id)
@@ -926,6 +942,177 @@ async def unknown_package_price_callback_handler(update: Update, context: Contex
         logger.info(f"[UNKNOWN_PKG] Prompted admin for Order #{order.id} package '{pkg_name}' price (Prompt Msg ID: {prompt_msg.message_id}).")
     except Exception as e:
         logger.exception(f"[UNKNOWN_PKG] Failed to prompt for unknown package price: {e}")
+
+
+async def loader_pkg_toggle_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles package selection toggle buttons in Loader Group.
+    Callback format: pkg_toggle:<order_id>:<item_idx>
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("pkg_toggle:"):
+        return
+
+    user = update.effective_user
+    if not user or not (is_admin(user.id) or is_delivery_user(user.id)):
+        try:
+            await query.answer("⛔ Only authorized loaders can select packages.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    parts = query.data.split(":")
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        return
+
+    order_id = int(parts[1])
+    item_idx = int(parts[2])
+
+    order = await get_order_by_id(order_id)
+    if not order:
+        try:
+            await query.answer("❌ Order not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    updated_items, status_code = toggle_package_selection(order.package_progress, item_idx, user.id)
+
+    if status_code == "Delivered":
+        try:
+            await query.answer("⚠️ This package has already been delivered.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if status_code == "Locked":
+        try:
+            await query.answer("⚠️ Package already selected by another loader.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    new_json = json.dumps(updated_items)
+    await update_order_package_progress(order.id, new_json)
+    order.package_progress = new_json
+
+    card_text = format_loader_card_summary(updated_items, order.price)
+    new_kb = build_loader_package_keyboard(order.id, updated_items, user.id)
+
+    try:
+        if query.message.caption is not None:
+            await query.edit_message_caption(caption=card_text, reply_markup=new_kb)
+        else:
+            await query.edit_message_text(text=card_text, reply_markup=new_kb)
+        await query.answer(f"Package {status_code}!")
+        logger.info(f"[LOADER_SELECTION] Package #{item_idx} {status_code} by Loader {user.id} on Order #{order.id}.")
+    except Exception as e:
+        logger.exception(f"[LOADER_SELECTION] Failed to update toggle card: {e}")
+
+
+async def loader_pkg_confirm_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles '✅ Confirm Delivery' button in Loader Group.
+    Callback format: pkg_confirm:<order_id>
+    Checks selected packages and prompts loader for delivery screenshots.
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("pkg_confirm:"):
+        return
+
+    user = update.effective_user
+    if not user or not (is_admin(user.id) or is_delivery_user(user.id)):
+        try:
+            await query.answer("⛔ Only authorized loaders can confirm delivery.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    parts = query.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return
+
+    order_id = int(parts[1])
+    order = await get_order_by_id(order_id)
+    if not order:
+        try:
+            await query.answer("❌ Order not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    selected_items = get_loader_selected_packages(order.package_progress, user.id)
+    if not selected_items:
+        try:
+            await query.answer("⚠️ Please select at least one package to deliver first.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    pkg_names = ", ".join([f"{it.get('package')} CP" for it in selected_items])
+
+    try:
+        prompt_msg = await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"Selected package(s):\n{pkg_names}\n\nPlease reply with delivery screenshots.",
+            reply_to_message_id=query.message.message_id,
+            reply_markup=ForceReply(selective=True)
+        )
+        await query.answer("Confirmation received! Please send screenshots.")
+        logger.info(f"[LOADER_SELECTION] Loader {user.id} confirmed delivery for Order #{order.id} packages: {pkg_names}.")
+    except Exception as e:
+        logger.exception(f"[LOADER_SELECTION] Failed to prompt for screenshots: {e}")
+
+
+async def loader_pkg_cancel_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles '❌ Cancel Selection' button in Loader Group.
+    Callback format: pkg_cancel:<order_id>
+    Resets loader's selected packages back to Pending.
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("pkg_cancel:"):
+        return
+
+    user = update.effective_user
+    if not user or not (is_admin(user.id) or is_delivery_user(user.id)):
+        try:
+            await query.answer("⛔ Only authorized loaders can cancel selection.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    parts = query.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return
+
+    order_id = int(parts[1])
+    order = await get_order_by_id(order_id)
+    if not order:
+        try:
+            await query.answer("❌ Order not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    updated_items, reset_cnt = cancel_loader_selections(order.package_progress, user.id)
+
+    new_json = json.dumps(updated_items)
+    await update_order_package_progress(order.id, new_json)
+    order.package_progress = new_json
+
+    card_text = format_loader_card_summary(updated_items, order.price)
+    new_kb = build_loader_package_keyboard(order.id, updated_items, user.id)
+
+    try:
+        if query.message.caption is not None:
+            await query.edit_message_caption(caption=card_text, reply_markup=new_kb)
+        else:
+            await query.edit_message_text(text=card_text, reply_markup=new_kb)
+        await query.answer("Selection cancelled.")
+        logger.info(f"[LOADER_SELECTION] Loader {user.id} cancelled selection for Order #{order.id} ({reset_cnt} items reset).")
+    except Exception as e:
+        logger.exception(f"[LOADER_SELECTION] Failed to update card after cancel: {e}")
 
 
 async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

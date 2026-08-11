@@ -764,6 +764,118 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         p2 = parse_test_order_packages(cred_msg)
         self.assertIsNone(p2)
 
+
+class TestMultiPackageDeliveryWorkflow(unittest.TestCase):
+    """Tests multi-package delivery selection workflow for Loader Group."""
+
+    def test_single_package_workflow(self):
+        from utils import parse_test_order_packages, build_loader_package_keyboard, toggle_package_selection, mark_selected_packages_delivered, format_loader_card_summary
+
+        p = parse_test_order_packages("Order:\n2400")
+        items = p["packages"]
+
+        kb0 = build_loader_package_keyboard(1, items, active_loader_id=10)
+        self.assertIsNotNone(kb0)
+        self.assertEqual(len(kb0.inline_keyboard[0]), 1)
+        self.assertIn("⬜ 2400", kb0.inline_keyboard[0][0].text)
+
+        items, status = toggle_package_selection(items, 0, loader_id=10)
+        self.assertEqual(status, "Selected")
+
+        items, is_all, del_cnt = mark_selected_packages_delivered(items, loader_id=10)
+        self.assertTrue(is_all)
+        self.assertEqual(del_cnt, 1)
+
+        summary = format_loader_card_summary(items, p["total_price"])
+        self.assertIn("🎉 Order Completed", summary)
+        self.assertIn("✅ 2400 CP", summary)
+
+    def test_two_and_three_packages_workflow(self):
+        from utils import parse_test_order_packages, toggle_package_selection, mark_selected_packages_delivered, build_loader_package_keyboard
+
+        p = parse_test_order_packages("Order:\n10800+5040+2400")
+        items = p["packages"]
+        self.assertEqual(len(items), 3)
+
+        items, _ = toggle_package_selection(items, 0, loader_id=100)
+        items, _ = toggle_package_selection(items, 1, loader_id=100)
+
+        items, is_all, del_cnt = mark_selected_packages_delivered(items, loader_id=100)
+        self.assertFalse(is_all)
+        self.assertEqual(del_cnt, 2)
+
+        kb_rem = build_loader_package_keyboard(1, items, active_loader_id=100)
+        self.assertIsNotNone(kb_rem)
+        self.assertEqual(kb_rem.inline_keyboard[0][0].text, "⬜ 2400")
+
+    def test_five_and_ten_packages_workflow(self):
+        from utils import parse_test_order_packages, toggle_package_selection, mark_selected_packages_delivered
+
+        text_5 = "Order:\n" + "+".join(["2400"] * 5)
+        p5 = parse_test_order_packages(text_5)
+        self.assertEqual(len(p5["packages"]), 5)
+
+        text_10 = "Order:\n" + "+".join(["2400"] * 10)
+        p10 = parse_test_order_packages(text_10)
+        self.assertEqual(len(p10["packages"]), 10)
+
+        items10 = p10["packages"]
+        for i in range(5):
+            items10, _ = toggle_package_selection(items10, i, loader_id=200)
+
+        items10, is_all, del_cnt = mark_selected_packages_delivered(items10, loader_id=200)
+        self.assertFalse(is_all)
+        self.assertEqual(del_cnt, 5)
+
+    def test_cancel_selection(self):
+        from utils import parse_test_order_packages, toggle_package_selection, cancel_loader_selections
+
+        p = parse_test_order_packages("Order:\n10800+5040")
+        items = p["packages"]
+
+        items, _ = toggle_package_selection(items, 0, loader_id=300)
+        self.assertEqual(items[0]["status"], "Selected")
+
+        items, reset_cnt = cancel_loader_selections(items, loader_id=300)
+        self.assertEqual(reset_cnt, 1)
+        self.assertEqual(items[0]["status"], "Pending")
+
+    def test_duplicate_click_and_multiple_loaders_locking(self):
+        from utils import parse_test_order_packages, toggle_package_selection, mark_selected_packages_delivered
+
+        p = parse_test_order_packages("Order:\n10800+5040")
+        items = p["packages"]
+
+        items, status_a = toggle_package_selection(items, 0, loader_id=111)
+        self.assertEqual(status_a, "Selected")
+
+        items, status_b = toggle_package_selection(items, 0, loader_id=222)
+        self.assertEqual(status_b, "Locked")
+
+        items, _, _ = mark_selected_packages_delivered(items, loader_id=111)
+
+        items, status_del = toggle_package_selection(items, 0, loader_id=222)
+        self.assertEqual(status_del, "Delivered")
+
+    def test_railway_restart_database_restore_persistence(self):
+        import json
+        from utils import parse_test_order_packages, format_loader_card_summary, build_loader_package_keyboard
+
+        p = parse_test_order_packages("Order:\n10800+5040")
+        items = p["packages"]
+        items[0]["status"] = "Delivered"
+
+        json_str = json.dumps(items)
+        restored_items = json.loads(json_str)
+
+        card = format_loader_card_summary(restored_items, 97.5)
+        self.assertIn("✅ 10800 CP", card)
+        self.assertIn("⬜ 5040 CP", card)
+
+        kb = build_loader_package_keyboard(99, restored_items)
+        self.assertIsNotNone(kb)
+        self.assertEqual(kb.inline_keyboard[0][0].text, "⬜ 5040")
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price
