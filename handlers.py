@@ -879,10 +879,37 @@ async def unknown_package_price_callback_handler(update: Update, context: Contex
 
     target_chat_id = query.message.chat_id
 
+    # Format detailed prompt with known package breakdown and single numeric input instructions
+    known_summary_lines = []
+    known_total_sum = 0.0
+    if order.package_progress:
+        try:
+            p_items = json.loads(order.package_progress)
+            for it in p_items:
+                if it.get("unit_price") is not None and it.get("status") != "Unpriced":
+                    p_name = it.get("package", "")
+                    u_p = it.get("unit_price")
+                    q = it.get("qty", 1)
+                    tot = u_p * q
+                    known_total_sum += tot
+                    known_summary_lines.append(f"• {p_name} = {tot:g}$")
+        except Exception:
+            pass
+
+    prompt_lines = [f"Enter price for package:\n{pkg_name} CP"]
+    if known_summary_lines:
+        prompt_lines.append("")
+        prompt_lines.append("Known packages:")
+        prompt_lines.extend(known_summary_lines)
+        prompt_lines.append(f"\nKnown Total: {known_total_sum:g}$")
+    prompt_lines.append("\n(Please enter a single numeric value only, e.g. 150)")
+
+    prompt_text = "\n".join(prompt_lines)
+
     try:
         prompt_msg = await context.bot.send_message(
             chat_id=target_chat_id,
-            text=f"Enter the price for package: {pkg_name}",
+            text=prompt_text,
             reply_to_message_id=query.message.message_id,
             reply_markup=ForceReply(selective=True)
         )

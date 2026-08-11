@@ -691,6 +691,30 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         self.assertIn("☐ 880 CP", s1)
         self.assertIn("💰 Total Price: 110$", s1)
 
+    def test_single_numeric_price_validation_for_unknown_packages(self):
+        from handlers import is_valid_price_string
+        from utils import parse_test_order_packages, update_unknown_package_price
+
+        # 1. Admin enters valid single numeric values (integers or decimals)
+        self.assertTrue(is_valid_price_string("150"))
+        self.assertTrue(is_valid_price_string("150.5"))
+        self.assertTrue(is_valid_price_string("85"))
+
+        # 2. Reject formulas or non-numeric strings
+        self.assertFalse(is_valid_price_string("150+16+8"))
+        self.assertFalse(is_valid_price_string("150+17+8"))
+        self.assertFalse(is_valid_price_string("150rs"))
+        self.assertFalse(is_valid_price_string("price 150"))
+
+        # 3. Order: 15000 + 2400 + 880 (Known: 2400=17, 880=8, Total=25)
+        p = parse_test_order_packages("15000+2400+880")
+        items = p["packages"]
+
+        # Admin enters single numeric price 150 for 15000
+        updated, total, has_rem = update_unknown_package_price(items, "15000", 150.0)
+        self.assertFalse(has_rem)
+        self.assertEqual(total, 175.0)  # 150 + 17 + 8 = 175$
+
     def test_unknown_package_non_crashing_combinations(self):
         from utils import parse_test_order_packages
 
