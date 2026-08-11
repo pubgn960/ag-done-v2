@@ -804,6 +804,39 @@ def format_loader_card_summary(progress_data: Any, total_price: Optional[float] 
     return format_package_status_block(progress_data, total_price)
 
 
+def format_delivered_packages_caption(items: Any) -> str:
+    """
+    Formats the screenshot delivery caption for Client Group displaying ONLY the packages delivered in this session.
+    Example:
+    📦 Delivered Package(s)
+
+    ✅ 10800 CP
+    ✅ 5040 CP
+    """
+    import json
+    if isinstance(items, str):
+        try:
+            item_list = json.loads(items)
+        except Exception:
+            item_list = []
+    elif isinstance(items, list):
+        item_list = items
+    else:
+        item_list = []
+
+    if not item_list:
+        return ""
+
+    title = "📦 Delivered Package" if len(item_list) == 1 else "📦 Delivered Package(s)"
+    lines = [title, ""]
+    for item in item_list:
+        pkg_name = item.get("package", "")
+        qty = item.get("qty", 1)
+        qty_str = f" ×{qty}" if qty > 1 else ""
+        lines.append(f"✅ {pkg_name} CP{qty_str}")
+    return "\n".join(lines)
+
+
 def build_loader_package_keyboard(order_id: int, progress_data: Any, active_loader_id: Optional[int] = None) -> Optional[InlineKeyboardMarkup]:
     """
     Renders package selection toggle buttons and action buttons for the Loader Group.

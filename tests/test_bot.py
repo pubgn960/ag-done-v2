@@ -955,6 +955,41 @@ class TestDeliverySessionRouting(unittest.TestCase):
 
         asyncio.run(run_async_test())
 
+    def test_partial_delivery_caption_and_status_tracking(self):
+        import json
+        from utils import parse_test_order_packages, format_delivered_packages_caption, mark_selected_packages_delivered, format_package_progress_summary
+
+        raw = "Order:\n10800+5040+2400"
+        parsed = parse_test_order_packages(raw)
+        items = parsed["packages"]
+
+        # Loader selects 10800 and 5040
+        items[0]["status"] = "Selected"
+        items[0]["selected_by_loader"] = 111
+        items[1]["status"] = "Selected"
+        items[1]["selected_by_loader"] = 111
+
+        selected_for_session = [items[0], items[1]]
+
+        # 1. Verify delivered screenshot caption contains ONLY 10800 and 5040 (NOT 2400)
+        caption = format_delivered_packages_caption(selected_for_session)
+        self.assertIn("📦 Delivered Package(s)", caption)
+        self.assertIn("✅ 10800 CP", caption)
+        self.assertIn("✅ 5040 CP", caption)
+        self.assertNotIn("2400", caption)
+
+        # 2. Mark progress as delivered
+        updated_items, is_all_completed, delivered_cnt = mark_selected_packages_delivered(items, loader_id=111)
+        self.assertEqual(delivered_cnt, 2)
+        self.assertFalse(is_all_completed)  # 2400 is still pending
+
+        # 3. Verify Client card summary displays ✅ for 10800 and 5040, and ☐/⬜ for 2400
+        summary = format_package_progress_summary(updated_items, 114.5)
+        self.assertIn("✅ 10800 CP", summary)
+        self.assertIn("✅ 5040 CP", summary)
+        self.assertIn("☐ 2400 CP", summary)
+        self.assertNotIn("🎉 All Packages Delivered", summary)
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

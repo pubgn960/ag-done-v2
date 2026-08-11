@@ -24,6 +24,7 @@ from database import (
     get_all_orders_by_email,
     get_current_settings,
     mark_order_delivered,
+    update_order_status,
     delete_orders_by_email,
     update_order_price,
     update_order_package_progress,
@@ -40,6 +41,7 @@ from utils import (
     format_package_progress_summary,
     format_loader_card_summary,
     format_full_loader_order_card,
+    format_delivered_packages_caption,
     build_loader_package_keyboard,
     mark_selected_packages_delivered,
     advance_package_progress,
@@ -177,61 +179,54 @@ async def deliver_order_by_id(
     caption_email = extract_last_email(caption_text)
     email_for_caption = caption_email if caption_email else order.email
 
-    # Construct single non-redundant order text for parser (prevents text duplication)
-    if order.raw_text and order.raw_text.strip():
-        full_order_content = order.raw_text.strip()
-    elif caption_text and caption_text.strip():
-        full_order_content = caption_text.strip()
-    elif order.package and order.package.strip():
-        full_order_content = order.package.strip()
-    else:
-        full_order_content = ""
-
-    parsed_pkg = parse_test_order_packages(full_order_content)
-    auto_price_added = False
-
-    if parsed_pkg is not None:
-        total_price = parsed_pkg["total_price"]
-
-        # Parse or initialize package_progress items
-        if order.package_progress:
+    # Fetch active delivery session to determine packages selected for THIS session
+    active_ds = None
+    selected_delivery_items: List[Dict[str, Any]] = []
+    if loader_reply_msg_id:
+        active_ds = await get_delivery_session_by_msg_id(loader_reply_msg_id)
+        if active_ds and active_ds.selected_packages:
             try:
-                progress_items = json.loads(order.package_progress)
+                selected_delivery_items = json.loads(active_ds.selected_packages)
             except Exception:
-                progress_items = [
-                    {"package": item["package"], "qty": item["qty"], "unit_price": item["unit_price"], "status": "Pending"}
-                    for item in parsed_pkg["packages"]
-                ]
-        else:
+                selected_delivery_items = []
+
+    # Get current package progress items from DB or initialize from raw_text
+    if order.package_progress:
+        try:
+            progress_items = json.loads(order.package_progress)
+        except Exception:
+            progress_items = []
+    else:
+        full_content = order.raw_text or order.package or caption_text or ""
+        parsed_pkg = parse_test_order_packages(full_content)
+        if parsed_pkg:
             progress_items = [
                 {"package": item["package"], "qty": item["qty"], "unit_price": item["unit_price"], "status": "Pending"}
                 for item in parsed_pkg["packages"]
             ]
+        else:
+            progress_items = []
 
-        # Advance package progress by marking the next pending item as Delivered
-        updated_items, _ = advance_package_progress(progress_items)
-        updated_progress_json = json.dumps(updated_items)
+    # If no selected items from active session, fallback to currently 'Selected' items or next pending
+    if not selected_delivery_items:
+        selected_delivery_items = [it for it in progress_items if it.get("status") == "Selected"]
+        if not selected_delivery_items:
+            for it in progress_items:
+                if it.get("status") != "Delivered":
+                    selected_delivery_items = [it]
+                    break
 
-        # Save updated progress in DB
-        await update_order_package_progress(order.id, updated_progress_json)
+    # Build screenshot caption containing ONLY packages delivered in this session
+    delivered_caption_block = format_delivered_packages_caption(selected_delivery_items)
+    if delivered_caption_block and "📦 Delivered Package" not in email_for_caption:
+        email_for_caption = f"{email_for_caption}\n\n{delivered_caption_block}"
 
-        # Format package summary block with detected packages and price
-        summary_block = format_package_summary_and_price(parsed_pkg)
-        price_str = None
-        if isinstance(total_price, (int, float)):
-            price_str = f"{total_price:g}"
-        elif parsed_pkg.get("known_total", 0.0) > 0:
-            price_str = f"{parsed_pkg['known_total']:g}"
-
-        if "💰 Price:" not in email_for_caption and "📦 Package" not in email_for_caption:
-            email_for_caption = f"{email_for_caption}\n\n{summary_block}"
-
-        if price_str and not order.price:
-            await update_order_price(order.id, price_str=price_str)
-        auto_price_added = True
-    elif order.price:
-        if "💰 Price:" not in email_for_caption:
-            email_for_caption = f"{email_for_caption}\n\n💰 Price: {order.price}"
+    # Auto-save price if missing
+    if not order.price:
+        full_content = order.raw_text or order.package or caption_text or ""
+        parsed_pkg = parse_test_order_packages(full_content)
+        if parsed_pkg and parsed_pkg.get("total_price"):
+            await update_order_price(order.id, price_str=f"{parsed_pkg['total_price']:g}")
 
     logger.info(f"[DELIVERY] Delivering Order #{order_id} ({total_images} images, caption email: '{email_for_caption}') to Client Group {client_chat_id}")
 
@@ -255,7 +250,7 @@ async def deliver_order_by_id(
     for idx, batch in enumerate(grouped_batches):
         media_group: List[MediaUnion] = []
         for b_idx, img in enumerate(batch):
-            # Only the FIRST image of the FIRST batch gets the email as caption
+            # Only the FIRST image of the FIRST batch gets the email and delivered packages caption
             item_caption = email_for_caption if (idx == 0 and b_idx == 0) else None
 
             if img.file_type == "document":
@@ -275,42 +270,39 @@ async def deliver_order_by_id(
         if sent:
             delivered_count += len(batch)
 
-    # 2. Mark package progress as Delivered and update Order cards
-    if order.package_progress:
-        try:
-            progress_items = json.loads(order.package_progress)
-        except Exception:
-            progress_items = []
-        
-        updated_items, is_all_completed, delivered_cnt = mark_selected_packages_delivered(progress_items, loader_id=0)
-        updated_progress_json = json.dumps(updated_items)
-        await update_order_package_progress(order.id, updated_progress_json)
-        
-        if is_all_completed:
-            await mark_order_delivered(order.id)
-            logger.info(f"[PACKAGE_COMPLETION] Order #{order.id} ALL packages delivered! Status marked Completed.")
+    # 2. Mark package progress as Delivered and update Order cards and status
+    loader_user_id = active_ds.loader_id if active_ds else 0
+    updated_items, is_all_completed, delivered_cnt = mark_selected_packages_delivered(progress_items, loader_id=loader_user_id)
+    updated_progress_json = json.dumps(updated_items)
+    await update_order_package_progress(order.id, updated_progress_json)
+    order.package_progress = updated_progress_json
 
-        # Update Client Group Summary card if price_msg_id exists
-        if order.price_msg_id and client_chat_id:
-            try:
-                client_summary = format_package_progress_summary(updated_items, order.price)
-                await bot.edit_message_text(chat_id=client_chat_id, message_id=order.price_msg_id, text=client_summary)
-            except Exception as e_c:
-                logger.warning(f"Failed to edit Client Group progress card: {e_c}")
-
-        # Update Loader Group Order Card in-place
-        if order.loader_message_id and loader_group_id:
-            try:
-                loader_summary = format_full_loader_order_card(order)
-                loader_kb = build_loader_package_keyboard(order.id, updated_items, None)
-                try:
-                    await bot.edit_message_caption(chat_id=loader_group_id, message_id=order.loader_message_id, caption=loader_summary, reply_markup=loader_kb)
-                except Exception:
-                    await bot.edit_message_text(chat_id=loader_group_id, message_id=order.loader_message_id, text=loader_summary, reply_markup=loader_kb)
-            except Exception as e_l:
-                logger.warning(f"Failed to edit Loader Group progress card: {e_l}")
-    else:
+    if is_all_completed:
         await mark_order_delivered(order.id)
+        logger.info(f"[DELIVERY] Order Completed | Order #{order.id} ALL packages delivered!")
+    else:
+        await update_order_status(order.id, "Partially Delivered")
+        logger.info(f"[DELIVERY] Partial Delivery Completed | Order #{order.id} ({delivered_cnt} packages delivered, remaining packages pending).")
+
+    # Update Client Group Summary card if price_msg_id exists
+    if order.price_msg_id and client_chat_id:
+        try:
+            client_summary = format_package_progress_summary(updated_items, order.price)
+            await bot.edit_message_text(chat_id=client_chat_id, message_id=order.price_msg_id, text=client_summary)
+        except Exception as e_c:
+            logger.warning(f"Failed to edit Client Group progress card: {e_c}")
+
+    # Update Loader Group Order Card in-place
+    if order.loader_message_id and loader_group_id:
+        try:
+            loader_summary = format_full_loader_order_card(order)
+            loader_kb = build_loader_package_keyboard(order.id, updated_items, None)
+            try:
+                await bot.edit_message_caption(chat_id=loader_group_id, message_id=order.loader_message_id, caption=loader_summary, reply_markup=loader_kb)
+            except Exception:
+                await bot.edit_message_text(chat_id=loader_group_id, message_id=order.loader_message_id, text=loader_summary, reply_markup=loader_kb)
+        except Exception as e_l:
+            logger.warning(f"Failed to edit Loader Group progress card: {e_l}")
 
     # Close active Delivery Session in DB if present
     if loader_reply_msg_id:
