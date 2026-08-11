@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import joinedload
 
 from config import Config
-from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader
+from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession
 
 logger = logging.getLogger(__name__)
 
@@ -1134,3 +1134,47 @@ async def update_order_package_progress(order_id: int, package_progress: str) ->
         updated = res.unique().scalar_one_or_none()
         logger.info(f"[PACKAGE_TRACKING] Order #{order_id} package_progress updated.")
         return updated
+
+
+async def create_delivery_session(order_id: int, loader_id: int, session_msg_id: int, selected_packages: Optional[str] = None) -> DeliverySession:
+    """
+    Creates and persists a Delivery Session linked to prompt message session_msg_id.
+    """
+    async with AsyncSessionLocal() as session:
+        ds = DeliverySession(
+            order_id=order_id,
+            loader_id=loader_id,
+            delivery_session_message_id=session_msg_id,
+            selected_packages=selected_packages,
+            status="waiting_images"
+        )
+        session.add(ds)
+        await session.commit()
+        await session.refresh(ds)
+        logger.info(f"[DELIVERY_SESSION] Session #{ds.id} created for Order #{order_id} (Msg ID: {session_msg_id}, Loader: {loader_id}).")
+        return ds
+
+
+async def get_delivery_session_by_msg_id(session_msg_id: int) -> Optional[DeliverySession]:
+    """
+    Looks up an active Delivery Session by the prompt message ID.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(DeliverySession).where(
+            (DeliverySession.delivery_session_message_id == session_msg_id) &
+            (DeliverySession.status == "waiting_images")
+        )
+        res = await session.execute(stmt)
+        ds = res.scalar_one_or_none()
+        return ds
+
+
+async def close_delivery_session(session_id: int) -> None:
+    """
+    Closes/deletes a completed Delivery Session in DB.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = delete(DeliverySession).where(DeliverySession.id == session_id)
+        await session.execute(stmt)
+        await session.commit()
+        logger.info(f"[DELIVERY_SESSION] Closed Delivery Session #{session_id}.")

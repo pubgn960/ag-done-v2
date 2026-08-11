@@ -188,5 +188,30 @@ class Image(Base):
         return f"<Image(id={self.id}, order_id={self.order_id}, file_type='{self.file_type}', position={self.position})>"
 
 
+class DeliverySession(Base):
+    """
+    Stores active Delivery Sessions when a loader confirms delivery.
+    Links the Delivery Session prompt message (delivery_session_message_id) directly to the Order (order_id).
+    Persists across Railway restarts and bot reboots.
+    """
+
+    __tablename__ = "delivery_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    loader_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    delivery_session_message_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
+    selected_packages: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON string of selected items
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="waiting_images")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<DeliverySession(id={self.id}, order_id={self.order_id}, loader_id={self.loader_id}, session_msg_id={self.delivery_session_message_id}, status='{self.status}')>"
+
+
 # Compound index for email + creation timestamp queries
 Index("idx_orders_email_created_desc", Order.email, Order.created_at.desc())

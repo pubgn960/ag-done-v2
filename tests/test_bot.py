@@ -918,6 +918,43 @@ class TestMultiPackageDeliveryWorkflow(unittest.TestCase):
         idx_status = card_text.index("📦 PACKAGE STATUS")
         self.assertTrue(idx_details < idx_status)
 
+
+class TestDeliverySessionRouting(unittest.TestCase):
+    """Tests persistent Delivery Session creation, prompt message linking, and reply routing."""
+
+    def test_delivery_session_database_crud(self):
+        import asyncio
+        from database import create_delivery_session, get_delivery_session_by_msg_id, close_delivery_session, init_db
+
+        async def run_async_test():
+            await init_db()
+
+            # 1. Create Delivery Session linked to prompt msg ID 9999
+            ds = await create_delivery_session(
+                order_id=42,
+                loader_id=777,
+                session_msg_id=9999,
+                selected_packages='[{"package": "2400"}]'
+            )
+            self.assertIsNotNone(ds)
+            self.assertEqual(ds.order_id, 42)
+            self.assertEqual(ds.delivery_session_message_id, 9999)
+            self.assertEqual(ds.status, "waiting_images")
+
+            # 2. Look up session by prompt msg ID 9999
+            matched = await get_delivery_session_by_msg_id(9999)
+            self.assertIsNotNone(matched)
+            self.assertEqual(matched.order_id, 42)
+
+            # 3. Close Delivery Session
+            await close_delivery_session(matched.id)
+
+            # 4. Verify session is no longer active
+            closed = await get_delivery_session_by_msg_id(9999)
+            self.assertIsNone(closed)
+
+        asyncio.run(run_async_test())
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

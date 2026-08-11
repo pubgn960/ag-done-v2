@@ -101,7 +101,12 @@ from utils import (
     LoaderIssueType,
     LOADER_ISSUE_CONFIG
 )
-from database import update_order_package_progress
+from database import (
+    update_order_package_progress,
+    create_delivery_session,
+    get_delivery_session_by_msg_id,
+    close_delivery_session
+)
 import json
 
 logger = logging.getLogger(__name__)
@@ -1059,8 +1064,15 @@ async def loader_pkg_confirm_callback_handler(update: Update, context: ContextTy
             reply_to_message_id=query.message.message_id,
             reply_markup=ForceReply(selective=True)
         )
+        # Create persistent Delivery Session in DB
+        await create_delivery_session(
+            order_id=order.id,
+            loader_id=user.id,
+            session_msg_id=prompt_msg.message_id,
+            selected_packages=json.dumps(selected_items)
+        )
         await query.answer("Confirmation received! Please send screenshots.")
-        logger.info(f"[LOADER_SELECTION] Loader {user.id} confirmed delivery for Order #{order.id} packages: {pkg_names}.")
+        logger.info(f"[LOADER_SELECTION] Loader {user.id} confirmed delivery for Order #{order.id} packages: {pkg_names} (Prompt Msg ID: {prompt_msg.message_id}).")
     except Exception as e:
         logger.exception(f"[LOADER_SELECTION] Failed to prompt for screenshots: {e}")
 
@@ -1538,17 +1550,26 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     text_content = message.text or message.caption or ""
 
-    # Rule 2: Identify order from database using replied message ID or text Order ID
-    order = await get_order_by_loader_msg_id(reply_to.message_id)
-    if not order:
-        reply_text = reply_to.text or reply_to.caption or ""
-        order_id_from_text = extract_order_id(reply_text)
-        if order_id_from_text:
-            order = await get_order_by_id(order_id_from_text)
+    # Rule 2: Identify order from database using active DeliverySession, replied message ID, or text Order ID
+    active_delivery_session = await get_delivery_session_by_msg_id(reply_to.message_id)
+    order = None
 
-    # Silent Ignore if reply does not match any valid order in DB
+    if active_delivery_session:
+        order = await get_order_by_id(active_delivery_session.order_id)
+    else:
+        order = await get_order_by_loader_msg_id(reply_to.message_id)
+        if not order:
+            reply_text = reply_to.text or reply_to.caption or ""
+            order_id_from_text = extract_order_id(reply_text)
+            if order_id_from_text:
+                order = await get_order_by_id(order_id_from_text)
+
     if not order:
-        logger.info("[LOADER] Ignored reply that does not match any active order.")
+        logger.warning(f"[LOADER] No active delivery session or order found for reply msg {reply_to.message_id}.")
+        try:
+            await message.reply_text("⚠️ No active delivery session found.\nPlease press Confirm Delivery first.")
+        except Exception as e:
+            logger.exception(f"[LOADER] Failed to send missing session notice: {e}")
         return
 
     # Wrong Details Workflow: Check if loader reply contains the word 'wrong' (case-insensitive)

@@ -26,7 +26,9 @@ from database import (
     mark_order_delivered,
     delete_orders_by_email,
     update_order_price,
-    update_order_package_progress
+    update_order_package_progress,
+    get_delivery_session_by_msg_id,
+    close_delivery_session
 )
 from models import Order, Image
 from utils import (
@@ -309,6 +311,15 @@ async def deliver_order_by_id(
                 logger.warning(f"Failed to edit Loader Group progress card: {e_l}")
     else:
         await mark_order_delivered(order.id)
+
+    # Close active Delivery Session in DB if present
+    if loader_reply_msg_id:
+        try:
+            ds = await get_delivery_session_by_msg_id(loader_reply_msg_id)
+            if ds:
+                await close_delivery_session(ds.id)
+        except Exception:
+            pass
 
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     logger.info(f"[DELIVERY] Images sent | Order #{order.id} ({delivered_count}/{total_images} images) delivered to Client Group {client_chat_id}.")
