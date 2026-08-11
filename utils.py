@@ -294,25 +294,31 @@ def get_db_type_name() -> str:
     return "Unknown DB"
 
 
-TEST_PACKAGE_PRICES = {
-    "10800": 63.5,
-    "5040": 32.0,
-    "2400": 15.5,
+PACKAGE_PRICES: Dict[str, float] = {
+    "108000": 565.0,
+    "96000": 505.0,
+    "72000": 377.0,
+    "48000": 255.0,
+    "43200": 230.0,
+    "38400": 212.0,
+    "24000": 133.0,
+    "21600": 120.0,
+    "19200": 110.0,
+    "16800": 96.0,
+    "14400": 83.0,
+    "12000": 70.0,
+    "10800": 64.5,
+    "9600": 56.0,
+    "7200": 43.0,
+    "5040": 33.0,
+    "2400": 17.0,
     "880": 8.0,
     "420": 4.5,
     "80": 1.0,
 }
 
-PACKAGE_REGEX = re.compile(
-    r'(?:'
-    r'\b(?P<qty_before>\d+)\s*[*xX×]\s*(?P<pkg_after>10800|5040|2400|880|420|80)\s*(?:cp)?\b'
-    r'|'
-    r'\b(?P<pkg_before>10800|5040|2400|880|420|80)\s*(?:cp)?\s*[*xX×]\s*(?P<qty_after>\d+)\b'
-    r'|'
-    r'\b(?P<pkg_standalone>10800|5040|2400|880|420|80)\s*(?:cp)?\b'
-    r')',
-    re.IGNORECASE
-)
+# Backward compatibility alias
+TEST_PACKAGE_PRICES = PACKAGE_PRICES
 
 
 def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -330,13 +336,16 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
 
     raw_text = order_text.lower().strip()
 
-    # 1. Normalize shorthand notation and thousands formatting
-    raw_text = re.sub(r'\b10\.8k\b', '10800', raw_text)
-    raw_text = re.sub(r'\b5\.04k\b', '5040', raw_text)
-    raw_text = re.sub(r'\b2\.4k\b', '2400', raw_text)
-    raw_text = re.sub(r'\b10,800\b', '10800', raw_text)
-    raw_text = re.sub(r'\b5,040\b', '5040', raw_text)
-    raw_text = re.sub(r'\b2,400\b', '2400', raw_text)
+    # 1. Normalize shorthand notation and thousands formatting (by descending package length/value)
+    for pkg_val in sorted(PACKAGE_PRICES.keys(), key=lambda x: (-len(x), -int(x))):
+        val_int = int(pkg_val)
+        fmt_comma = f"{val_int:,}"
+        raw_text = re.sub(r'\b' + re.escape(fmt_comma) + r'\b', pkg_val, raw_text)
+
+        if val_int >= 1000:
+            k_val = val_int / 1000.0
+            k_str = f"{k_val:g}k"
+            raw_text = re.sub(r'\b' + re.escape(k_str) + r'\b', pkg_val, raw_text)
 
     # 2. Normalize spaces around quantity multipliers (e.g. '2400 x 2' -> '2400x2', '2 x 2400' -> '2x2400')
     raw_text = re.sub(r'\s*([*xX×])\s*', r'\1', raw_text)

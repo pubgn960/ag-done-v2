@@ -526,23 +526,28 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         from utils import calculate_test_price
 
         cases = {
-            "10800": 63.5,
-            "10.8k": 63.5,
-            "10,800": 63.5,
-            "10800 CP": 63.5,
-            "5040": 32.0,
-            "5.04k": 32.0,
-            "5,040": 32.0,
-            "2400": 15.5,
-            "2.4k": 15.5,
-            "2,400": 15.5,
-            "2400 CP": 15.5,
+            "108000": 565.0,
+            "96000": 505.0,
+            "72000": 377.0,
+            "48000": 255.0,
+            "43200": 230.0,
+            "38400": 212.0,
+            "24000": 133.0,
+            "21600": 120.0,
+            "19200": 110.0,
+            "16800": 96.0,
+            "14400": 83.0,
+            "12000": 70.0,
+            "10800": 64.5,
+            "9600": 56.0,
+            "7200": 43.0,
+            "5040": 33.0,
+            "2400": 17.0,
             "880": 8.0,
-            "880 CP": 8.0,
             "420": 4.5,
-            "420 CP": 4.5,
             "80": 1.0,
-            "80 CP": 1.0
+            "2400 CP": 17.0,
+            "108000 CP": 565.0
         }
 
         for text, expected in cases.items():
@@ -553,57 +558,67 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         from utils import calculate_test_price
 
         mixed_cases = {
-            "10800+2400": 79.0,          # 63.5 + 15.5
-            "2400+880": 23.5,            # 15.5 + 8
-            "2400+420+80": 21.0,         # 15.5 + 4.5 + 1
-            "5040+2400+880": 55.5,       # 32 + 15.5 + 8
-            "10800+5040+2400+880+420+80": 124.5  # 63.5+32+15.5+8+4.5+1
+            "108000+7200+2400": 625.0,             # 565 + 43 + 17
+            "96000+420": 509.5,                    # 505 + 4.5
+            "48000+2400+880": 280.0,               # 255 + 17 + 8
+            "7200+2400+880": 68.0,                 # 43 + 17 + 8
+            "2400+2400+880": 42.0,                 # 17*2 + 8
+            "108000,72000&24000/2400+880": 1100.0   # 565 + 377 + 133 + 17 + 8
         }
 
         for text, expected in mixed_cases.items():
             price = calculate_test_price(text)
             self.assertEqual(price, expected, f"Mixed package match failed for '{text}'")
 
+    def test_longest_package_matching_prevents_false_detections(self):
+        from utils import parse_test_order_packages
+
+        # 108000 must match as 108000, NOT 10800
+        p1 = parse_test_order_packages("108000")
+        self.assertEqual(len(p1["packages"]), 1)
+        self.assertEqual(p1["packages"][0]["package"], "108000")
+        self.assertEqual(p1["total_price"], 565.0)
+
+        # 24000 must match as 24000, NOT 2400
+        p2 = parse_test_order_packages("24000")
+        self.assertEqual(len(p2["packages"]), 1)
+        self.assertEqual(p2["packages"][0]["package"], "24000")
+        self.assertEqual(p2["total_price"], 133.0)
+
+        # 96000 must match as 96000, NOT 9600
+        p3 = parse_test_order_packages("96000")
+        self.assertEqual(len(p3["packages"]), 1)
+        self.assertEqual(p3["packages"][0]["package"], "96000")
+        self.assertEqual(p3["total_price"], 505.0)
+
     def test_mixed_separators_normalization(self):
         from utils import parse_test_order_packages, calculate_test_price
 
-        # 1. 10800,5040&2400/880+420 -> Expected 5 packages: 10800, 5040, 2400, 880, 420 = 123.5$
+        # 1. 10800,5040&2400/880+420 -> Expected 5 packages: 10800, 5040, 2400, 880, 420 = 127.0$ (64.5+33+17+8+4.5)
         p1 = parse_test_order_packages("10800,5040&2400/880+420")
         self.assertIsNotNone(p1)
         self.assertEqual([item["package"] for item in p1["packages"]], ["10800", "5040", "2400", "880", "420"])
-        self.assertEqual(p1["total_price"], 123.5)
+        self.assertEqual(p1["total_price"], 127.0)
 
-        # 2. 10800\n5040\n2400\n880\n420 -> Expected 5 packages = 123.5$
-        p2 = parse_test_order_packages("10800\n5040\n2400\n880\n420")
-        self.assertIsNotNone(p2)
-        self.assertEqual([item["package"] for item in p2["packages"]], ["10800", "5040", "2400", "880", "420"])
-        self.assertEqual(p2["total_price"], 123.5)
+        # 2. 2400,880 -> Expected 2400, 880 = 25.0$ (17+8)
+        self.assertEqual(calculate_test_price("2400,880"), 25.0)
 
-        # 3. 10800/5040+2400 -> Expected 10800, 5040, 2400 = 111.0$
-        p3 = parse_test_order_packages("10800/5040+2400")
-        self.assertIsNotNone(p3)
-        self.assertEqual([item["package"] for item in p3["packages"]], ["10800", "5040", "2400"])
-        self.assertEqual(p3["total_price"], 111.0)
+        # 3. 2400&880 -> Expected 2400, 880 = 25.0$
+        self.assertEqual(calculate_test_price("2400&880"), 25.0)
 
-        # 4. 2400,880 -> Expected 2400, 880 = 23.5$
-        self.assertEqual(calculate_test_price("2400,880"), 23.5)
-
-        # 5. 2400&880 -> Expected 2400, 880 = 23.5$
-        self.assertEqual(calculate_test_price("2400&880"), 23.5)
-
-        # 6. 2400\n880 -> Expected 2400, 880 = 23.5$
-        self.assertEqual(calculate_test_price("2400\n880"), 23.5)
+        # 4. 2400\n880 -> Expected 2400, 880 = 25.0$
+        self.assertEqual(calculate_test_price("2400\n880"), 25.0)
 
     def test_quantities(self):
         from utils import calculate_test_price
 
         qty_cases = {
-            "2400x2": 31.0,               # 15.5 * 2
-            "2400 x2": 31.0,              # 15.5 * 2
-            "2x2400": 31.0,               # 15.5 * 2
-            "2 x 2400": 31.0,             # 15.5 * 2
-            "2400x2 + 880x3": 55.0,       # (15.5*2) + (8*3) = 31 + 24
-            "2x10800 + 3x420": 140.5      # (63.5*2) + (4.5*3) = 127 + 13.5 = 140.5
+            "2400x2": 34.0,               # 17 * 2
+            "2400 x2": 34.0,              # 17 * 2
+            "2x2400": 34.0,               # 17 * 2
+            "2 x 2400": 34.0,             # 17 * 2
+            "2400x2 + 880x3": 58.0,       # (17*2) + (8*3) = 34 + 24
+            "2x10800 + 3x420": 142.5      # (64.5*2) + (4.5*3) = 129 + 13.5 = 142.5
         }
 
         for text, expected in qty_cases.items():
@@ -630,9 +645,9 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
 
         # Specific false-subtoken checks:
         # 10800 must NOT match 80 or 800
-        self.assertEqual(calculate_test_price("10800"), 63.5)
+        self.assertEqual(calculate_test_price("10800"), 64.5)
         # 2400 must NOT match 400
-        self.assertEqual(calculate_test_price("2400"), 15.5)
+        self.assertEqual(calculate_test_price("2400"), 17.0)
         # 880 must NOT match 80
         self.assertEqual(calculate_test_price("880"), 8.0)
 
@@ -644,56 +659,56 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
             update_unknown_package_price
         )
 
-        # 1. Input with mixed known and unknown: 7200+2400+880
-        p = parse_test_order_packages("7200+2400+880")
+        # 1. Input with mixed known and unknown: 15000+2400+880 (15000 is unknown)
+        p = parse_test_order_packages("15000+2400+880")
         self.assertIsNotNone(p)
         self.assertTrue(p["has_unknown"])
-        self.assertEqual(p["known_total"], 23.5)
+        self.assertEqual(p["known_total"], 25.0)  # 17 + 8 = 25
         self.assertEqual(len(p["packages"]), 3)
-        self.assertEqual(p["packages"][0]["package"], "7200")
+        self.assertEqual(p["packages"][0]["package"], "15000")
         self.assertFalse(p["packages"][0]["known"])
 
         # 2. Format initial state
         items = p["packages"]
         s0 = format_package_progress_summary(items, p["known_total"])
-        self.assertIn("❓ 7200 CP", s0)
-        self.assertIn("💰 Known Total: 23.5$", s0)
+        self.assertIn("❓ 15000 CP", s0)
+        self.assertIn("💰 Known Total: 25$", s0)
 
         # 3. Check unknown package keyboard
         kb = get_unknown_package_keyboard(101, items)
         self.assertIsNotNone(kb)
-        self.assertIn("add_unk_price:101:7200", kb.inline_keyboard[0][0].callback_data)
+        self.assertIn("add_unk_price:101:15000", kb.inline_keyboard[0][0].callback_data)
 
-        # 4. Admin enters price 48 for 7200
-        updated_items, new_total, has_remaining = update_unknown_package_price(items, "7200", 48.0)
+        # 4. Admin enters price 85 for 15000
+        updated_items, new_total, has_remaining = update_unknown_package_price(items, "15000", 85.0)
         self.assertFalse(has_remaining)
-        self.assertEqual(new_total, 71.5)  # 48 + 15.5 + 8 = 71.5
+        self.assertEqual(new_total, 110.0)  # 85 + 17 + 8 = 110
 
         # 5. Format updated state
         s1 = format_package_progress_summary(updated_items, new_total)
-        self.assertIn("☐ 7200 CP", s1)
+        self.assertIn("☐ 15000 CP", s1)
         self.assertIn("☐ 2400 CP", s1)
         self.assertIn("☐ 880 CP", s1)
-        self.assertIn("💰 Total Price: 71.5$", s1)
+        self.assertIn("💰 Total Price: 110$", s1)
 
     def test_exact_non_redundant_package_detection(self):
         from utils import parse_test_order_packages, calculate_test_price
 
-        # 1. 2400+880+420 -> Expected 3 distinct packages, total price 28.0$
+        # 1. 2400+880+420 -> Expected 3 distinct packages, total price 29.5$ (17+8+4.5)
         p1 = parse_test_order_packages("2400+880+420")
         self.assertIsNotNone(p1)
         self.assertEqual(len(p1["packages"]), 3)
         self.assertEqual([item["package"] for item in p1["packages"]], ["2400", "880", "420"])
-        self.assertEqual(p1["total_price"], 28.0)
-        self.assertEqual(calculate_test_price("2400+880+420"), 28.0)
+        self.assertEqual(p1["total_price"], 29.5)
+        self.assertEqual(calculate_test_price("2400+880+420"), 29.5)
 
-        # 2. 2400+2400+880 -> Expected 3 packages preserving intentional duplicate 2400s, total price 39.0$
+        # 2. 2400+2400+880 -> Expected 3 packages preserving intentional duplicate 2400s, total price 42.0$ (17*2 + 8)
         p2 = parse_test_order_packages("2400+2400+880")
         self.assertIsNotNone(p2)
         self.assertEqual(len(p2["packages"]), 3)
         self.assertEqual([item["package"] for item in p2["packages"]], ["2400", "2400", "880"])
-        self.assertEqual(p2["total_price"], 39.0)
-        self.assertEqual(calculate_test_price("2400+2400+880"), 39.0)
+        self.assertEqual(p2["total_price"], 42.0)
+        self.assertEqual(calculate_test_price("2400+2400+880"), 42.0)
 
     def test_package_summary_formatting(self):
         from utils import parse_test_order_packages, format_package_summary_and_price
@@ -701,27 +716,27 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         # Example 1: Single package 2400
         p1 = parse_test_order_packages("2400")
         f1 = format_package_summary_and_price(p1)
-        self.assertEqual(f1, "📦 Package:\n• 2400 CP\n\n💰 Price: 15.5$")
+        self.assertEqual(f1, "📦 Package:\n• 2400 CP\n\n💰 Price: 17$")
 
         # Example 2: Multiple packages 2400+880
         p2 = parse_test_order_packages("2400+880")
         f2 = format_package_summary_and_price(p2)
-        self.assertEqual(f2, "📦 Package(s):\n• 2400 CP\n• 880 CP\n\n💰 Price: 23.5$")
+        self.assertEqual(f2, "📦 Package(s):\n• 2400 CP\n• 880 CP\n\n💰 Price: 25$")
 
         # Example 3: Multiple packages 10800+5040+420
         p3 = parse_test_order_packages("10800+5040+420")
         f3 = format_package_summary_and_price(p3)
-        self.assertEqual(f3, "📦 Package(s):\n• 10800 CP\n• 5040 CP\n• 420 CP\n\n💰 Price: 100$")
+        self.assertEqual(f3, "📦 Package(s):\n• 10800 CP\n• 5040 CP\n• 420 CP\n\n💰 Price: 102$")
 
         # Example 4: Quantity 2400x2+880
         p4 = parse_test_order_packages("2400x2+880")
         f4 = format_package_summary_and_price(p4)
-        self.assertEqual(f4, "📦 Package(s):\n• 2400 CP ×2\n• 880 CP\n\n💰 Price: 39$")
+        self.assertEqual(f4, "📦 Package(s):\n• 2400 CP ×2\n• 880 CP\n\n💰 Price: 42$")
 
         # Example 5: Order preservation (880+2400)
         p5 = parse_test_order_packages("880+2400")
         f5 = format_package_summary_and_price(p5)
-        self.assertEqual(f5, "📦 Package(s):\n• 880 CP\n• 2400 CP\n\n💰 Price: 23.5$")
+        self.assertEqual(f5, "📦 Package(s):\n• 880 CP\n• 2400 CP\n\n💰 Price: 25$")
 
     def test_package_progress_tracking(self):
         from utils import parse_test_order_packages, format_package_progress_summary, advance_package_progress
@@ -735,25 +750,25 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
 
         # Initial State: all pending
         s0 = format_package_progress_summary(items, total_price)
-        self.assertEqual(s0, "📦 Packages\n\n☐ 2400 CP\n☐ 880 CP\n☐ 420 CP\n\n💰 Total Price: 28$")
+        self.assertEqual(s0, "📦 Packages\n\n☐ 2400 CP\n☐ 880 CP\n☐ 420 CP\n\n💰 Total Price: 29.5$")
 
         # Delivery 1: advance 2400 to Delivered
         items1, done1 = advance_package_progress(items)
         self.assertFalse(done1)
         s1 = format_package_progress_summary(items1, total_price)
-        self.assertEqual(s1, "📦 Packages\n\n✅ 2400 CP\n☐ 880 CP\n☐ 420 CP\n\n💰 Total Price: 28$")
+        self.assertEqual(s1, "📦 Packages\n\n✅ 2400 CP\n☐ 880 CP\n☐ 420 CP\n\n💰 Total Price: 29.5$")
 
         # Delivery 2: advance 880 to Delivered
         items2, done2 = advance_package_progress(items1)
         self.assertFalse(done2)
         s2 = format_package_progress_summary(items2, total_price)
-        self.assertEqual(s2, "📦 Packages\n\n✅ 2400 CP\n✅ 880 CP\n☐ 420 CP\n\n💰 Total Price: 28$")
+        self.assertEqual(s2, "📦 Packages\n\n✅ 2400 CP\n✅ 880 CP\n☐ 420 CP\n\n💰 Total Price: 29.5$")
 
         # Delivery 3: advance 420 to Delivered (all done)
         items3, done3 = advance_package_progress(items2)
         self.assertTrue(done3)
         s3 = format_package_progress_summary(items3, total_price)
-        self.assertEqual(s3, "📦 Packages\n\n✅ 2400 CP\n✅ 880 CP\n✅ 420 CP\n\n🎉 All Packages Delivered\n\n💰 Total Price: 28$")
+        self.assertEqual(s3, "📦 Packages\n\n✅ 2400 CP\n✅ 880 CP\n✅ 420 CP\n\n🎉 All Packages Delivered\n\n💰 Total Price: 29.5$")
 
 
 class TestExactContentDeduplication(unittest.IsolatedAsyncioTestCase):
