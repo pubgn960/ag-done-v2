@@ -606,6 +606,34 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         # 880 must NOT match 80
         self.assertEqual(calculate_test_price("880"), 8.0)
 
+    def test_package_summary_formatting(self):
+        from utils import parse_test_order_packages, format_package_summary_and_price
+
+        # Example 1: Single package 2400
+        p1 = parse_test_order_packages("2400")
+        f1 = format_package_summary_and_price(p1)
+        self.assertEqual(f1, "📦 Package:\n• 2400 CP\n\n💰 Price: 15.5$")
+
+        # Example 2: Multiple packages 2400+880
+        p2 = parse_test_order_packages("2400+880")
+        f2 = format_package_summary_and_price(p2)
+        self.assertEqual(f2, "📦 Package(s):\n• 2400 CP\n• 880 CP\n\n💰 Price: 23.5$")
+
+        # Example 3: Multiple packages 10800+5040+420
+        p3 = parse_test_order_packages("10800+5040+420")
+        f3 = format_package_summary_and_price(p3)
+        self.assertEqual(f3, "📦 Package(s):\n• 10800 CP\n• 5040 CP\n• 420 CP\n\n💰 Price: 100$")
+
+        # Example 4: Quantity 2400x2+880
+        p4 = parse_test_order_packages("2400x2+880")
+        f4 = format_package_summary_and_price(p4)
+        self.assertEqual(f4, "📦 Package(s):\n• 2400 CP ×2\n• 880 CP\n\n💰 Price: 39$")
+
+        # Example 5: Order preservation (880+2400)
+        p5 = parse_test_order_packages("880+2400")
+        f5 = format_package_summary_and_price(p5)
+        self.assertEqual(f5, "📦 Package(s):\n• 880 CP\n• 2400 CP\n\n💰 Price: 23.5$")
+
 
 class TestExactContentDeduplication(unittest.IsolatedAsyncioTestCase):
     """Tests exact content deduplication ensuring zero false positives."""

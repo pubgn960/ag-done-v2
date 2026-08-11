@@ -315,41 +315,26 @@ PACKAGE_REGEX = re.compile(
 )
 
 
-def calculate_test_price(order_text: Optional[str]) -> Optional[float]:
+def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, Any]]:
     """
-    TEST IMPLEMENTATION (Proof of Concept Calculator):
-    Scans the complete order text, detects ALL supported packages and quantities,
-    sums the total price, and returns the total as a float.
-
-    Supported TEST Package Prices:
-    - 10800 -> 63.5
-    - 5040 -> 32.0
-    - 2400 -> 15.5
-    - 880 -> 8.0
-    - 420 -> 4.5
-    - 80 -> 1.0
-
-    Prevents false matches (e.g. 10800 will NOT match 80; 2400 will NOT match 400; 880 will NOT match 80).
-    Isolated helper function designed to be replaced with a database lookup table later.
-
-    Args:
-        order_text (Optional[str]): Complete order text content.
+    Parses complete order text to detect all supported packages, quantities, and prices.
+    Preserves exact order of appearance in original text.
 
     Returns:
-        Optional[float]: Total price float if at least one valid package is detected, None otherwise.
+        Optional[Dict[str, Any]]: Structured dictionary with 'packages' list and 'total_price' float,
+        or None if no supported package is found.
     """
     if not order_text:
         return None
 
-    # Pre-process & normalize text
     raw_text = order_text.lower().strip()
     raw_text = re.sub(r'\b10\.8k\b', '10800', raw_text)
     raw_text = re.sub(r'\b5\.04k\b', '5040', raw_text)
     raw_text = re.sub(r'\b2\.4k\b', '2400', raw_text)
     raw_text = re.sub(r'\b(\d+),(\d+)\b', r'\1\2', raw_text)
 
+    detected = []
     total_price = 0.0
-    matches_found = 0
 
     for match in PACKAGE_REGEX.finditer(raw_text):
         gd = match.groupdict()
@@ -368,13 +353,70 @@ def calculate_test_price(order_text: Optional[str]) -> Optional[float]:
 
         unit_price = TEST_PACKAGE_PRICES.get(pkg)
         if unit_price is not None:
-            total_price += unit_price * qty
-            matches_found += 1
+            item_total = unit_price * qty
+            total_price += item_total
+            detected.append({
+                "package": pkg,
+                "qty": qty,
+                "unit_price": unit_price,
+                "total": item_total
+            })
 
-    if matches_found > 0:
-        return round(total_price, 2)
+    if detected:
+        return {
+            "packages": detected,
+            "total_price": round(total_price, 2)
+        }
 
     return None
+
+
+def calculate_test_price(order_text: Optional[str]) -> Optional[float]:
+    """Calculates total test price using single shared parser parse_test_order_packages."""
+    parsed = parse_test_order_packages(order_text)
+    return parsed["total_price"] if parsed else None
+
+
+def format_package_summary_and_price(parsed_data: Dict[str, Any]) -> str:
+    """
+    Formats detected packages and total price into customer/delivery text block.
+
+    Example Single Package:
+    📦 Package:
+    • 2400 CP
+
+    💰 Price: 15.5$
+
+    Example Multiple Packages:
+    📦 Package(s):
+    • 2400 CP ×2
+    • 880 CP
+
+    💰 Price: 23.5$
+    """
+    pkgs = parsed_data.get("packages", [])
+    total = parsed_data.get("total_price", 0.0)
+
+    total_str = f"{total:g}$" if isinstance(total, float) else f"{total}$"
+
+    if not pkgs:
+        return f"💰 Price: {total_str}"
+
+    title = "📦 Package:" if len(pkgs) == 1 else "📦 Package(s):"
+    lines = [title]
+
+    for item in pkgs:
+        pkg_name = item["package"]
+        qty = item["qty"]
+        if qty > 1:
+            lines.append(f"• {pkg_name} CP ×{qty}")
+        else:
+            lines.append(f"• {pkg_name} CP")
+
+    lines.append("")
+    lines.append(f"💰 Price: {total_str}")
+
+    return "\n".join(lines)
 
 
 def get_test_price(order_text: Optional[str]) -> Optional[float]:

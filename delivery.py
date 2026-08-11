@@ -27,7 +27,13 @@ from database import (
     update_order_price
 )
 from models import Order, Image
-from utils import safe_set_message_reaction, get_test_price, calculate_test_price
+from utils import (
+    safe_set_message_reaction,
+    get_test_price,
+    calculate_test_price,
+    parse_test_order_packages,
+    format_package_summary_and_price
+)
 
 logger = logging.getLogger(__name__)
 
@@ -160,17 +166,18 @@ async def deliver_order_by_id(
     caption_email = extract_last_email(caption_text)
     email_for_caption = caption_email if caption_email else order.email
 
-    # TEST IMPLEMENTATION (Proof of Concept Calculator):
-    # Detect automatic price for all supported package variations and quantities (returns numeric float total or None)
+    # TEST IMPLEMENTATION (Proof of Concept Calculator & Package Summary):
+    # Detect automatic package summary and price for all supported package variations and quantities
     # Uses complete order content (caption text, package description, email, or order.price)
     full_order_content = f"{caption_text or ''}\n{order.package or ''}\n{order.email or ''}"
-    test_price_val = calculate_test_price(full_order_content)
+    parsed_pkg = parse_test_order_packages(full_order_content)
     auto_price_added = False
 
-    if test_price_val is not None:
-        price_str = f"{test_price_val:g}" if isinstance(test_price_val, float) else str(test_price_val)
-        if "💰 Price:" not in email_for_caption:
-            email_for_caption = f"{email_for_caption}\n\n💰 Price: {price_str}"
+    if parsed_pkg is not None:
+        summary_block = format_package_summary_and_price(parsed_pkg)
+        price_str = f"{parsed_pkg['total_price']:g}"
+        if "💰 Price:" not in email_for_caption and "📦 Package" not in email_for_caption:
+            email_for_caption = f"{email_for_caption}\n\n{summary_block}"
         if not order.price:
             await update_order_price(order.id, price_str=price_str)
         auto_price_added = True
