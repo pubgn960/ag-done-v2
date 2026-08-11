@@ -75,28 +75,56 @@ def compute_fingerprint(email: str, file_ids: List[str]) -> str:
     return hashlib.sha256(raw_payload.encode("utf-8")).hexdigest()
 
 
+def _migrate_orders_schema(sync_conn: Any) -> None:
+    """
+    Synchronous schema inspector & migration callback.
+    Inspects existing columns in 'orders' table and idempotently adds missing columns
+    ('raw_text', 'issue_state', 'last_issue_type') across both PostgreSQL and SQLite.
+    Prevents PostgreSQL transaction aborts caused by failed ALTER TABLE statements.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+    tables = inspector.get_table_names()
+
+    if "orders" not in tables:
+        return
+
+    existing_columns = {col["name"].lower() for col in inspector.get_columns("orders")}
+
+    columns_to_add = [
+        ("raw_text", "TEXT"),
+        ("issue_state", "VARCHAR(50)"),
+        ("last_issue_type", "VARCHAR(50)")
+    ]
+
+    is_postgres = "postgres" in str(sync_conn.engine.url).lower()
+
+    for col_name, col_type in columns_to_add:
+        if col_name.lower() not in existing_columns:
+            logger.info(f"Adding missing column {col_name}...")
+            try:
+                if is_postgres:
+                    sync_conn.execute(text(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
+                else:
+                    sync_conn.execute(text(f"ALTER TABLE orders ADD COLUMN {col_name} {col_type};"))
+                logger.info(f"Successfully added column {col_name}.")
+            except Exception as e:
+                logger.error(f"Failed to add column {col_name}: {e}")
+                raise e
+
+
 async def init_db() -> None:
-    """Initializes database schema and default Settings, AuthorizedUsers, ClientGroups, and Loaders records."""
-    logger.info("Initializing database tables...")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Safe migration: Ensure raw_text, issue_state, and last_issue_type columns exist on existing orders table
-        try:
-            from sqlalchemy import text
-            await conn.execute(text("ALTER TABLE orders ADD COLUMN raw_text TEXT;"))
-        except Exception:
-            pass
-        try:
-            from sqlalchemy import text
-            await conn.execute(text("ALTER TABLE orders ADD COLUMN issue_state VARCHAR(50);"))
-        except Exception:
-            pass
-        try:
-            from sqlalchemy import text
-            await conn.execute(text("ALTER TABLE orders ADD COLUMN last_issue_type VARCHAR(50);"))
-        except Exception:
-            pass
-    logger.info("Database initialized successfully.")
+    """Initializes database schema and performs idempotent column migrations."""
+    logger.info("Checking database schema...")
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(_migrate_orders_schema)
+        logger.info("Schema verified. Database initialized successfully.")
+    except Exception as e:
+        logger.critical(f"Database schema migration failed: {e}")
+        raise e
 
     await get_or_create_settings()
     await reload_auth_users_cache()
