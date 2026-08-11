@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from telegram import Update, Bot, ReactionTypeEmoji, InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
 from database import AUTH_USERS_CACHE
+from email_parser import extract_order_section
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +335,15 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
     if not order_text:
         return None
 
-    raw_text = order_text.lower().strip()
+    # Isolate Order section first to prevent scanning entire message body (Recovery Codes, Passwords, etc.)
+    target_section = extract_order_section(order_text)
+    if target_section:
+        raw_text = target_section.lower().strip()
+    else:
+        if not any(k in order_text.lower() for k in ("email:", "password:", "recovery codes:", "recovery:", "uid:", "phone:")):
+            raw_text = order_text.lower().strip()
+        else:
+            return None
 
     # 1. Normalize shorthand notation and thousands formatting (by descending package length/value)
     for pkg_val in sorted(PACKAGE_PRICES.keys(), key=lambda x: (-len(x), -int(x))):

@@ -738,6 +738,32 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         self.assertIn("☐ 880 CP", s1)
         self.assertIn("💰 Total Price: 110$", s1)
 
+    def test_recovery_codes_and_credentials_never_detected_as_packages(self):
+        from utils import parse_test_order_packages
+
+        # 1. Recovery Codes with Order section:
+        order_msg = (
+            "Facebook\n\n"
+            "Email:\nfb2@gmail.com\n\n"
+            "Password:\nPakistan786\n\n"
+            "Recovery Codes:\n123456\n654321\n\n"
+            "Order:\n10800+5040+2400"
+        )
+        p1 = parse_test_order_packages(order_msg)
+        self.assertIsNotNone(p1)
+        self.assertFalse(p1.get("has_unknown"))
+        self.assertEqual(len(p1["packages"]), 3)
+        self.assertEqual([item["package"] for item in p1["packages"]], ["10800", "5040", "2400"])
+
+        # 2. Non-order text with numeric credentials (Password 2400abc, Email 2400@gmail.com, UID 108000123)
+        cred_msg = (
+            "Password:\n2400abc\n\n"
+            "Email:\n2400@gmail.com\n\n"
+            "UID:\n108000123"
+        )
+        p2 = parse_test_order_packages(cred_msg)
+        self.assertIsNone(p2)
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

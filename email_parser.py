@@ -96,9 +96,65 @@ def extract_order_id(text: Optional[str]) -> Optional[int]:
     return None
 
 
+def extract_order_section(text: Optional[str]) -> Optional[str]:
+    """
+    Locates and extracts ONLY the Order section text from a customer message.
+    Looks for headers starting with: Order, Package, Packages, CP.
+    Stops if another unrelated section header is encountered.
+
+    Returns:
+        Optional[str]: Extracted order text section, or None if no Order section is found.
+    """
+    if not text:
+        return None
+
+    OTHER_SECTION_HEADERS = (
+        "email:", "mail:", "password:", "pass:", "pwd:", "recovery:",
+        "recovery code:", "recovery codes:", "backup codes:", "2fa:",
+        "authenticator:", "phone:", "uid:", "account id:", "nickname:", "username:"
+    )
+
+    lines = text.splitlines()
+    in_order_section = False
+    extracted_lines = []
+
+    for line in lines:
+        line_strip = line.strip()
+        line_lower = line_strip.lower()
+
+        if not in_order_section:
+            # Match explicit header like "Order:", "Package:", "Packages:", "CP:"
+            if re.match(r'^(?:order|packages|package|cp)\s*[:=\-]', line_lower):
+                in_order_section = True
+                val_after = line_strip.split(":", 1)[-1].split("=", 1)[-1].strip()
+                if val_after and val_after.lower() not in ("order", "package", "packages", "cp"):
+                    extracted_lines.append(val_after)
+                continue
+            # Standalone line header like "Order", "Package", "Packages", "CP"
+            elif line_lower in ("order", "package", "packages", "cp", "order:", "package:", "packages:", "cp:"):
+                in_order_section = True
+                continue
+            # Package line containing catalog numbers when not under an unrelated header
+            elif not any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) and not EMAIL_REGEX.search(line_strip):
+                if re.search(r'\b(?:108000|96000|72000|48000|43200|38400|24000|21600|19200|16800|14400|12000|10800|9600|7200|5040|2400|880|420|80)\b', line_lower):
+                    in_order_section = True
+                    extracted_lines.append(line_strip)
+                    continue
+        else:
+            if any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS):
+                break
+            if line_strip:
+                extracted_lines.append(line_strip)
+
+    if extracted_lines:
+        return "\n".join(extracted_lines)
+
+    return None
+
+
 def extract_package(text: Optional[str]) -> str:
     """
-    Extracts package/item description from customer message by stripping email line.
+    Extracts package description from customer message by isolating the Order section.
 
     Args:
         text (str, optional): Input order message text.
@@ -109,18 +165,8 @@ def extract_package(text: Optional[str]) -> str:
     if not text:
         return "Standard Package"
 
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    package_lines = []
-
-    for line in lines:
-        if EMAIL_REGEX.search(line):
-            continue
-        if line.lower().startswith(("package:", "item:", "order:")):
-            package_lines.append(line.split(":", 1)[-1].strip())
-        else:
-            package_lines.append(line)
-
-    if package_lines:
-        return " | ".join(package_lines[:2])
+    sec = extract_order_section(text)
+    if sec:
+        return sec.replace("\n", " | ").strip()
 
     return "Standard Package"
