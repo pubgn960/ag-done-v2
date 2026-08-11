@@ -6,7 +6,7 @@ Includes extract_last_email helper for Loader caption email overrides.
 
 import re
 import logging
-from typing import Optional, List
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 logger = logging.getLogger(__name__)
 

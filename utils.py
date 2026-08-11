@@ -8,7 +8,7 @@ import sys
 import time
 import logging
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from telegram import Update, Bot, ReactionTypeEmoji
 from config import Config
 from database import AUTH_USERS_CACHE

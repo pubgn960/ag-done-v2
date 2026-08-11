@@ -4,7 +4,7 @@ Contains dedicated keyword definitions for detecting customer orders in Client G
 photo captions, and document captions.
 """
 
-from typing import List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 # Dedicated order detection keywords (case-insensitive)
 ORDER_KEYWORDS: List[str] = [

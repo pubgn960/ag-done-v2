@@ -6,7 +6,7 @@ Multi Loader Approval System, and Category A Only Price Workflow with prompt & c
 """
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from sqlalchemy import String, Text, Integer, BigInteger, DateTime, ForeignKey, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
