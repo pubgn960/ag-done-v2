@@ -806,12 +806,14 @@ def format_loader_card_summary(progress_data: Any, total_price: Optional[float] 
 
 def format_delivered_packages_caption(items: Any) -> str:
     """
-    Formats the screenshot delivery caption for Client Group displaying ONLY the packages delivered in this session.
+    Formats the screenshot delivery caption for Client Group displaying ONLY the packages delivered in this session and calculating session total price.
     Example:
     📦 Delivered Package(s)
 
     ✅ 10800 CP
     ✅ 5040 CP
+
+    💰 Price: 97.5$
     """
     import json
     if isinstance(items, str):
@@ -829,11 +831,30 @@ def format_delivered_packages_caption(items: Any) -> str:
 
     title = "📦 Delivered Package" if len(item_list) == 1 else "📦 Delivered Package(s)"
     lines = [title, ""]
+    session_price = 0.0
+    has_unpriced = False
+
     for item in item_list:
         pkg_name = item.get("package", "")
         qty = item.get("qty", 1)
+        unit_price = item.get("unit_price")
+
+        if unit_price is None:
+            unit_price = get_test_price(str(pkg_name))
+
+        if unit_price is not None:
+            session_price += unit_price * qty
+        else:
+            has_unpriced = True
+
         qty_str = f" ×{qty}" if qty > 1 else ""
         lines.append(f"✅ {pkg_name} CP{qty_str}")
+
+    if not has_unpriced and session_price > 0:
+        lines.append("")
+        t_str = f"{session_price:g}$" if isinstance(session_price, float) else f"{session_price}$"
+        lines.append(f"💰 Price: {t_str}")
+
     return "\n".join(lines)
 
 

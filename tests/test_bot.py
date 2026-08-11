@@ -971,11 +971,12 @@ class TestDeliverySessionRouting(unittest.TestCase):
 
         selected_for_session = [items[0], items[1]]
 
-        # 1. Verify delivered screenshot caption contains ONLY 10800 and 5040 (NOT 2400)
+        # 1. Verify delivered screenshot caption contains ONLY 10800 and 5040 (NOT 2400) and calculates session price (64.5 + 33 = 97.5$)
         caption = format_delivered_packages_caption(selected_for_session)
         self.assertIn("📦 Delivered Package(s)", caption)
         self.assertIn("✅ 10800 CP", caption)
         self.assertIn("✅ 5040 CP", caption)
+        self.assertIn("💰 Price: 97.5$", caption)
         self.assertNotIn("2400", caption)
 
         # 2. Mark progress as delivered
