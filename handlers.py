@@ -72,7 +72,8 @@ from database import (
     add_loader,
     remove_loader_by_id,
     get_all_loaders,
-    reload_loaders_cache
+    update_order_price,
+    update_order_issue_state
 )
 from models import Order
 from utils import (
@@ -86,7 +87,9 @@ from utils import (
     is_railway_environment,
     get_db_type_name,
     get_test_price,
-    calculate_test_price
+    calculate_test_price,
+    LoaderIssueType,
+    LOADER_ISSUE_CONFIG
 )
 
 logger = logging.getLogger(__name__)
@@ -472,6 +475,225 @@ async def duplicate_order_callback_handler(update: Update, context: ContextTypes
             await query.edit_message_text("❌ Order cancelled.", parse_mode="HTML")
         except Exception as e:
             logger.exception(f"[CLIENT] Failed to edit cancelled message text: {e}")
+
+
+# ==========================================
+# Loader Review & Customer Confirmation Workflow Handlers
+# ==========================================
+
+async def loader_issue_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles Loader Issue reporting buttons (Wrong Name, Wrong Account, Login Failed, 2FA Problem, Need Confirmation).
+    Callback data format: loader_issue:<issue_type>:<order_id>
+    Sends prompt to customer in Client Group replying to order.original_message_id.
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("loader_issue:"):
+        return
+
+    user = update.effective_user
+    if not user or not (is_admin(user.id) or is_delivery_user(user.id)):
+        try:
+            await query.answer("⛔ Only authorized loaders can report issues.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    parts = query.data.split(":")
+    if len(parts) < 3 or not parts[2].isdigit():
+        return
+
+    issue_type_str = parts[1]
+    order_id = int(parts[2])
+
+    order = await get_order_by_id(order_id)
+    if not order or not order.client_chat_id or not order.original_message_id:
+        try:
+            await query.answer("❌ Order or client chat information not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    issue_cfg = LOADER_ISSUE_CONFIG.get(issue_type_str)
+    if not issue_cfg:
+        try:
+            await query.answer("❌ Unknown issue type.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    # Update Order issue state in DB
+    await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_type_str)
+
+    # Prepare customer buttons in Client Group linked to unique Order ID
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes, Correct", callback_data=f"cust_confirm:yes:{order.id}:{issue_type_str}"),
+            InlineKeyboardButton("❌ No, Wrong", callback_data=f"cust_confirm:no:{order.id}:{issue_type_str}")
+        ]
+    ])
+
+    try:
+        await context.bot.send_message(
+            chat_id=order.client_chat_id,
+            text=issue_cfg["customer_text"],
+            reply_to_message_id=order.original_message_id,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        await query.answer("⚠️ Customer notified! Awaiting response.")
+        logger.info(f"[LOADER_ISSUE] Order #{order.id} | Loader reported issue '{issue_type_str}'. Customer notified in Client Group {order.client_chat_id}.")
+    except Exception as e:
+        logger.exception(f"[LOADER_ISSUE] Failed to send customer issue notification for Order #{order.id}: {e}")
+        try:
+            await query.answer("❌ Failed to send notification to customer.", show_alert=True)
+        except Exception:
+            pass
+
+
+async def customer_confirmation_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles Customer confirmation response (Yes / No) in Client Group.
+    Callback data format: cust_confirm:<yes/no>:<order_id>:<issue_type>
+    Updates Order issue_state and replies to original loader message in Loader Group.
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("cust_confirm:"):
+        return
+
+    parts = query.data.split(":")
+    if len(parts) < 4 or not parts[2].isdigit():
+        return
+
+    action = parts[1]
+    order_id = int(parts[2])
+    issue_type_str = parts[3]
+
+    order = await get_order_by_id(order_id)
+    if not order:
+        try:
+            await query.answer("❌ Order record not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    issue_cfg = LOADER_ISSUE_CONFIG.get(issue_type_str, LOADER_ISSUE_CONFIG[LoaderIssueType.WRONG_NAME])
+
+    if action == "yes":
+        new_state = "Confirmed"
+        cust_ack = "✅ <b>Thank you!</b> Your confirmation has been recorded and sent to the loader."
+        loader_notify_text = issue_cfg["loader_yes_text"]
+        logger.info(f"[CUSTOMER_CONFIRM] Order #{order.id} | Customer confirmed account details as CORRECT for issue '{issue_type_str}'.")
+    else:
+        new_state = "Rejected"
+        cust_ack = "❌ <b>Thank you!</b> Your response has been recorded. Please wait for updated account instructions."
+        loader_notify_text = issue_cfg["loader_no_text"]
+        logger.info(f"[CUSTOMER_CONFIRM] Order #{order.id} | Customer reported account details as INCORRECT for issue '{issue_type_str}'.")
+
+    # Update DB state
+    await update_order_issue_state(order.id, new_state, issue_type_str)
+
+    # 1. Edit customer message in Client Group
+    try:
+        await query.edit_message_text(cust_ack, parse_mode="HTML")
+        await query.answer("Response recorded!")
+    except Exception as e:
+        logger.warning(f"[CUSTOMER_CONFIRM] Could not edit customer reply text: {e}")
+
+    # 2. Reply directly to ORIGINAL loader message in Loader Group
+    loader_chat_id = order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
+    target_loader_msg_id = order.loader_message_id
+
+    if loader_chat_id and target_loader_msg_id:
+        try:
+            await context.bot.send_message(
+                chat_id=loader_chat_id,
+                text=loader_notify_text,
+                reply_to_message_id=target_loader_msg_id,
+                parse_mode="HTML"
+            )
+            logger.info(f"[CUSTOMER_CONFIRM] Sent confirmation reply to Loader Group {loader_chat_id} (Loader Msg ID {target_loader_msg_id}) for Order #{order.id}.")
+        except Exception as e:
+            logger.exception(f"[CUSTOMER_CONFIRM] Failed to notify loader group for Order #{order.id}: {e}")
+
+
+async def redeliver_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles loader redelivery confirmation buttons ('✅ Deliver Again' / '❌ Cancel').
+    Callback data format: redeliver_yes:<order_id>:<reply_msg_id> or redeliver_cancel:<order_id>
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("redeliver_"):
+        return
+
+    user = update.effective_user
+    if not user or not (is_admin(user.id) or is_delivery_user(user.id)):
+        try:
+            await query.answer("⛔ Only authorized loaders can perform delivery.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    parts = query.data.split(":")
+    action = parts[0]
+
+    if len(parts) < 2 or not parts[1].isdigit():
+        return
+
+    order_id = int(parts[1])
+    order = await get_order_by_id(order_id)
+    if not order:
+        try:
+            await query.answer("❌ Order not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if action == "redeliver_cancel":
+        try:
+            await query.edit_message_text(f"❌ Repeated delivery for Order #{order.id} was cancelled.")
+            await query.answer("Cancelled")
+        except Exception:
+            pass
+        return
+
+    elif action == "redeliver_yes":
+        if len(parts) < 3 or not parts[2].isdigit():
+            return
+        reply_msg_id = int(parts[2])
+
+        logger.info(f"[DELIVERY] Repeated delivery initiated by loader {user.id} for Order #{order.id}.")
+        try:
+            await query.edit_message_text(f"⏳ Executing repeated delivery for Order #{order.id}...")
+        except Exception:
+            pass
+
+        # Execute delivery via deliver_order_by_id
+        from delivery import deliver_order_by_id
+        client_chat_id = order.client_chat_id or BOT_SETTINGS["source_group_id"]
+        loader_group_id = order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
+
+        success = await deliver_order_by_id(
+            bot=context.bot,
+            order_id=order.id,
+            client_chat_id=client_chat_id,
+            loader_group_id=loader_group_id,
+            loader_reply_msg_id=reply_msg_id,
+            caption_text=None
+        )
+
+        if success:
+            try:
+                await query.edit_message_text(f"✅ Repeated delivery for Order #{order.id} completed successfully!")
+                await query.answer("Repeated delivery completed!")
+            except Exception:
+                pass
+        else:
+            try:
+                await query.edit_message_text(f"❌ Failed to execute repeated delivery for Order #{order.id}.")
+                await query.answer("Delivery failed", show_alert=True)
+            except Exception:
+                pass
 
 
 # ==========================================
@@ -1015,16 +1237,24 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not is_media:
         return
 
-    # Rule 3: Check Order Status (Duplicate Protection & State Check)
+    # Rule 3: Check Order Status (Repeated Delivery Workflow - Part 1 Requirement)
     if order.status == "Delivered":
-        logger.info(f"[LOADER] Duplicate reply detected: Order #{order.id} is already Delivered.")
+        logger.info(f"[LOADER] Repeated delivery attempt for Order #{order.id} (already Delivered). Presenting Deliver Again prompt.")
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Deliver Again", callback_data=f"redeliver_yes:{order.id}:{message.message_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"redeliver_cancel:{order.id}")
+            ]
+        ])
         try:
             await message.reply_text(
-                "⚠️ This order has already been delivered.",
-                reply_to_message_id=message.message_id
+                f"⚠️ <b>This order was already delivered.</b>\n\nOrder ID: #{order.id}\nDo you want to deliver it again?",
+                reply_to_message_id=message.message_id,
+                reply_markup=keyboard,
+                parse_mode="HTML"
             )
         except Exception as e:
-            logger.exception(f"[LOADER] Failed to send duplicate delivery notice: {e}")
+            logger.exception(f"[LOADER] Failed to send redelivery prompt: {e}")
         return
 
     if order.status == "Cancelled":

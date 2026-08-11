@@ -679,5 +679,56 @@ class TestExactContentDeduplication(unittest.IsolatedAsyncioTestCase):
         await delete_orders_by_email(email)
 
 
+class TestLoaderReviewWorkflow(unittest.IsolatedAsyncioTestCase):
+    """Tests Loader Review, Issue State Transitions, and Extensible Issue Types."""
+
+    def test_loader_issue_type_enum_and_config(self):
+        from utils import LoaderIssueType, LOADER_ISSUE_CONFIG
+
+        self.assertEqual(LoaderIssueType.WRONG_NAME, "wrong_name")
+        self.assertEqual(LoaderIssueType.WRONG_ACCOUNT, "wrong_account")
+        self.assertEqual(LoaderIssueType.LOGIN_FAILED, "login_failed")
+        self.assertEqual(LoaderIssueType.TWO_FACTOR, "two_factor")
+        self.assertEqual(LoaderIssueType.NEED_CONFIRMATION, "need_confirmation")
+
+        for issue_type in LoaderIssueType:
+            self.assertIn(issue_type, LOADER_ISSUE_CONFIG)
+            cfg = LOADER_ISSUE_CONFIG[issue_type]
+            self.assertIn("label", cfg)
+            self.assertIn("customer_text", cfg)
+            self.assertIn("loader_yes_text", cfg)
+            self.assertIn("loader_no_text", cfg)
+
+    async def test_order_issue_state_transitions(self):
+        from database import create_order, update_order_issue_state, get_order_by_id, delete_orders_by_email
+
+        email = "issue_workflow_user@example.com"
+        await delete_orders_by_email(email)
+
+        order = await create_order(email=email, package="2400 CP")
+        self.assertIsNone(order.issue_state)
+
+        # 1. Loader reports WRONG_NAME
+        updated1 = await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", "wrong_name")
+        self.assertEqual(updated1.issue_state, "Waiting_Customer_Confirmation")
+        self.assertEqual(updated1.last_issue_type, "wrong_name")
+
+        # 2. Customer confirms YES
+        updated2 = await update_order_issue_state(order.id, "Confirmed", "wrong_name")
+        self.assertEqual(updated2.issue_state, "Confirmed")
+
+        # 3. Loader reports LOGIN_FAILED on another attempt
+        updated3 = await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", "login_failed")
+        self.assertEqual(updated3.issue_state, "Waiting_Customer_Confirmation")
+        self.assertEqual(updated3.last_issue_type, "login_failed")
+
+        # 4. Customer rejects NO
+        updated4 = await update_order_issue_state(order.id, "Rejected", "login_failed")
+        self.assertEqual(updated4.issue_state, "Rejected")
+
+        # Clean up
+        await delete_orders_by_email(email)
+
+
 if __name__ == "__main__":
     unittest.main()

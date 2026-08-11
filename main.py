@@ -30,6 +30,9 @@ from handlers import (
     category_b_approval_callback_handler,
     price_callback_handler,
     price_input_text_handler,
+    loader_issue_callback_handler,
+    customer_confirmation_callback_handler,
+    redeliver_callback_handler,
     category_a_command,
     category_b_command,
     category_check_command,
@@ -227,6 +230,9 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(duplicate_order_callback_handler, pattern="^dup_"))
     application.add_handler(CallbackQueryHandler(category_b_approval_callback_handler, pattern="^catb_"))
     application.add_handler(CallbackQueryHandler(price_callback_handler, pattern="^price_"))
+    application.add_handler(CallbackQueryHandler(loader_issue_callback_handler, pattern="^loader_issue:"))
+    application.add_handler(CallbackQueryHandler(customer_confirmation_callback_handler, pattern="^cust_confirm:"))
+    application.add_handler(CallbackQueryHandler(redeliver_callback_handler, pattern="^redeliver_"))
 
     # Register price_input_text_handler first for reply messages
     application.add_handler(

@@ -7,7 +7,8 @@ import re
 import sys
 import time
 import logging
-from typing import Optional
+from enum import Enum
+from typing import Optional, Dict, Any
 from telegram import Update, Bot, ReactionTypeEmoji
 from config import Config
 from database import AUTH_USERS_CACHE
@@ -16,6 +17,74 @@ logger = logging.getLogger(__name__)
 
 # Start timestamp for calculating bot uptime
 BOT_START_TIME = time.time()
+
+
+class LoaderIssueType(str, Enum):
+    """Extensible Enum representing loader-reported issue types."""
+    WRONG_NAME = "wrong_name"
+    WRONG_ACCOUNT = "wrong_account"
+    LOGIN_FAILED = "login_failed"
+    TWO_FACTOR = "two_factor"
+    NEED_CONFIRMATION = "need_confirmation"
+
+
+LOADER_ISSUE_CONFIG: Dict[str, Dict[str, str]] = {
+    LoaderIssueType.WRONG_NAME: {
+        "label": "⚠️ Wrong Name",
+        "customer_text": (
+            "⚠️ <b>Account Name Attention Required</b>\n\n"
+            "The loader reported that the account name may be incorrect.\n"
+            "Please check your account. Is this account correct?"
+        ),
+        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nAccount name has been confirmed as CORRECT by customer.\nPlease continue delivery.",
+        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer stated account name is INCORRECT.\nPlease wait for updated account information.",
+        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply within time limit.\nPlease wait or verify with admin."
+    },
+    LoaderIssueType.WRONG_ACCOUNT: {
+        "label": "❌ Wrong Account",
+        "customer_text": (
+            "❌ <b>Account Credentials Check</b>\n\n"
+            "The loader reported that the account details/credentials appear incorrect.\n"
+            "Please check your account. Is this account correct?"
+        ),
+        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nAccount details have been confirmed as CORRECT by customer.\nPlease continue delivery.",
+        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer stated account details are INCORRECT.\nPlease wait for updated account info.",
+        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply to wrong account check."
+    },
+    LoaderIssueType.LOGIN_FAILED: {
+        "label": "🔒 Login Failed",
+        "customer_text": (
+            "🔒 <b>Login Problem Reported</b>\n\n"
+            "The loader was unable to log into your account.\n"
+            "Please verify your login credentials. Are these details correct?"
+        ),
+        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nCustomer confirmed login credentials are CORRECT.\nPlease attempt login again.",
+        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer stated login credentials need correction.\nPlease wait for updated login info.",
+        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply to login verification."
+    },
+    LoaderIssueType.TWO_FACTOR: {
+        "label": "📵 2FA Problem",
+        "customer_text": (
+            "📵 <b>2FA / Verification Code Required</b>\n\n"
+            "The loader encountered a 2FA prompt or security code issue.\n"
+            "Are your account security settings ready for login?"
+        ),
+        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nCustomer confirmed 2FA is ready.\nPlease try logging in again.",
+        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer stated 2FA is not ready yet.",
+        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply to 2FA prompt."
+    },
+    LoaderIssueType.NEED_CONFIRMATION: {
+        "label": "📝 Need Confirmation",
+        "customer_text": (
+            "📝 <b>Order Confirmation Required</b>\n\n"
+            "The loader requested confirmation for your order details.\n"
+            "Is this order ready for processing?"
+        ),
+        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nOrder details confirmed as CORRECT by customer.\nPlease proceed with delivery.",
+        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer indicated order details are INCORRECT.",
+        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply to order confirmation."
+    }
+}
 
 
 def setup_logging(level: int = logging.INFO) -> None:

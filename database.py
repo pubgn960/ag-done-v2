@@ -80,10 +80,20 @@ async def init_db() -> None:
     logger.info("Initializing database tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Safe migration: Ensure raw_text column exists on existing orders table
+        # Safe migration: Ensure raw_text, issue_state, and last_issue_type columns exist on existing orders table
         try:
             from sqlalchemy import text
             await conn.execute(text("ALTER TABLE orders ADD COLUMN raw_text TEXT;"))
+        except Exception:
+            pass
+        try:
+            from sqlalchemy import text
+            await conn.execute(text("ALTER TABLE orders ADD COLUMN issue_state VARCHAR(50);"))
+        except Exception:
+            pass
+        try:
+            from sqlalchemy import text
+            await conn.execute(text("ALTER TABLE orders ADD COLUMN last_issue_type VARCHAR(50);"))
         except Exception:
             pass
     logger.info("Database initialized successfully.")
@@ -1048,3 +1058,25 @@ async def get_db_file_path() -> Optional[str]:
         if os.path.exists(path):
             return path
     return None
+
+
+async def update_order_issue_state(order_id: int, issue_state: str, issue_type: Optional[str] = None) -> Optional[Order]:
+    """
+    Updates the issue_state and optional last_issue_type of an Order.
+    Returns the updated Order.
+    """
+    async with AsyncSessionLocal() as session:
+        values: Dict[str, Any] = {"issue_state": issue_state}
+        if issue_type is not None:
+            values["last_issue_type"] = issue_type
+
+        stmt = update(Order).where(Order.id == order_id).values(**values)
+        await session.execute(stmt)
+        await session.commit()
+
+        # Return updated order with images eagerly loaded
+        stmt_sel = select(Order).options(joinedload(Order.images)).where(Order.id == order_id)
+        res = await session.execute(stmt_sel)
+        updated = res.unique().scalar_one_or_none()
+        logger.info(f"[LOADER_ISSUE] Order #{order_id} issue_state updated to '{issue_state}' (Issue Type: '{issue_type}').")
+        return updated
