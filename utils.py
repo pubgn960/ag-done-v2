@@ -51,7 +51,7 @@ def is_super_admin(user_id: Optional[int]) -> bool:
     if not user_id:
         return False
 
-    if user_id == 1573531032:
+    if user_id == 1573531032 or (Config.ADMIN_IDS and user_id in Config.ADMIN_IDS):
         return True
 
     return AUTH_USERS_CACHE.get(user_id) == "admin"

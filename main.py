@@ -228,18 +228,18 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(category_b_approval_callback_handler, pattern="^catb_"))
     application.add_handler(CallbackQueryHandler(price_callback_handler, pattern="^price_"))
 
-    # Register loader_text_wizard_handler and price_input_text_handler
+    # Register price_input_text_handler first for reply messages
     application.add_handler(
         MessageHandler(
-            filters.TEXT & (~filters.COMMAND),
-            loader_text_wizard_handler
+            filters.REPLY & filters.TEXT & (~filters.COMMAND),
+            price_input_text_handler
         ),
         group=0
     )
     application.add_handler(
         MessageHandler(
             filters.TEXT & (~filters.COMMAND),
-            price_input_text_handler
+            loader_text_wizard_handler
         ),
         group=0
     )

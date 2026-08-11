@@ -587,7 +587,8 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
     if not user or not message or not message.reply_to_message:
         return
 
-    if not (is_admin(user.id) or is_delivery_user(user.id)):
+    user_id = user.id if user else None
+    if not (is_admin(user_id) or is_delivery_user(user_id) or (user_id and Config.ADMIN_IDS and user_id in Config.ADMIN_IDS)):
         return
 
     reply_to = message.reply_to_message
@@ -598,7 +599,7 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
     session = None
 
     for oid, sess in list(PRICE_INPUT_SESSION.items()):
-        if sess.get("prompt_msg_id") == reply_msg_id:
+        if sess.get("prompt_msg_id") == reply_msg_id or sess.get("button_msg_id") == reply_msg_id:
             target_order_id = oid
             session = sess
             break
@@ -606,7 +607,9 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
     # DB fallback check if session lost after bot restart
     if not target_order_id:
         async with AsyncSessionLocal() as db_sess:
-            stmt = select(Order).where(Order.price_prompt_msg_id == reply_msg_id)
+            stmt = select(Order).where(
+                (Order.price_prompt_msg_id == reply_msg_id) | (Order.price_msg_id == reply_msg_id)
+            )
             res = await db_sess.execute(stmt)
             matched_order = res.scalar_one_or_none()
             if matched_order:
@@ -615,9 +618,27 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
                     "order_id": matched_order.id,
                     "chat_id": matched_order.client_chat_id,
                     "prompt_msg_id": reply_msg_id,
-                    "button_msg_id": None,
+                    "button_msg_id": matched_order.price_msg_id,
                     "is_edit": bool(matched_order.price)
                 }
+
+    # Extra fallback: If reply_to text contains prompt phrases ("Enter order price" / "Click below to set price")
+    if not target_order_id and reply_to and (reply_to.text or reply_to.caption):
+        rep_text = reply_to.text or reply_to.caption or ""
+        if "Enter order price" in rep_text or "Enter new price" in rep_text or "Click below to set price" in rep_text or "💰 Price" in rep_text:
+            async with AsyncSessionLocal() as db_sess:
+                stmt = select(Order).where(Order.client_chat_id == chat.id).order_by(Order.created_at.desc())
+                res = await db_sess.execute(stmt)
+                latest_order = res.scalars().first()
+                if latest_order:
+                    target_order_id = latest_order.id
+                    session = {
+                        "order_id": latest_order.id,
+                        "chat_id": chat.id,
+                        "prompt_msg_id": reply_msg_id,
+                        "button_msg_id": latest_order.price_msg_id,
+                        "is_edit": bool(latest_order.price)
+                    }
 
     # Rule: If reply_to is NOT a price prompt message, ignore completely
     if not target_order_id or not session:
