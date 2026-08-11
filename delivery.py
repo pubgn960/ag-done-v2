@@ -27,7 +27,7 @@ from database import (
     update_order_price
 )
 from models import Order, Image
-from utils import safe_set_message_reaction
+from utils import safe_set_message_reaction, get_test_price
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +159,22 @@ async def deliver_order_by_id(
     # Determine Email for First Image Caption: extract last email from loader caption or fallback to DB order.email
     caption_email = extract_last_email(caption_text)
     email_for_caption = caption_email if caption_email else order.email
+
+    # TEST IMPLEMENTATION (Proof of Concept):
+    # Detect automatic price for 2400 CP package variations (returns numeric float 15.5 or None)
+    # Uses complete order content (caption text, package description, email, or order.price)
+    full_order_content = f"{caption_text or ''}\n{order.package or ''}\n{order.email or ''}"
+    test_price_val = get_test_price(full_order_content)
+
+    if test_price_val is not None:
+        price_str = f"{test_price_val:g}" if isinstance(test_price_val, float) else str(test_price_val)
+        if "💰 Price:" not in email_for_caption:
+            email_for_caption = f"{email_for_caption}\n\n💰 Price: {price_str}"
+        if not order.price:
+            await update_order_price(order.id, price_str=price_str)
+    elif order.price:
+        if "💰 Price:" not in email_for_caption:
+            email_for_caption = f"{email_for_caption}\n\n💰 Price: {order.price}"
 
     logger.info(f"[DELIVERY] Delivering Order #{order_id} ({total_images} images, caption email: '{email_for_caption}') to Client Group {client_chat_id}")
 

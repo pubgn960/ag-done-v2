@@ -519,5 +519,42 @@ class TestTwoGroupDatabaseWorkflow(unittest.IsolatedAsyncioTestCase):
         await delete_orders_by_email("cancel_test@example.com")
 
 
+class TestPOCOrderPriceDetection(unittest.TestCase):
+    """Tests for POC automatic price detection helper get_test_price()."""
+
+    def test_get_test_price_variations(self):
+        from utils import get_test_price
+
+        variations = [
+            "2400",
+            "2.4k",
+            "2,400",
+            "2400cp",
+            "2400 CP",
+            "Order: 2400 CP\nEmail: test@gmail.com",
+            "Please send 2.4k cp package"
+        ]
+
+        for text in variations:
+            price = get_test_price(text)
+            self.assertEqual(price, 15.5, f"Failed matching 2400 CP variation for text: {text}")
+
+    def test_get_test_price_non_matching(self):
+        from utils import get_test_price
+
+        non_matching = [
+            "10800 CP",
+            "5000 CP",
+            "1000",
+            "abc@gmail.com",
+            None,
+            ""
+        ]
+
+        for text in non_matching:
+            price = get_test_price(text)
+            self.assertIsNone(price, f"Should return None for non-matching text: {text}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,7 +83,8 @@ from utils import (
     get_uptime_str,
     get_memory_usage_mb,
     is_railway_environment,
-    get_db_type_name
+    get_db_type_name,
+    get_test_price
 )
 
 logger = logging.getLogger(__name__)
@@ -257,6 +258,13 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             status="Pending",
             category="A"
         )
+
+        # TEST IMPLEMENTATION (Proof of Concept):
+        # Auto-detect 2400 CP test price (returns numeric float 15.5 or None)
+        test_price_val = get_test_price(text_content)
+        if test_price_val is not None:
+            init_price_str = f"{test_price_val:g}" if isinstance(test_price_val, float) else str(test_price_val)
+            await update_order_price(order.id, price_str=init_price_str)
 
         loader_group_id = BOT_SETTINGS["delivery_group_id"]
         if loader_group_id:

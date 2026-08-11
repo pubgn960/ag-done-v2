@@ -3,6 +3,7 @@ Utility functions for security, role-based permission checking, reaction handlin
 """
 
 import os
+import re
 import sys
 import time
 import logging
@@ -222,3 +223,41 @@ def get_db_type_name() -> str:
     elif "sqlite" in Config.DATABASE_URL.lower():
         return "SQLite"
     return "Unknown DB"
+
+
+def get_test_price(order_text: Optional[str]) -> Optional[float]:
+    """
+    TEST IMPLEMENTATION (Proof of Concept):
+    Automatic price detection for 2400 CP package variations:
+    - 2400
+    - 2.4k
+    - 2,400
+    - 2400cp
+    - 2400 CP
+
+    Isolated helper designed to be replaced with a database lookup later.
+    Uses the complete order content for package detection.
+
+    Args:
+        order_text (Optional[str]): Complete order text content.
+
+    Returns:
+        Optional[float]: Numeric float 15.5 if 2400 CP package is detected, None otherwise.
+    """
+    if not order_text:
+        return None
+
+    text_clean = order_text.lower().strip()
+
+    # Regex patterns matching 2400 CP variations
+    patterns = [
+        r'\b2400\s*(cp)?\b',
+        r'\b2\.4k\s*(cp)?\b',
+        r'\b2,400\s*(cp)?\b'
+    ]
+
+    for pat in patterns:
+        if re.search(pat, text_clean):
+            return 15.5
+
+    return None
