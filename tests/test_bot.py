@@ -809,5 +809,51 @@ class TestLoaderReviewWorkflow(unittest.IsolatedAsyncioTestCase):
         await delete_orders_by_email(email)
 
 
+class TestDuplicateDeliveryFingerprint(unittest.IsolatedAsyncioTestCase):
+    """Tests delivery fingerprinting ensuring distinct packages never trigger false duplicate delivery blocks."""
+
+    async def test_distinct_packages_same_screenshots_allowed(self):
+        from database import create_order, add_images_to_order, delete_orders_by_email, compute_fingerprint
+
+        email = "fp_test_user@example.com"
+        await delete_orders_by_email(email)
+
+        same_file_items = [("file_A_123", "photo"), ("file_B_456", "photo")]
+
+        # 1. Order 40: 2400 CP with screenshots A, B
+        order40 = await create_order(email=email, package="2400", raw_text="2400")
+        order40_updated, is_dup40 = await add_images_to_order(order40.id, same_file_items)
+        self.assertFalse(is_dup40, "Order 40 delivery must be accepted!")
+
+        # 2. Order 41: 2400+880 CP with SAME screenshots A, B -> MUST BE DELIVERED (different package!)
+        order41 = await create_order(email=email, package="2400+880", raw_text="2400+880")
+        order41_updated, is_dup41 = await add_images_to_order(order41.id, same_file_items)
+        self.assertFalse(is_dup41, "Order 41 with different package (2400+880 vs 2400) using same screenshots MUST BE DELIVERED!")
+
+        # Clean up
+        await delete_orders_by_email(email)
+
+    async def test_identical_package_same_screenshots_blocked(self):
+        from database import create_order, add_images_to_order, delete_orders_by_email
+
+        email = "fp_dup_user@example.com"
+        await delete_orders_by_email(email)
+
+        same_file_items = [("file_X_789", "photo"), ("file_Y_012", "photo")]
+
+        # 1. Order 50: 2400 CP with screenshots X, Y
+        order50 = await create_order(email=email, package="2400", raw_text="2400")
+        _, is_dup50 = await add_images_to_order(order50.id, same_file_items)
+        self.assertFalse(is_dup50, "Order 50 delivery must be accepted!")
+
+        # 2. Order 51: EXACT same package 2400 CP with SAME screenshots X, Y -> MUST BE BLOCKED AS DUPLICATE!
+        order51 = await create_order(email=email, package="2400", raw_text="2400")
+        _, is_dup51 = await add_images_to_order(order51.id, same_file_items)
+        self.assertTrue(is_dup51, "Order 51 with IDENTICAL package (2400) and SAME screenshots MUST BE BLOCKED as duplicate delivery!")
+
+        # Clean up
+        await delete_orders_by_email(email)
+
+
 if __name__ == "__main__":
     unittest.main()

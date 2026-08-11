@@ -7,6 +7,7 @@ Includes global in-memory BOT_SETTINGS, AUTH_USERS_CACHE, CLIENT_GROUPS_CACHE, a
 
 import os
 import io
+import re
 import csv
 import shutil
 import hashlib
@@ -63,15 +64,19 @@ async def dispose_engine() -> None:
     await engine.dispose()
 
 
-def compute_fingerprint(email: str, file_ids: List[str]) -> str:
+def compute_fingerprint(email: str, package_text: Optional[str], file_ids: List[str]) -> str:
     """
-    Computes a unique SHA256 fingerprint for an upload.
-    Formula: SHA256(email + image_count + sorted_file_ids)
+    Computes a unique SHA256 fingerprint for a delivery upload.
+    Formula: SHA256(email_clean + package_normalized + image_count + sorted_file_ids)
+    Ensures different orders (e.g. 2400 vs 2400+880) using the same screenshots produce distinct fingerprints.
+    Only blocks duplicate delivery when BOTH order details AND uploaded images are identical.
     """
-    email_clean = email.lower().strip()
+    email_clean = email.lower().strip() if email else ""
+    pkg_clean = (package_text or "").lower().strip()
+    pkg_normalized = re.sub(r'\s+', '', pkg_clean)
     count_str = str(len(file_ids))
     sorted_ids = "".join(sorted(file_ids))
-    raw_payload = f"{email_clean}:{count_str}:{sorted_ids}"
+    raw_payload = f"{email_clean}:{pkg_normalized}:{count_str}:{sorted_ids}"
     return hashlib.sha256(raw_payload.encode("utf-8")).hexdigest()
 
 
@@ -825,7 +830,8 @@ async def add_images_to_order(
             return None, False
 
         file_ids = [item[0] for item in file_items]
-        fingerprint = compute_fingerprint(order.email, file_ids)
+        pkg_info = order.raw_text or order.package or ""
+        fingerprint = compute_fingerprint(order.email, pkg_info, file_ids)
 
         # Check duplicate fingerprint
         fp_stmt = select(Order).where(Order.fingerprint == fingerprint, Order.id != order_id)
