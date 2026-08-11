@@ -165,6 +165,7 @@ async def deliver_order_by_id(
     # Uses complete order content (caption text, package description, email, or order.price)
     full_order_content = f"{caption_text or ''}\n{order.package or ''}\n{order.email or ''}"
     test_price_val = get_test_price(full_order_content)
+    auto_price_added = False
 
     if test_price_val is not None:
         price_str = f"{test_price_val:g}" if isinstance(test_price_val, float) else str(test_price_val)
@@ -172,6 +173,7 @@ async def deliver_order_by_id(
             email_for_caption = f"{email_for_caption}\n\n💰 Price: {price_str}"
         if not order.price:
             await update_order_price(order.id, price_str=price_str)
+        auto_price_added = True
     elif order.price:
         if "💰 Price:" not in email_for_caption:
             email_for_caption = f"{email_for_caption}\n\n💰 Price: {order.price}"
@@ -271,6 +273,14 @@ async def deliver_order_by_id(
             logger.error(f"[DELIVERY] Failed to send loader delivery confirmation: {e}")
 
     # 5. Category A Only Price Workflow in CLIENT GROUP (client_chat_id & original_message_id)
+    # TEST IMPLEMENTATION: If automatic price was added (e.g. 2400 CP), skip sending Price Button UI completely
+    if auto_price_added:
+        logger.info(f"[PRICE] Automatic price was added for Order #{order.id}. Skipping Price Button UI.")
+        if Config.DELETE_AFTER_DELIVERY:
+            logger.info(f"DELETE_AFTER_DELIVERY enabled. Purging order #{order.id} for email: '{order.email}'")
+            await delete_orders_by_email(order.email)
+        return True
+
     order_category = order.category or (CLIENT_GROUPS_CACHE.get(client_chat_id, "A") if client_chat_id else "A")
     if order_category == "A" and client_chat_id:
         if order.price:
