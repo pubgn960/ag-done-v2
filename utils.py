@@ -335,20 +335,20 @@ async def check_admin_permission(update: Update) -> bool:
     return False
 
 
-ALLOWED_REACTION_EMOJIS: Set[str] = {"✅", "❌", "❤️", "⏳"}
+ALLOWED_REACTION_EMOJIS: Set[str] = {"👍", "❤️", "✅", "❌", "⏳"}
 
 
 async def safe_set_message_reaction(
     bot: Bot,
     chat_id: Optional[int],
     message_id: Optional[int],
-    emoji: str = "✅",
+    emoji: str = "👍",
     fallback_emoji: Optional[str] = None,
     log_tag: str = "[REACTION]"
 ) -> bool:
     """
-    Safely sets a Telegram reaction emoji on a message using ONLY standard Unicode reactions:
-    ✅, ❌, ❤️, ⏳.
+    Safely sets a Telegram reaction emoji on a message using standard Unicode reactions:
+    👍, ❤️, ✅, ❌, ⏳.
     Never uses custom_emoji_id.
     Gracefully handles cases where reactions are disabled in chat or unsupported by API.
     """
@@ -357,12 +357,13 @@ async def safe_set_message_reaction(
 
     emoji_map = {
         "⚠️": "⏳",
-        "👍": "✅",
-        "📥": "⏳"
+        "📥": "👍"
     }
     target_emoji = emoji_map.get(emoji, emoji)
     if target_emoji not in ALLOWED_REACTION_EMOJIS:
-        target_emoji = "✅"
+        target_emoji = "👍"
+
+    logger.info(f"{log_tag} Attempting reaction '{target_emoji}' on Message ID #{message_id} in Chat #{chat_id}...")
 
     try:
         await bot.set_message_reaction(
@@ -370,9 +371,10 @@ async def safe_set_message_reaction(
             message_id=message_id,
             reaction=[ReactionTypeEmoji(emoji=target_emoji)]
         )
+        logger.info(f"{log_tag} Success: Reaction '{target_emoji}' set on Message ID #{message_id} in Chat #{chat_id}.")
         return True
     except Exception as e:
-        logger.debug(f"{log_tag} Reaction '{target_emoji}' failed: {e}")
+        logger.warning(f"{log_tag} Telegram rejected reaction '{target_emoji}' on Message ID #{message_id} in Chat #{chat_id}: {e}")
         return False
 
 

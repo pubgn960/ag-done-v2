@@ -1654,20 +1654,6 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
             if order_id_from_text:
                 order = await get_order_by_id(order_id_from_text)
 
-        # For multi-package orders (> 1 packages), require active DeliverySession (Confirm Delivery)
-        if order and order.package_progress:
-            try:
-                p_items = json.loads(order.package_progress)
-                if len(p_items) > 1 and not active_delivery_session:
-                    logger.warning(f"[LOADER] No active delivery session found for multi-package Order #{order.id}.")
-                    try:
-                        await message.reply_text("⚠️ No active delivery session found.\nPlease press Confirm Delivery first.")
-                    except Exception as e:
-                        logger.exception(f"[LOADER] Failed to send missing session notice: {e}")
-                    return
-            except Exception:
-                pass
-
     if not order:
         logger.info("[LOADER] Ignored reply that does not match any valid order.")
         return
@@ -1799,6 +1785,20 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     if not is_media:
         return
+
+    # For multi-package orders (> 1 packages), require active DeliverySession (Confirm Delivery) for actual delivery screenshots
+    if order and order.package_progress and not active_delivery_session:
+        try:
+            p_items = json.loads(order.package_progress)
+            if len(p_items) > 1:
+                logger.warning(f"[LOADER] No active delivery session found for multi-package delivery on Order #{order.id}.")
+                try:
+                    await message.reply_text("⚠️ No active delivery session found.\nPlease press Confirm Delivery first.")
+                except Exception as e:
+                    logger.exception(f"[LOADER] Failed to send missing session notice: {e}")
+                return
+        except Exception:
+            pass
 
     # Rule 3: Check Order Status (Repeated Delivery Workflow - Part 1 Requirement)
     if order.status == "Delivered":

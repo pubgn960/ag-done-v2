@@ -1130,8 +1130,8 @@ class TestDeliverySessionRouting(unittest.TestCase):
     def test_reaction_api_and_loader_approval_messages(self):
         from utils import ALLOWED_REACTION_EMOJIS, ISSUE_WORKFLOW_CONFIG, LoaderIssueType
 
-        # 1. Allowed reactions must contain only standard Unicode emojis
-        self.assertEqual(ALLOWED_REACTION_EMOJIS, {"✅", "❌", "❤️", "⏳"})
+        # 1. Allowed reactions must contain standard Unicode emojis
+        self.assertEqual(ALLOWED_REACTION_EMOJIS, {"👍", "❤️", "✅", "❌", "⏳"})
 
         # 2. Check customer approval success message for Wrong Name
         wn_cfg = ISSUE_WORKFLOW_CONFIG[LoaderIssueType.WRONG_NAME]
@@ -1456,6 +1456,34 @@ class TestLoaderReviewWorkflow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated4.last_issue_type, "login_failed")
 
         # Clean up
+        await delete_orders_by_email(email)
+
+    async def test_issue_workflow_runs_independently_of_delivery_sessions(self):
+        from database import create_order, update_order_issue_state, delete_orders_by_email, get_delivery_session_by_msg_id
+        from utils import detect_loader_issue
+
+        email = "session_independent_issue@example.com"
+        await delete_orders_by_email(email)
+
+        # Multi-package order
+        order = await create_order(email=email, package="2400 CP\n10800 CP", raw_text="2400 CP\n10800 CP")
+        self.assertIsNotNone(order)
+
+        # Confirm no delivery session exists
+        session = await get_delivery_session_by_msg_id(999999)
+        self.assertIsNone(session)
+
+        # Loader reports issue BEFORE Confirm Delivery
+        issue_result = detect_loader_issue("wrong password")
+        self.assertIsNotNone(issue_result)
+        cfg, issue_id = issue_result
+        self.assertEqual(issue_id, "wrong_password")
+
+        # Issue state update executes without requiring a delivery session
+        updated = await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_id)
+        self.assertEqual(updated.issue_state, "Waiting_Customer_Confirmation")
+        self.assertEqual(updated.issue_type, "wrong_password")
+
         await delete_orders_by_email(email)
 
 
