@@ -165,6 +165,70 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.debug(f"[CLIENT] Message {message.message_id} in Client Group has no text/caption content.")
         return
 
+    # Check if this customer message is an updated account detail submission for a paused order
+    waiting_order = await get_order_waiting_for_customer_update(chat.id)
+    if waiting_order:
+        if has_valid_account_update_fields(text_content):
+            logger.info(f"[CUSTOMER_UPDATED]\nCustomer submitted updated account details for Order #{waiting_order.id}.")
+            logger.info(f"[DELIVERY_RESUMED]\nDelivery resumed for Order #{waiting_order.id}.")
+
+            new_email = extract_email(text_content) or waiting_order.email
+            updated_order = await update_order_raw_text(waiting_order.id, text_content, new_email)
+
+            restored_status = "Pending"
+            if waiting_order.package_progress:
+                try:
+                    p_items = json.loads(waiting_order.package_progress)
+                    if any(it.get("status") == "Delivered" for it in p_items):
+                        restored_status = "Partially Delivered"
+                except Exception:
+                    pass
+
+            await update_order_status(waiting_order.id, restored_status)
+            await update_order_issue_state(waiting_order.id, "Resolved")
+
+            loader_chat_id = waiting_order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
+            if loader_chat_id and waiting_order.loader_message_id:
+                try:
+                    updated_card_text = format_full_loader_order_card(updated_order or waiting_order)
+                    progress_items = json.loads(updated_order.package_progress) if updated_order and updated_order.package_progress else []
+                    loader_kb = build_loader_package_keyboard(waiting_order.id, progress_items, None)
+
+                    try:
+                        await context.bot.edit_message_caption(
+                            chat_id=loader_chat_id,
+                            message_id=waiting_order.loader_message_id,
+                            caption=updated_card_text,
+                            reply_markup=loader_kb
+                        )
+                    except Exception:
+                        await context.bot.edit_message_text(
+                            chat_id=loader_chat_id,
+                            message_id=waiting_order.loader_message_id,
+                            text=updated_card_text,
+                            reply_markup=loader_kb
+                        )
+
+                    await context.bot.send_message(
+                        chat_id=loader_chat_id,
+                        text="🔄 Customer updated the account details.\n\nYou may continue the delivery.",
+                        reply_to_message_id=waiting_order.loader_message_id
+                    )
+                except Exception as e:
+                    logger.exception(f"[CUSTOMER_UPDATED] Failed to update Loader Order Card for Order #{waiting_order.id}: {e}")
+
+            await safe_set_message_reaction(
+                bot=context.bot,
+                chat_id=chat.id,
+                message_id=message.message_id,
+                emoji="👍",
+                fallback_emoji=None,
+                log_tag="[REACTION]"
+            )
+            return
+        else:
+            logger.info(f"[CLIENT] Ignored customer message without valid account detail fields for paused Order #{waiting_order.id}.")
+
     # Keyword-Based Order Detection
     matched, keyword = contains_order_keyword(text_content)
     if not matched:
@@ -610,9 +674,9 @@ async def loader_issue_callback_handler(update: Update, context: ContextTypes.DE
 
 async def customer_confirmation_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles Customer confirmation response (Yes / No) in Client Group.
-    Callback data format: cust_confirm:<yes/no>:<order_id>:<issue_type>
-    Updates Order issue_state and replies to original loader message in Loader Group.
+    Handles Customer confirmation response (Approve / Reject) in Client Group.
+    Callback data format: cust_confirm:<yes/no>:<order_id>:<issue_id>
+    Updates Order issue_state, replies to original loader order message, and handles reactions & delivery session status.
     """
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("cust_confirm:"):
@@ -624,7 +688,7 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
 
     action = parts[1]
     order_id = int(parts[2])
-    issue_type_str = parts[3]
+    issue_id = parts[3]
 
     order = await get_order_by_id(order_id)
     if not order:
@@ -634,33 +698,40 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             pass
         return
 
-    issue_cfg = LOADER_ISSUE_CONFIG.get(issue_type_str, LOADER_ISSUE_CONFIG[LoaderIssueType.WRONG_NAME])
+    issue_cfg = ISSUE_WORKFLOW_CONFIG.get(issue_id, ISSUE_WORKFLOW_CONFIG[LoaderIssueType.WRONG_NAME])
+
+    loader_chat_id = order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
+    target_loader_msg_id = order.loader_message_id
 
     if action == "yes":
-        new_state = "Confirmed"
-        cust_ack = "✅ <b>Thank you!</b> Your confirmation has been recorded and sent to the loader."
-        loader_notify_text = issue_cfg["loader_yes_text"]
-        logger.info(f"[CUSTOMER_CONFIRM] Order #{order.id} | Customer confirmed account details as CORRECT for issue '{issue_type_str}'.")
+        logger.info(f"[CUSTOMER_APPROVED]\nCustomer approved issue '{issue_id}' for Order #{order.id}.")
+        logger.info(f"[DELIVERY_RESUMED]\nDelivery resumed for Order #{order.id}.")
+
+        await update_order_issue_state(order.id, "Confirmed", issue_id)
+        cust_ack = "✅ <b>Confirmation Recorded</b>\n\nThank you! Your confirmation has been sent to the loader."
+        loader_notify_text = issue_cfg.get("loader_success_msg", "✅ Customer confirmed details. Please continue delivery.")
+        reaction_emoji = "✅"
     else:
-        new_state = "Rejected"
-        cust_ack = "❌ <b>Thank you!</b> Your response has been recorded. Please wait for updated account instructions."
-        loader_notify_text = issue_cfg["loader_no_text"]
-        logger.info(f"[CUSTOMER_CONFIRM] Order #{order.id} | Customer reported account details as INCORRECT for issue '{issue_type_str}'.")
+        logger.info(f"[CUSTOMER_REJECTED]\nCustomer rejected issue '{issue_id}' for Order #{order.id}.")
 
-    # Update DB state
-    await update_order_issue_state(order.id, new_state, issue_type_str)
+        await update_order_status(order.id, "Waiting Customer Update")
+        await update_order_issue_state(order.id, "Waiting_Customer_Update", issue_id)
 
-    # 1. Edit customer message in Client Group
+        cust_ack = "❌ <b>Order Paused</b>\n\nPlease reply with your updated account details below."
+        loader_notify_text = issue_cfg.get("loader_failure_msg", "❌ Customer stated details are incorrect. Please wait for updated account info.")
+        reaction_emoji = "❌"
+
+    # 1. Edit customer prompt message in Client Group (caption if photo/doc, text otherwise)
     try:
-        await query.edit_message_text(cust_ack, parse_mode="HTML")
+        if query.message and query.message.caption:
+            await query.edit_message_caption(caption=cust_ack, parse_mode="HTML")
+        else:
+            await query.edit_message_text(text=cust_ack, parse_mode="HTML")
         await query.answer("Response recorded!")
     except Exception as e:
         logger.warning(f"[CUSTOMER_CONFIRM] Could not edit customer reply text: {e}")
 
-    # 2. Reply directly to ORIGINAL loader message in Loader Group
-    loader_chat_id = order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
-    target_loader_msg_id = order.loader_message_id
-
+    # 2. Reply directly to ORIGINAL loader message in Loader Group & set reaction
     if loader_chat_id and target_loader_msg_id:
         try:
             await context.bot.send_message(
@@ -668,6 +739,14 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
                 text=loader_notify_text,
                 reply_to_message_id=target_loader_msg_id,
                 parse_mode="HTML"
+            )
+            await safe_set_message_reaction(
+                bot=context.bot,
+                chat_id=loader_chat_id,
+                message_id=target_loader_msg_id,
+                emoji=reaction_emoji,
+                fallback_emoji=None,
+                log_tag="[REACTION]"
             )
             logger.info(f"[CUSTOMER_CONFIRM] Sent confirmation reply to Loader Group {loader_chat_id} (Loader Msg ID {target_loader_msg_id}) for Order #{order.id}.")
         except Exception as e:
@@ -1582,35 +1661,86 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
         logger.info("[LOADER] Ignored reply that does not match any valid order.")
         return
 
-    # Wrong Details Workflow: Check if loader reply contains the word 'wrong' (case-insensitive)
-    if "wrong" in text_content.lower():
-        logger.info(f"[LOADER] Wrong details reported by loader for Order #{order.id}.")
+    is_media = bool(message.photo or (message.document and (message.document.mime_type or "").startswith("image/")))
+    detected_issue = detect_loader_issue(text_content)
+
+    if is_media and detected_issue:
+        issue_cfg, issue_id = detected_issue
+
+        # Single-active-issue Duplicate Protection
+        if await has_active_pending_issue(order.id):
+            logger.info(f"[LOADER] Duplicate issue request blocked for Order #{order.id}. Active issue already pending.")
+            try:
+                await message.reply_text("⚠️ A customer verification request is already pending.\n\nPlease wait for the customer's response.")
+            except Exception as e:
+                logger.exception(f"[LOADER] Failed to send duplicate issue warning: {e}")
+            return
+
+        log_tag = issue_cfg.get("log_tag", f"[{issue_id.upper()}]")
+        logger.info(f"{log_tag}\nLoader reported issue '{issue_id}' for Order #{order.id}.")
+        logger.info(f"[DELIVERY_PAUSED]\nDelivery session paused for Order #{order.id} (Issue: {issue_id}).")
+
+        # Update order issue state in DB
+        await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_id)
+
+        # Copy screenshot (do NOT forward) directly to Client Group
         client_chat_id = order.client_chat_id or BOT_SETTINGS["source_group_id"]
         if client_chat_id and order.original_message_id:
-            try:
-                await context.bot.send_message(
-                    chat_id=client_chat_id,
-                    text="❌ Please check and correct your details, then send them again.",
-                    reply_to_message_id=order.original_message_id
-                )
-                logger.info(f"[CLIENT] Wrong details notice sent to Client Group for Order #{order.id}.")
-            except Exception as e:
-                logger.exception(f"[CLIENT] Failed to send wrong details notice for Order #{order.id}: {e}")
+            cust_title = issue_cfg.get("customer_title", "⚠️ Verification Required")
+            cust_msg = issue_cfg.get("customer_message", "Please check your account.")
+            approve_lbl = issue_cfg.get("approve_label", "✅ Approve")
+            reject_lbl = issue_cfg.get("reject_label", "❌ Update Account")
 
-        # React to loader message with ❌ (fallback ⚠️)
+            caption_text = (
+                f"<b>{cust_title}</b>\n\n"
+                f"{cust_msg}\n\n"
+                f"📷 Screenshot attached."
+            )
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(approve_lbl, callback_data=f"cust_confirm:yes:{order.id}:{issue_id}"),
+                    InlineKeyboardButton(reject_lbl, callback_data=f"cust_confirm:no:{order.id}:{issue_id}")
+                ]
+            ])
+
+            try:
+                if message.photo:
+                    photo_file_id = message.photo[-1].file_id
+                    await context.bot.send_photo(
+                        chat_id=client_chat_id,
+                        photo=photo_file_id,
+                        caption=caption_text,
+                        reply_to_message_id=order.original_message_id,
+                        reply_markup=keyboard,
+                        parse_mode="HTML"
+                    )
+                elif message.document:
+                    doc_file_id = message.document.file_id
+                    await context.bot.send_document(
+                        chat_id=client_chat_id,
+                        document=doc_file_id,
+                        caption=caption_text,
+                        reply_to_message_id=order.original_message_id,
+                        reply_markup=keyboard,
+                        parse_mode="HTML"
+                    )
+                logger.info(f"[CLIENT] Issue verification request sent to Client Group for Order #{order.id}.")
+            except Exception as e:
+                logger.exception(f"[CLIENT] Failed to send issue verification request for Order #{order.id}: {e}")
+
+        # Add ⚠️ reaction to loader's reply message
         await safe_set_message_reaction(
             bot=context.bot,
             chat_id=chat.id,
             message_id=message.message_id,
-            emoji="❌",
-            fallback_emoji="⚠️",
+            emoji="⚠️",
+            fallback_emoji=None,
             log_tag="[REACTION]"
         )
 
-        # Do NOT deliver images, keep order Pending, do NOT delete anything
         return
 
-    is_media = bool(message.photo or (message.document and (message.document.mime_type or "").startswith("image/")))
     if not is_media:
         return
 

@@ -1136,6 +1136,62 @@ async def update_order_package_progress(order_id: int, package_progress: str) ->
         return updated
 
 
+async def has_active_pending_issue(order_id: int) -> bool:
+    """
+    Checks if an Order currently has an active pending issue request awaiting customer response.
+    Prevents multiple simultaneous issue reports for the same order.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(Order).where(Order.id == order_id)
+        res = await session.execute(stmt)
+        order = res.scalar_one_or_none()
+        if not order:
+            return False
+        return order.issue_state in ("Waiting_Customer_Confirmation", "Waiting_Customer_Update") or order.status == "Waiting Customer Update"
+
+
+async def update_order_raw_text(order_id: int, new_raw_text: str, email: Optional[str] = None) -> Optional[Order]:
+    """
+    Updates raw_text (and optionally email) for an existing Order.
+    Returns the updated Order object.
+    """
+    async with AsyncSessionLocal() as session:
+        values: Dict[str, Any] = {"raw_text": new_raw_text}
+        if email:
+            values["email"] = email
+
+        stmt = update(Order).where(Order.id == order_id).values(**values)
+        await session.execute(stmt)
+        await session.commit()
+
+        stmt_sel = select(Order).options(joinedload(Order.images)).where(Order.id == order_id)
+        res = await session.execute(stmt_sel)
+        updated = res.unique().scalar_one_or_none()
+        logger.info(f"[ACCOUNT_UPDATED] Order #{order_id} raw_text updated.")
+        return updated
+
+
+async def get_order_waiting_for_customer_update(client_chat_id: int) -> Optional[Order]:
+    """
+    Finds the latest active Order in client_chat_id waiting for customer account details update.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(Order)
+            .options(joinedload(Order.images))
+            .where(
+                Order.client_chat_id == client_chat_id,
+                or_(
+                    Order.issue_state == "Waiting_Customer_Update",
+                    Order.status == "Waiting Customer Update"
+                )
+            )
+            .order_by(Order.id.desc())
+        )
+        res = await session.execute(stmt)
+        return res.unique().scalar_one_or_none()
+
+
 async def create_delivery_session(order_id: int, loader_id: int, session_msg_id: int, selected_packages: Optional[str] = None) -> DeliverySession:
     """
     Creates and persists a Delivery Session linked to prompt message session_msg_id.

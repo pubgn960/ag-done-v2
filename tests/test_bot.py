@@ -1052,6 +1052,49 @@ class TestDeliverySessionRouting(unittest.TestCase):
         self.assertNotIn("💰 Total Price", card)
         self.assertNotIn("17$", card)
 
+    def test_generic_issue_workflow_engine(self):
+        from utils import detect_loader_issue, has_valid_account_update_fields, ISSUE_WORKFLOW_CONFIG
+
+        # 1. Test keyword detection for all 5 issue types
+        res_wn = detect_loader_issue("wrong name")
+        self.assertIsNotNone(res_wn)
+        self.assertEqual(res_wn[1], "wrong_name")
+        self.assertEqual(res_wn[0]["customer_title"], "⚠️ Name Verification Required")
+
+        res_wp = detect_loader_issue("incorrect password")
+        self.assertIsNotNone(res_wp)
+        self.assertEqual(res_wp[1], "wrong_password")
+
+        res_gl = detect_loader_issue("google account linked")
+        self.assertIsNotNone(res_gl)
+        self.assertEqual(res_gl[1], "google_linked")
+
+        res_2fa = detect_loader_issue("verification code needed")
+        self.assertIsNotNone(res_2fa)
+        self.assertEqual(res_2fa[1], "two_factor")
+
+        res_lf = detect_loader_issue("unable to login")
+        self.assertIsNotNone(res_lf)
+        self.assertEqual(res_lf[1], "login_failed")
+
+        # Unrelated text should return None
+        self.assertIsNone(detect_loader_issue("done"))
+        self.assertIsNone(detect_loader_issue("ok"))
+        self.assertIsNone(detect_loader_issue("thanks"))
+        self.assertIsNone(detect_loader_issue("❤️"))
+
+        # 2. Test valid account detail field validation
+        self.assertFalse(has_valid_account_update_fields("ok"))
+        self.assertFalse(has_valid_account_update_fields("done"))
+        self.assertFalse(has_valid_account_update_fields("thanks"))
+        self.assertFalse(has_valid_account_update_fields("❤️"))
+        self.assertFalse(has_valid_account_update_fields("🔥"))
+
+        self.assertTrue(has_valid_account_update_fields("Email:\nnewmail@gmail.com"))
+        self.assertTrue(has_valid_account_update_fields("Password: mysecretpass"))
+        self.assertTrue(has_valid_account_update_fields("123456\n654321"))
+        self.assertTrue(has_valid_account_update_fields("2FA code: 888999"))
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

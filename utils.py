@@ -23,69 +23,184 @@ BOT_START_TIME = time.time()
 class LoaderIssueType(str, Enum):
     """Extensible Enum representing loader-reported issue types."""
     WRONG_NAME = "wrong_name"
-    WRONG_ACCOUNT = "wrong_account"
-    LOGIN_FAILED = "login_failed"
+    WRONG_PASSWORD = "wrong_password"
+    GOOGLE_LINKED = "google_linked"
     TWO_FACTOR = "two_factor"
+    LOGIN_FAILED = "login_failed"
+    WRONG_ACCOUNT = "wrong_account"
     NEED_CONFIRMATION = "need_confirmation"
 
 
-LOADER_ISSUE_CONFIG: Dict[str, Dict[str, str]] = {
+ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
     LoaderIssueType.WRONG_NAME: {
+        "issue_id": LoaderIssueType.WRONG_NAME,
         "label": "⚠️ Wrong Name",
-        "customer_text": (
-            "⚠️ <b>Account Name Attention Required</b>\n\n"
-            "The loader reported that the account name may be incorrect.\n"
-            "Please check your account. Is this account correct?"
-        ),
-        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nAccount name has been confirmed as CORRECT by customer.\nPlease continue delivery.",
-        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer stated account name is INCORRECT.\nPlease wait for updated account information.",
-        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply within time limit.\nPlease wait or verify with admin."
+        "keywords": ["wrong name", "wrongname", "name wrong"],
+        "customer_title": "⚠️ Name Verification Required",
+        "customer_message": "The loader reported that the account name may be incorrect.",
+        "customer_text": "⚠️ <b>Name Verification Required</b>\n\nThe loader reported that the account name may be incorrect.",
+        "approve_label": "✅ Approve",
+        "reject_label": "❌ Update Account",
+        "loader_success_msg": "✅ Customer confirmed the account name is correct.\n\nPlease continue the delivery.",
+        "loader_failure_msg": "❌ Order Cancelled\n\nCustomer confirmed the account name is incorrect.\n\nPlease stop this delivery and wait for updated account details.",
+        "loader_yes_text": "✅ Customer confirmed the account name is correct.\n\nPlease continue the delivery.",
+        "loader_no_text": "❌ Order Cancelled\n\nCustomer confirmed the account name is incorrect.\n\nPlease stop this delivery and wait for updated account details.",
+        "log_tag": "[WRONG_NAME]"
     },
-    LoaderIssueType.WRONG_ACCOUNT: {
-        "label": "❌ Wrong Account",
-        "customer_text": (
-            "❌ <b>Account Credentials Check</b>\n\n"
-            "The loader reported that the account details/credentials appear incorrect.\n"
-            "Please check your account. Is this account correct?"
-        ),
-        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nAccount details have been confirmed as CORRECT by customer.\nPlease continue delivery.",
-        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer stated account details are INCORRECT.\nPlease wait for updated account info.",
-        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply to wrong account check."
+    LoaderIssueType.WRONG_PASSWORD: {
+        "issue_id": LoaderIssueType.WRONG_PASSWORD,
+        "label": "⚠️ Wrong Password",
+        "keywords": ["wrong password", "wrongpassword", "password wrong", "incorrect password"],
+        "customer_title": "⚠️ Password Verification Required",
+        "customer_message": "The loader reported that the password appears to be incorrect.",
+        "customer_text": "⚠️ <b>Password Verification Required</b>\n\nThe loader reported that the password appears to be incorrect.",
+        "approve_label": "✅ Correct Password",
+        "reject_label": "❌ Update Password",
+        "loader_success_msg": "✅ Customer confirmed the password is correct.\n\nPlease continue the delivery.",
+        "loader_failure_msg": "❌ Order Cancelled\n\nCustomer confirmed the password is incorrect.\n\nPlease stop this delivery and wait for updated password.",
+        "loader_yes_text": "✅ Customer confirmed the password is correct.\n\nPlease continue the delivery.",
+        "loader_no_text": "❌ Order Cancelled\n\nCustomer confirmed the password is incorrect.\n\nPlease stop this delivery and wait for updated password.",
+        "log_tag": "[WRONG_PASSWORD]"
     },
-    LoaderIssueType.LOGIN_FAILED: {
-        "label": "🔒 Login Failed",
-        "customer_text": (
-            "🔒 <b>Login Problem Reported</b>\n\n"
-            "The loader was unable to log into your account.\n"
-            "Please verify your login credentials. Are these details correct?"
-        ),
-        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nCustomer confirmed login credentials are CORRECT.\nPlease attempt login again.",
-        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer stated login credentials need correction.\nPlease wait for updated login info.",
-        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply to login verification."
+    LoaderIssueType.GOOGLE_LINKED: {
+        "issue_id": LoaderIssueType.GOOGLE_LINKED,
+        "label": "⚠️ Google Linked",
+        "keywords": ["google linked", "linked google", "google account linked", "already linked", "google bind"],
+        "customer_title": "⚠️ Google Account Verification",
+        "customer_message": "The loader reported that this account is already linked with Google.",
+        "customer_text": "⚠️ <b>Google Account Verification</b>\n\nThe loader reported that this account is already linked with Google.",
+        "approve_label": "✅ Continue",
+        "reject_label": "❌ Update Account",
+        "loader_success_msg": "✅ Customer confirmed to continue with Google linked account.\n\nPlease continue delivery.",
+        "loader_failure_msg": "❌ Order Cancelled\n\nCustomer rejected Google linked account.\n\nPlease stop this delivery and wait for updated account details.",
+        "loader_yes_text": "✅ Customer confirmed to continue with Google linked account.\n\nPlease continue delivery.",
+        "loader_no_text": "❌ Order Cancelled\n\nCustomer rejected Google linked account.\n\nPlease stop this delivery and wait for updated account details.",
+        "log_tag": "[GOOGLE_LINKED]"
     },
     LoaderIssueType.TWO_FACTOR: {
+        "issue_id": LoaderIssueType.TWO_FACTOR,
         "label": "📵 2FA Problem",
-        "customer_text": (
-            "📵 <b>2FA / Verification Code Required</b>\n\n"
-            "The loader encountered a 2FA prompt or security code issue.\n"
-            "Are your account security settings ready for login?"
-        ),
-        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nCustomer confirmed 2FA is ready.\nPlease try logging in again.",
-        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer stated 2FA is not ready yet.",
-        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply to 2FA prompt."
+        "keywords": ["2fa", "2fa issue", "two factor", "two-factor", "verification code", "authenticator", "backup code"],
+        "customer_title": "⚠️ Two-Factor Authentication Required",
+        "customer_message": "The loader requires additional verification.",
+        "customer_text": "⚠️ <b>Two-Factor Authentication Required</b>\n\nThe loader requires additional verification.",
+        "approve_label": "✅ Send Information",
+        "reject_label": "❌ Cancel",
+        "loader_success_msg": "✅ Customer provided verification information.\n\nPlease continue delivery.",
+        "loader_failure_msg": "❌ Order Cancelled\n\nCustomer cancelled two-factor verification.\n\nPlease stop this delivery and wait for updated account details.",
+        "loader_yes_text": "✅ Customer provided verification information.\n\nPlease continue delivery.",
+        "loader_no_text": "❌ Order Cancelled\n\nCustomer cancelled two-factor verification.\n\nPlease stop this delivery and wait for updated account details.",
+        "log_tag": "[TWO_FACTOR]"
+    },
+    LoaderIssueType.LOGIN_FAILED: {
+        "issue_id": LoaderIssueType.LOGIN_FAILED,
+        "label": "🔒 Login Failed",
+        "keywords": ["login failed", "cannot login", "login error", "invalid credentials", "unable to login", "login unsuccessful"],
+        "customer_title": "⚠️ Login Verification Required",
+        "customer_message": "The loader was unable to log in using the provided account details.\n\nPlease verify the account information.",
+        "customer_text": "⚠️ <b>Login Verification Required</b>\n\nThe loader was unable to log in using the provided account details.",
+        "approve_label": "✅ Retry Login",
+        "reject_label": "❌ Update Account",
+        "loader_success_msg": "✅ Customer requested retry login with existing details.\n\nPlease try logging in again.",
+        "loader_failure_msg": "❌ Order Cancelled\n\nCustomer stated account details are incorrect.\n\nPlease stop this delivery and wait for updated account details.",
+        "loader_yes_text": "✅ Customer requested retry login with existing details.\n\nPlease try logging in again.",
+        "loader_no_text": "❌ Order Cancelled\n\nCustomer stated account details are incorrect.\n\nPlease stop this delivery and wait for updated account details.",
+        "log_tag": "[LOGIN_FAILED]"
+    },
+    LoaderIssueType.WRONG_ACCOUNT: {
+        "issue_id": LoaderIssueType.WRONG_ACCOUNT,
+        "label": "❌ Wrong Account",
+        "keywords": ["wrong account", "wrongaccount"],
+        "customer_title": "⚠️ Account Credentials Verification",
+        "customer_message": "The loader reported that the account credentials appear incorrect.",
+        "customer_text": "⚠️ <b>Account Credentials Verification</b>\n\nThe loader reported that the account credentials appear incorrect.",
+        "approve_label": "✅ Confirm Details",
+        "reject_label": "❌ Update Account",
+        "loader_success_msg": "✅ Customer confirmed account details. Please continue delivery.",
+        "loader_failure_msg": "❌ Customer reported account details are incorrect. Please wait for updated info.",
+        "loader_yes_text": "✅ Customer confirmed account details. Please continue delivery.",
+        "loader_no_text": "❌ Customer reported account details are incorrect. Please wait for updated info.",
+        "log_tag": "[WRONG_ACCOUNT]"
     },
     LoaderIssueType.NEED_CONFIRMATION: {
+        "issue_id": LoaderIssueType.NEED_CONFIRMATION,
         "label": "📝 Need Confirmation",
-        "customer_text": (
-            "📝 <b>Order Confirmation Required</b>\n\n"
-            "The loader requested confirmation for your order details.\n"
-            "Is this order ready for processing?"
-        ),
-        "loader_yes_text": "✅ <b>Customer Confirmed</b>\nOrder details confirmed as CORRECT by customer.\nPlease proceed with delivery.",
-        "loader_no_text": "❌ <b>Customer Response</b>\nCustomer indicated order details are INCORRECT.",
-        "loader_timeout_text": "⏰ <b>Customer Timed Out</b>\nCustomer did not reply to order confirmation."
+        "keywords": ["need confirmation"],
+        "customer_title": "⚠️ Order Confirmation Required",
+        "customer_message": "The loader requested confirmation for your order details.",
+        "customer_text": "⚠️ <b>Order Confirmation Required</b>\n\nThe loader requested confirmation for your order details.",
+        "approve_label": "✅ Confirm Order",
+        "reject_label": "❌ Update Order",
+        "loader_success_msg": "✅ Customer confirmed order. Please proceed with delivery.",
+        "loader_failure_msg": "❌ Customer indicated order details are incorrect.",
+        "loader_yes_text": "✅ Customer confirmed order. Please proceed with delivery.",
+        "loader_no_text": "❌ Customer indicated order details are incorrect.",
+        "log_tag": "[NEED_CONFIRMATION]"
     }
 }
+
+# Alias for backward compatibility
+LOADER_ISSUE_CONFIG = ISSUE_WORKFLOW_CONFIG
+
+
+def detect_loader_issue(caption_text: str) -> Optional[Tuple[Dict[str, Any], str]]:
+    """
+    Scans loader caption text for issue keywords defined in ISSUE_WORKFLOW_CONFIG.
+    Returns (issue_config_dict, issue_id) if matched, else None.
+    Matching is case-insensitive.
+    """
+    if not caption_text:
+        return None
+
+    caption_lower = caption_text.lower().strip()
+    for issue_id, cfg in ISSUE_WORKFLOW_CONFIG.items():
+        keywords = cfg.get("keywords", [])
+        for kw in keywords:
+            pattern = r'\b' + re.escape(kw) + r'\b'
+            if re.search(pattern, caption_lower):
+                issue_id_str = issue_id.value if hasattr(issue_id, 'value') else str(issue_id)
+                return cfg, issue_id_str
+
+    return None
+
+
+def has_valid_account_update_fields(text: str) -> bool:
+    """
+    Validates whether text submitted by customer contains at least one valid account detail field:
+    Email, Password, Recovery Codes, UID, Nickname, Account Name, Authenticator Code, Backup Codes, Platform, Login.
+    Ignores general chatter (ok, done, thanks, hello, ❤️, 🔥, etc.).
+    """
+    if not text:
+        return False
+
+    t_lower = text.lower().strip()
+
+    # Ignore generic chatter
+    chatter_words = {"ok", "done", "thanks", "hello", "fast", "completed", "ty", "sure", "please", "yes", "no", "❤️", "🔥"}
+    if t_lower in chatter_words or any(emoji in t_lower for emoji in ["❤️", "🔥"]):
+        return False
+
+    valid_field_indicators = [
+        "email", "mail", "gmail", "yahoo", "hotmail", "outlook", "icloud", "proton",
+        "password", "pass", "pwd",
+        "recovery", "backup", "2fa", "authenticator", "code", "codes",
+        "uid", "nickname", "nick", "username", "account", "name", "platform", "login"
+    ]
+
+    # Check email pattern match
+    if re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', text):
+        return True
+
+    # Check if text contains field labels
+    for indicator in valid_field_indicators:
+        if re.search(r'\b' + re.escape(indicator) + r'\b', t_lower):
+            return True
+
+    # Check multi-line digit lists (e.g. 6-digit 2FA / backup codes: 123456\n654321)
+    if re.search(r'\b\d{4,8}\b', text):
+        return True
+
+    return False
 
 
 def setup_logging(level: int = logging.INFO) -> None:
