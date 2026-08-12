@@ -2917,7 +2917,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/stats</code> - Rich statistics dashboard\n"
         "• <code>/export</code> - Export CSV report\n"
         "• <code>/backup</code> - Backup SQLite database\n"
-        "• <code>/restore</code> - Restore SQLite database\n"
+        "• <code>/restore</code> - Restore SQLite database\n\n"
+        "<b>Price Management:</b>\n"
+        "• <code>/exportprices</code> - Export current price list\n"
+        "• <code>/updateprices</code> - Bulk update price list\n"
     )
     await update.effective_message.reply_text(help_msg, parse_mode="HTML")
 

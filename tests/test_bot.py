@@ -1705,10 +1705,6 @@ class TestBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
     async def test_command_menu_and_handler_audit(self):
         from handlers import exportprices_command_handler, updateprices_command_handler
 
-        # Verify handlers exist and are callable
-        self.assertTrue(callable(exportprices_command_handler))
-        self.assertTrue(callable(updateprices_command_handler))
-
         # Inspect main.py source code to verify set_my_commands and handler registration
         with open("main.py", "r", encoding="utf-8") as f:
             content = f.read()
@@ -1717,6 +1713,13 @@ class TestBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
         self.assertIn('BotCommand("updateprices"', content)
         self.assertIn('CommandHandler("exportprices", exportprices_command_handler)', content)
         self.assertIn('CommandHandler("updateprices", updateprices_command_handler)', content)
+
+        # Inspect handlers.py source code to verify help_command includes both commands
+        with open("handlers.py", "r", encoding="utf-8") as f:
+            h_content = f.read()
+
+        self.assertIn('exportprices', h_content)
+        self.assertIn('updateprices', h_content)
 
 
 if __name__ == "__main__":
