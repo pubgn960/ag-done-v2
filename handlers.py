@@ -1734,6 +1734,20 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
             approve_lbl = issue_cfg.get("approve_label", "✅ Approve")
             reject_lbl = issue_cfg.get("reject_label", "❌ Update Account")
 
+            details_lines = []
+            if getattr(order, "platform", None):
+                details_lines.append(f"Platform: {order.platform}")
+            if order.email:
+                details_lines.append(f"Email: {order.email}")
+            if order.package:
+                details_lines.append(f"Order: {order.package}")
+
+            details_block = ""
+            if details_lines:
+                details_block = "\n\n━━━━━━━━━━━━━━\n\n" + "\n".join(details_lines) + "\n\n━━━━━━━━━━━━━━"
+
+            body_text = f"<b>{cust_title}</b>\n\n{cust_msg}\n\nPlease verify your account.{details_block}"
+
             keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton(approve_lbl, callback_data=f"cust_confirm:yes:{order.id}:{issue_id}"),
@@ -1744,7 +1758,7 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
             try:
                 if is_media and message.photo:
                     photo_file_id = message.photo[-1].file_id
-                    caption_text = f"<b>{cust_title}</b>\n\n{cust_msg}\n\n📷 Screenshot attached."
+                    caption_text = f"{body_text}\n\n📷 Screenshot attached."
                     await context.bot.send_photo(
                         chat_id=client_chat_id,
                         photo=photo_file_id,
@@ -1755,7 +1769,7 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
                     )
                 elif is_media and message.document:
                     doc_file_id = message.document.file_id
-                    caption_text = f"<b>{cust_title}</b>\n\n{cust_msg}\n\n📷 Screenshot attached."
+                    caption_text = f"{body_text}\n\n📷 Screenshot attached."
                     await context.bot.send_document(
                         chat_id=client_chat_id,
                         document=doc_file_id,
@@ -1765,11 +1779,9 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
                         parse_mode="HTML"
                     )
                 else:
-                    # Text-only issue verification message when no screenshot is attached
-                    text_msg = f"<b>{cust_title}</b>\n\n{cust_msg}"
                     await context.bot.send_message(
                         chat_id=client_chat_id,
-                        text=text_msg,
+                        text=body_text,
                         reply_to_message_id=order.original_message_id,
                         reply_markup=keyboard,
                         parse_mode="HTML"
