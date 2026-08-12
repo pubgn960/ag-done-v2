@@ -2201,6 +2201,39 @@ class TestSimpleRunningTotalSystem(unittest.IsolatedAsyncioTestCase):
         e, _ = await record_delivery_ledger_entry(order_id=702, package="5040+2400", now_value=val, dedup_hash="pd_multi")
         self.assertEqual(e.now_value, 49.5)
 
+    async def test_second_and_third_partial_delivery_exact_now_values(self):
+        from utils import parse_test_order_packages, mark_selected_packages_delivered, calculate_delivered_packages_value
+        from database import record_delivery_ledger_entry, get_running_total_current
+
+        # Order: 10800 + 5040 + 2400 (Prices: 64$, 33$, 16.5$ -> Total: 113.5$)
+        parsed = parse_test_order_packages("10800+5040+2400")
+        items = parsed["packages"]
+
+        # Step 1: First delivery (10800 + 2400) -> Now: 80.5$, Before: 0$, Total: 80.5$
+        sel1 = [{"package": "10800"}, {"package": "2400"}]
+        updated1, is_all1, _ = mark_selected_packages_delivered(items, loader_id=1, selected_items=sel1)
+        val1, ok1 = calculate_delivered_packages_value("10800+2400")
+        self.assertTrue(ok1)
+        self.assertEqual(val1, 80.5)
+
+        e1, _ = await record_delivery_ledger_entry(order_id=801, package="10800+2400", now_value=val1, dedup_hash="ex_1")
+        self.assertEqual(e1.before_total, 0.0)
+        self.assertEqual(e1.now_value, 80.5)
+        self.assertEqual(e1.running_total, 80.5)
+
+        # Step 2: Second delivery (5040) -> Now: 33$, Before: 80.5$, Total: 113.5$
+        sel2 = [{"package": "5040"}]
+        updated2, is_all2, _ = mark_selected_packages_delivered(updated1, loader_id=1, selected_items=sel2)
+        val2, ok2 = calculate_delivered_packages_value("5040")
+        self.assertTrue(ok2)
+        self.assertEqual(val2, 33.0)
+
+        e2, _ = await record_delivery_ledger_entry(order_id=801, package="5040", now_value=val2, dedup_hash="ex_2")
+        self.assertEqual(e2.before_total, 80.5)
+        self.assertEqual(e2.now_value, 33.0)
+        self.assertEqual(e2.running_total, 113.5)
+        self.assertEqual(await get_running_total_current(), 113.5)
+
 
 class TestMultiPackageSelectionRegression(unittest.TestCase):
     """Regression tests to verify multi-package selection UI and calculation."""

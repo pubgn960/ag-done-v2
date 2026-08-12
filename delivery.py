@@ -284,7 +284,13 @@ async def deliver_order_by_id(
             if len(sent) > 0:
                 last_sent_customer_msg_id = sent[0].message_id
 
-    # 2. Mark package progress as Delivered and update Order cards and status
+    # Save previously delivered package counts BEFORE marking progress
+    prev_delivered_counts = {}
+    for it in progress_items:
+        if isinstance(it, dict) and it.get("status") == "Delivered":
+            pname = str(it.get("package", ""))
+            prev_delivered_counts[pname] = prev_delivered_counts.get(pname, 0) + 1
+
     loader_user_id = active_ds.loader_id if active_ds else 0
     selected_items_list = None
     if active_ds and active_ds.selected_packages:
@@ -314,13 +320,15 @@ async def deliver_order_by_id(
     if selected_items_list:
         newly_delivered_names = [it["package"] for it in selected_items_list if isinstance(it, dict) and "package" in it]
 
-    if not newly_delivered_names and progress_items and updated_items:
-        prev_delivered = {it["package"] for it in progress_items if isinstance(it, dict) and it.get("status") == "Delivered"}
-        curr_delivered = [it["package"] for it in updated_items if isinstance(it, dict) and it.get("status") == "Delivered" and it["package"] not in prev_delivered]
-        newly_delivered_names = curr_delivered
-
     if not newly_delivered_names and updated_items:
-        newly_delivered_names = [it["package"] for it in updated_items if isinstance(it, dict) and it.get("status") == "Delivered"]
+        temp_counts = dict(prev_delivered_counts)
+        for it in updated_items:
+            if isinstance(it, dict) and it.get("status") == "Delivered":
+                pname = str(it.get("package", ""))
+                if temp_counts.get(pname, 0) > 0:
+                    temp_counts[pname] -= 1
+                else:
+                    newly_delivered_names.append(pname)
 
     newly_delivered_str = "+".join(newly_delivered_names) if newly_delivered_names else (order.package or "")
     session_key = active_ds.delivery_session_message_id if active_ds else loader_reply_msg_id
