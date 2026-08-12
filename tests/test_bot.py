@@ -1139,6 +1139,19 @@ class TestDeliverySessionRouting(unittest.TestCase):
         self.assertIn("You may continue the delivery now.", wn_cfg["loader_success_msg"])
         self.assertIn("Reply with delivery screenshots when finished.", wn_cfg["loader_success_msg"])
 
+    def test_issue_workflow_requires_screenshot_rules(self):
+        from utils import ISSUE_WORKFLOW_CONFIG, LoaderIssueType
+
+        # 1. Wrong Name MUST require a screenshot
+        wn = ISSUE_WORKFLOW_CONFIG[LoaderIssueType.WRONG_NAME]
+        self.assertTrue(wn.get("requires_screenshot"))
+        self.assertIn("attach a screenshot", wn.get("missing_screenshot_msg", "").lower())
+
+        # 2. Other issues (Wrong Password, Google Linked, 2FA, Login Failed) screenshots are OPTIONAL
+        for it in [LoaderIssueType.WRONG_PASSWORD, LoaderIssueType.GOOGLE_LINKED, LoaderIssueType.TWO_FACTOR, LoaderIssueType.LOGIN_FAILED]:
+            cfg = ISSUE_WORKFLOW_CONFIG[it]
+            self.assertFalse(cfg.get("requires_screenshot"))
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

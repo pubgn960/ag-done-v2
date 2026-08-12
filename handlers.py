@@ -1670,10 +1670,23 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
     is_media = bool(message.photo or (message.document and (message.document.mime_type or "").startswith("image/")))
     detected_issue = detect_loader_issue(text_content)
 
-    if is_media and detected_issue:
+    if detected_issue:
         issue_cfg, issue_id = detected_issue
+        req_screenshot = issue_cfg.get("requires_screenshot", False)
 
-        # Single-active-issue Duplicate Protection
+        # 1. If screenshot is REQUIRED but missing (e.g. Wrong Name without screenshot)
+        if req_screenshot and not is_media:
+            missing_msg = issue_cfg.get(
+                "missing_screenshot_msg",
+                f"⚠️ Please attach a screenshot as proof for {issue_cfg.get('label', issue_id)} verification."
+            )
+            try:
+                await message.reply_text(missing_msg)
+            except Exception as e:
+                logger.exception(f"[LOADER] Failed to send missing screenshot warning for Order #{order.id}: {e}")
+            return
+
+        # 2. Single-active-issue Duplicate Protection
         if await has_active_pending_issue(order.id):
             logger.info(f"[LOADER] Duplicate issue request blocked for Order #{order.id}. Active issue already pending.")
             try:
@@ -1686,9 +1699,11 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
         logger.info(f"{log_tag}\nLoader reported issue '{issue_id}' for Order #{order.id}.")
         logger.info(f"[DELIVERY_PAUSED]\nDelivery session paused for Order #{order.id} (Issue: {issue_id}).")
 
-        # 1. Immediately reply to loader reply message in Loader Group BEFORE contacting customer
+        # 3. Immediately reply to loader reply message in Loader Group BEFORE contacting customer
+        issue_label = issue_cfg.get("label", issue_id)
         loader_wait_notice = (
             "⏳ Waiting for customer confirmation...\n\n"
+            f"Issue:\n\n{issue_label}\n\n"
             "Your report has been sent to the customer.\n\n"
             "Delivery has been paused.\n\n"
             "Please wait until the customer responds."
@@ -1711,19 +1726,13 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Update order issue state in DB
         await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_id)
 
-        # 2. Copy screenshot (do NOT forward) directly to Client Group
+        # 4. Contact Customer in Client Group (copy screenshot if present, else send text-only)
         client_chat_id = order.client_chat_id or BOT_SETTINGS["source_group_id"]
         if client_chat_id and order.original_message_id:
             cust_title = issue_cfg.get("customer_title", "⚠️ Verification Required")
             cust_msg = issue_cfg.get("customer_message", "Please check your account.")
             approve_lbl = issue_cfg.get("approve_label", "✅ Approve")
             reject_lbl = issue_cfg.get("reject_label", "❌ Update Account")
-
-            caption_text = (
-                f"<b>{cust_title}</b>\n\n"
-                f"{cust_msg}\n\n"
-                f"📷 Screenshot attached."
-            )
 
             keyboard = InlineKeyboardMarkup([
                 [
@@ -1733,8 +1742,9 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
             ])
 
             try:
-                if message.photo:
+                if is_media and message.photo:
                     photo_file_id = message.photo[-1].file_id
+                    caption_text = f"<b>{cust_title}</b>\n\n{cust_msg}\n\n📷 Screenshot attached."
                     await context.bot.send_photo(
                         chat_id=client_chat_id,
                         photo=photo_file_id,
@@ -1743,12 +1753,23 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
                         reply_markup=keyboard,
                         parse_mode="HTML"
                     )
-                elif message.document:
+                elif is_media and message.document:
                     doc_file_id = message.document.file_id
+                    caption_text = f"<b>{cust_title}</b>\n\n{cust_msg}\n\n📷 Screenshot attached."
                     await context.bot.send_document(
                         chat_id=client_chat_id,
                         document=doc_file_id,
                         caption=caption_text,
+                        reply_to_message_id=order.original_message_id,
+                        reply_markup=keyboard,
+                        parse_mode="HTML"
+                    )
+                else:
+                    # Text-only issue verification message when no screenshot is attached
+                    text_msg = f"<b>{cust_title}</b>\n\n{cust_msg}"
+                    await context.bot.send_message(
+                        chat_id=client_chat_id,
+                        text=text_msg,
                         reply_to_message_id=order.original_message_id,
                         reply_markup=keyboard,
                         parse_mode="HTML"
