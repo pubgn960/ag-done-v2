@@ -898,16 +898,16 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
         is_known = (unit_price is not None)
 
         if is_known:
-            item_total = unit_price * qty
-            known_total += item_total
-            detected.append({
-                "package": pkg,
-                "qty": qty,
-                "known": True,
-                "unit_price": unit_price,
-                "total": item_total,
-                "status": "Pending"
-            })
+            for _ in range(qty):
+                known_total += unit_price
+                detected.append({
+                    "package": pkg,
+                    "qty": 1,
+                    "known": True,
+                    "unit_price": unit_price,
+                    "total": unit_price,
+                    "status": "Pending"
+                })
         else:
             has_cp = bool(re.search(r'cp', seg, re.IGNORECASE))
             pkg_int = int(pkg)
@@ -915,14 +915,15 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
                 continue
 
             has_unknown = True
-            detected.append({
-                "package": pkg,
-                "qty": qty,
-                "known": False,
-                "unit_price": None,
-                "total": None,
-                "status": "Unpriced"
-            })
+            for _ in range(qty):
+                detected.append({
+                    "package": pkg,
+                    "qty": 1,
+                    "known": False,
+                    "unit_price": None,
+                    "total": None,
+                    "status": "Unpriced"
+                })
 
     if detected:
         return {

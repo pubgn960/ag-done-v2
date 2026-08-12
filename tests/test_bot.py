@@ -1315,10 +1315,10 @@ class TestDeliverySessionRouting(unittest.TestCase):
         f3 = format_package_summary_and_price(p3)
         self.assertEqual(f3, "📦 Package(s):\n• 10800 CP\n• 5040 CP\n• 420 CP\n\n💰 Price: 101.5$")
 
-        # Example 4: Quantity 2400x2+880
+        # Example 4: Quantity 2400x2+880 (Expanded)
         p4 = parse_test_order_packages("2400x2+880")
         f4 = format_package_summary_and_price(p4)
-        self.assertEqual(f4, "📦 Package(s):\n• 2400 CP ×2\n• 880 CP\n\n💰 Price: 41$")
+        self.assertEqual(f4, "📦 Package(s):\n• 2400 CP\n• 2400 CP\n• 880 CP\n\n💰 Price: 41$")
 
         # Example 5: Order preservation (880+2400)
         p5 = parse_test_order_packages("880+2400")
@@ -2475,9 +2475,9 @@ class TestMultilingualDetectorAndPackageAliases(unittest.TestCase):
 
         parsed = parse_test_order_packages(msg)
         self.assertIsNotNone(parsed)
-        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(len(parsed["packages"]), 3)
         self.assertEqual(parsed["packages"][0]["package"], "10800")
-        self.assertEqual(parsed["packages"][0]["qty"], 3)
+        self.assertEqual(parsed["packages"][0]["qty"], 1)
 
     def test_real_customer_message_2_facebook_spanish(self):
         from keywords import contains_order_keyword
@@ -2507,42 +2507,43 @@ class TestMultilingualDetectorAndPackageAliases(unittest.TestCase):
 
         # 5k -> 5040
         p5k = parse_test_order_packages("5k")
+        self.assertEqual(len(p5k["packages"]), 1)
         self.assertEqual(p5k["packages"][0]["package"], "5040")
-        self.assertEqual(p5k["packages"][0]["qty"], 1)
 
         # 10k -> 10800
         p10k = parse_test_order_packages("10k")
+        self.assertEqual(len(p10k["packages"]), 1)
         self.assertEqual(p10k["packages"][0]["package"], "10800")
-        self.assertEqual(p10k["packages"][0]["qty"], 1)
 
         # 2.4k -> 2400
         p24k = parse_test_order_packages("2.4k")
+        self.assertEqual(len(p24k["packages"]), 1)
         self.assertEqual(p24k["packages"][0]["package"], "2400")
 
-        # 10800*3
+        # 10800*3 -> Expanded to 3 items
         p_mult1 = parse_test_order_packages("10800*3")
+        self.assertEqual(len(p_mult1["packages"]), 3)
         self.assertEqual(p_mult1["packages"][0]["package"], "10800")
-        self.assertEqual(p_mult1["packages"][0]["qty"], 3)
 
-        # 5040x3
+        # 5040x3 -> Expanded to 3 items
         p_mult2 = parse_test_order_packages("5040x3")
+        self.assertEqual(len(p_mult2["packages"]), 3)
         self.assertEqual(p_mult2["packages"][0]["package"], "5040")
-        self.assertEqual(p_mult2["packages"][0]["qty"], 3)
 
-        # 2400 ×2
+        # 2400 ×2 -> Expanded to 2 items
         p_mult3 = parse_test_order_packages("2400 ×2")
+        self.assertEqual(len(p_mult3["packages"]), 2)
         self.assertEqual(p_mult3["packages"][0]["package"], "2400")
-        self.assertEqual(p_mult3["packages"][0]["qty"], 2)
 
-        # 5k*2
+        # 5k*2 -> Expanded to 2 items of 5040
         p_mult4 = parse_test_order_packages("5k*2")
+        self.assertEqual(len(p_mult4["packages"]), 2)
         self.assertEqual(p_mult4["packages"][0]["package"], "5040")
-        self.assertEqual(p_mult4["packages"][0]["qty"], 2)
 
-        # 5k x2
+        # 5k x2 -> Expanded to 2 items of 5040
         p_mult5 = parse_test_order_packages("5k x2")
+        self.assertEqual(len(p_mult5["packages"]), 2)
         self.assertEqual(p_mult5["packages"][0]["package"], "5040")
-        self.assertEqual(p_mult5["packages"][0]["qty"], 2)
 
     def test_email_and_package_fallback_rule(self):
         from keywords import contains_order_keyword
@@ -2577,6 +2578,121 @@ class TestMultilingualDetectorAndPackageAliases(unittest.TestCase):
         is_order_sp, platform_sp = contains_order_keyword(msg_spanish)
         self.assertTrue(is_order_sp)
         self.assertEqual(platform_sp, "facebook")
+
+
+class TestPackageMultiplierExpansionEngine(unittest.IsolatedAsyncioTestCase):
+    """Production regression test suite for Package Multiplier Expansion Engine."""
+
+    async def asyncSetUp(self):
+        from database import init_db, AsyncSessionLocal
+        from models import DeliveryLedger, RunningTotalLedger, Order
+        from sqlalchemy import delete
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(DeliveryLedger))
+            await session.execute(delete(RunningTotalLedger))
+            await session.execute(delete(Order))
+            await session.commit()
+
+    def test_multiplier_expansions_and_aliases(self):
+        from utils import parse_test_order_packages
+
+        # 10800*3
+        p1 = parse_test_order_packages("10800*3")
+        pkgs1 = [it["package"] for it in p1["packages"]]
+        self.assertEqual(pkgs1, ["10800", "10800", "10800"])
+        self.assertEqual(p1["total_price"], 192.0)
+
+        # 10800x3
+        p2 = parse_test_order_packages("10800x3")
+        pkgs2 = [it["package"] for it in p2["packages"]]
+        self.assertEqual(pkgs2, ["10800", "10800", "10800"])
+
+        # 10800×3
+        p3 = parse_test_order_packages("10800×3")
+        pkgs3 = [it["package"] for it in p3["packages"]]
+        self.assertEqual(pkgs3, ["10800", "10800", "10800"])
+
+        # 5k*2 -> 5040, 5040
+        p4 = parse_test_order_packages("5k*2")
+        pkgs4 = [it["package"] for it in p4["packages"]]
+        self.assertEqual(pkgs4, ["5040", "5040"])
+        self.assertEqual(p4["total_price"], 66.0)
+
+        # 10k×4 -> 10800, 10800, 10800, 10800
+        p5 = parse_test_order_packages("10k×4")
+        pkgs5 = [it["package"] for it in p5["packages"]]
+        self.assertEqual(pkgs5, ["10800", "10800", "10800", "10800"])
+        self.assertEqual(p5["total_price"], 256.0)
+
+        # 5040x2
+        p6 = parse_test_order_packages("5040x2")
+        pkgs6 = [it["package"] for it in p6["packages"]]
+        self.assertEqual(pkgs6, ["5040", "5040"])
+
+        # 880*5
+        p7 = parse_test_order_packages("880*5")
+        pkgs7 = [it["package"] for it in p7["packages"]]
+        self.assertEqual(pkgs7, ["880", "880", "880", "880", "880"])
+        self.assertEqual(p7["total_price"], 40.0)
+
+    async def test_expanded_package_partial_deliveries_and_ledger(self):
+        from utils import parse_test_order_packages, toggle_package_selection, mark_selected_packages_delivered, calculate_delivered_packages_value
+        from database import record_delivery_ledger_entry, get_running_total_current
+
+        parsed = parse_test_order_packages("10800*3")
+        items = parsed["packages"]
+        self.assertEqual(len(items), 3)
+
+        # 1. First Partial Delivery: Loader selects 2 of 10800
+        items, _ = toggle_package_selection(items, 0, loader_id=10)
+        items, _ = toggle_package_selection(items, 1, loader_id=10)
+
+        selected_1 = [it for it in items if it.get("status") == "Selected"]
+        self.assertEqual(len(selected_1), 2)
+
+        updated_items_1, is_completed_1, del_cnt_1 = mark_selected_packages_delivered(
+            items, loader_id=10, selected_items=selected_1
+        )
+        self.assertFalse(is_completed_1)
+        self.assertEqual(del_cnt_1, 2)
+
+        pkg_str_1 = "+".join([it["package"] for it in selected_1])
+        price_1, ok1 = calculate_delivered_packages_value(pkg_str_1)
+        self.assertTrue(ok1)
+        self.assertEqual(price_1, 128.0)
+
+        entry_1, ok_l1 = await record_delivery_ledger_entry(order_id=1, package=pkg_str_1, now_value=price_1)
+        self.assertTrue(ok_l1)
+        self.assertEqual(entry_1.before_total, 0.0)
+        self.assertEqual(entry_1.now_value, 128.0)
+        self.assertEqual(entry_1.running_total, 128.0)
+        self.assertEqual(await get_running_total_current(), 128.0)
+
+        # 2. Second Delivery: Loader selects remaining 1 of 10800
+        pending_idx = [i for i, it in enumerate(updated_items_1) if it.get("status") == "Pending"][0]
+        updated_items_1, _ = toggle_package_selection(updated_items_1, pending_idx, loader_id=10)
+
+        selected_2 = [it for it in updated_items_1 if it.get("status") == "Selected"]
+        self.assertEqual(len(selected_2), 1)
+
+        updated_items_2, is_completed_2, del_cnt_2 = mark_selected_packages_delivered(
+            updated_items_1, loader_id=10, selected_items=selected_2
+        )
+        self.assertTrue(is_completed_2)
+        self.assertEqual(del_cnt_2, 1)
+
+        pkg_str_2 = "+".join([it["package"] for it in selected_2])
+        price_2, ok2 = calculate_delivered_packages_value(pkg_str_2)
+        self.assertTrue(ok2)
+        self.assertEqual(price_2, 64.0)
+
+        entry_2, ok_l2 = await record_delivery_ledger_entry(order_id=1, package=pkg_str_2, now_value=price_2)
+        self.assertTrue(ok_l2)
+        self.assertEqual(entry_2.before_total, 128.0)
+        self.assertEqual(entry_2.now_value, 64.0)
+        self.assertEqual(entry_2.running_total, 192.0)
+        self.assertEqual(await get_running_total_current(), 192.0)
 
 
 if __name__ == "__main__":
