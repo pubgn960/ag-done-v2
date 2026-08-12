@@ -2150,6 +2150,57 @@ class TestSimpleRunningTotalSystem(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(act_type, "MANUAL_MINUS")
         self.assertEqual(await get_running_total_current(), 0.0)
 
+    async def test_partial_delivery_running_total_correctness(self):
+        from utils import parse_test_order_packages, mark_selected_packages_delivered, calculate_delivered_packages_value
+        from database import record_delivery_ledger_entry, get_running_total_current
+
+        parsed = parse_test_order_packages("880+420+80")
+        raw_items = parsed["packages"]
+
+        # Step 1: Deliver 880 + 420 (Price: 9.0 + 3.5 = 12.5$)
+        step1_selection = [{"package": "880"}, {"package": "420"}]
+        updated1, is_all1, cnt1 = mark_selected_packages_delivered(raw_items, loader_id=1, selected_items=step1_selection)
+        self.assertFalse(is_all1)
+
+        new_names1 = [it["package"] for it in step1_selection]
+        pkg_str1 = "+".join(new_names1)
+        val1, ok1 = calculate_delivered_packages_value(pkg_str1)
+        self.assertTrue(ok1)
+        self.assertEqual(val1, 12.5)
+
+        e1, _ = await record_delivery_ledger_entry(order_id=701, package=pkg_str1, now_value=val1, dedup_hash="pd_1")
+        self.assertEqual(e1.before_total, 0.0)
+        self.assertEqual(e1.now_value, 12.5)
+        self.assertEqual(e1.running_total, 12.5)
+
+        # Step 2: Deliver 80 (Price: 1.0$)
+        step2_selection = [{"package": "80"}]
+        updated2, is_all2, cnt2 = mark_selected_packages_delivered(updated1, loader_id=1, selected_items=step2_selection)
+        self.assertTrue(is_all2)
+
+        new_names2 = [it["package"] for it in step2_selection]
+        pkg_str2 = "+".join(new_names2)
+        val2, ok2 = calculate_delivered_packages_value(pkg_str2)
+        self.assertTrue(ok2)
+        self.assertEqual(val2, 1.0)
+
+        e2, _ = await record_delivery_ledger_entry(order_id=701, package=pkg_str2, now_value=val2, dedup_hash="pd_2")
+        self.assertEqual(e2.before_total, 12.5)
+        self.assertEqual(e2.now_value, 1.0)
+        self.assertEqual(e2.running_total, 13.5)
+        self.assertEqual(await get_running_total_current(), 13.5)
+
+    async def test_three_step_and_multi_package_partial_deliveries(self):
+        from utils import calculate_delivered_packages_value
+        from database import record_delivery_ledger_entry
+
+        val, ok = calculate_delivered_packages_value("5040+2400")
+        self.assertTrue(ok)
+        self.assertEqual(val, 49.5)
+
+        e, _ = await record_delivery_ledger_entry(order_id=702, package="5040+2400", now_value=val, dedup_hash="pd_multi")
+        self.assertEqual(e.now_value, 49.5)
+
 
 if __name__ == "__main__":
     unittest.main()

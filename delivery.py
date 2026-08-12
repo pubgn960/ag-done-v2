@@ -286,7 +286,18 @@ async def deliver_order_by_id(
 
     # 2. Mark package progress as Delivered and update Order cards and status
     loader_user_id = active_ds.loader_id if active_ds else 0
-    updated_items, is_all_completed, delivered_cnt = mark_selected_packages_delivered(progress_items, loader_id=loader_user_id)
+    selected_items_list = None
+    if active_ds and active_ds.selected_packages:
+        try:
+            selected_items_list = json.loads(active_ds.selected_packages)
+        except Exception:
+            pass
+
+    updated_items, is_all_completed, delivered_cnt = mark_selected_packages_delivered(
+        progress_items,
+        loader_id=loader_user_id,
+        selected_items=selected_items_list
+    )
     updated_progress_json = json.dumps(updated_items)
     await update_order_package_progress(order.id, updated_progress_json)
     order.package_progress = updated_progress_json
@@ -300,15 +311,19 @@ async def deliver_order_by_id(
 
     # Trigger Delivery Ledger Accounting in Customer Group (Client Group)
     newly_delivered_names = []
-    if active_ds and active_ds.selected_packages:
-        try:
-            sel_list = json.loads(active_ds.selected_packages)
-            newly_delivered_names = [it["package"] for it in sel_list if isinstance(it, dict) and "package" in it]
-        except Exception:
-            pass
+    if selected_items_list:
+        newly_delivered_names = [it["package"] for it in selected_items_list if isinstance(it, dict) and "package" in it]
+
+    if not newly_delivered_names and progress_items and updated_items:
+        prev_delivered = {it["package"] for it in progress_items if isinstance(it, dict) and it.get("status") == "Delivered"}
+        curr_delivered = [it["package"] for it in updated_items if isinstance(it, dict) and it.get("status") == "Delivered" and it["package"] not in prev_delivered]
+        newly_delivered_names = curr_delivered
 
     if not newly_delivered_names and progress_items:
-        newly_delivered_names = [it["package"] for it in progress_items if isinstance(it, dict) and "package" in it]
+        for it in progress_items:
+            if isinstance(it, dict) and it.get("status") == "Delivered":
+                newly_delivered_names = [it["package"]]
+                break
 
     newly_delivered_str = "+".join(newly_delivered_names) if newly_delivered_names else (order.package or "")
     session_key = active_ds.delivery_session_message_id if active_ds else loader_reply_msg_id
