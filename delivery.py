@@ -66,19 +66,19 @@ async def send_media_group_with_retry(
     reply_to_message_id: Optional[int] = None,
     max_retries: int = Config.MAX_RETRY,
     delay: float = Config.RETRY_DELAY
-) -> bool:
+) -> Optional[List[Message]]:
     """Sends a media group to a Telegram chat with retry handling for rate limits and network glitches."""
     if not media:
-        return True
+        return []
 
     for attempt in range(1, max_retries + 1):
         try:
-            await bot.send_media_group(
+            msgs = await bot.send_media_group(
                 chat_id=chat_id,
                 media=media,
                 reply_to_message_id=reply_to_message_id if attempt == 1 else None
             )
-            return True
+            return list(msgs) if msgs else []
         except RetryAfter as e:
             wait_time = e.retry_after + 1
             logger.warning(f"Telegram Rate Limit (RetryAfter). Waiting {wait_time}s (Attempt {attempt}/{max_retries})...")
@@ -93,7 +93,7 @@ async def send_media_group_with_retry(
             logger.error(f"Unexpected error delivering media group: {e}")
             break
 
-    return False
+    return None
 
 
 async def deliver_order_by_id(
@@ -259,13 +259,12 @@ async def deliver_order_by_id(
     if current_batch:
         grouped_batches.append(current_batch)
 
+    last_sent_customer_msg_id = None
     delivered_count = 0
     for idx, batch in enumerate(grouped_batches):
         media_group: List[MediaUnion] = []
-        for b_idx, img in enumerate(batch):
-            # Only the FIRST image of the FIRST batch gets the email and delivered packages caption
-            item_caption = email_for_caption if (idx == 0 and b_idx == 0) else None
-
+        for img in batch:
+            item_caption = email_for_caption if idx == 0 and len(media_group) == 0 else None
             if img.file_type == "document":
                 media_group.append(InputMediaDocument(media=img.telegram_file_id, caption=item_caption))
             else:
@@ -282,6 +281,8 @@ async def deliver_order_by_id(
         )
         if sent:
             delivered_count += len(batch)
+            if len(sent) > 0:
+                last_sent_customer_msg_id = sent[0].message_id
 
     # 2. Mark package progress as Delivered and update Order cards and status
     loader_user_id = active_ds.loader_id if active_ds else 0
@@ -297,7 +298,7 @@ async def deliver_order_by_id(
         await update_order_status(order.id, "Partially Delivered")
         logger.info(f"[DELIVERY] Partial Delivery Completed | Order #{order.id} ({delivered_cnt} packages delivered, remaining packages pending).")
 
-    # Trigger Delivery Ledger Accounting
+    # Trigger Delivery Ledger Accounting in Customer Group (Client Group)
     newly_delivered_names = []
     if active_ds and active_ds.selected_packages:
         try:
@@ -313,6 +314,7 @@ async def deliver_order_by_id(
     session_key = active_ds.delivery_session_message_id if active_ds else loader_reply_msg_id
     dedup_hash = f"{order.id}:{newly_delivered_str}:{session_key}"
     loader_name_str = f"Loader #{active_ds.loader_id}" if active_ds and active_ds.loader_id else "Loader"
+    customer_target_msg_id = last_sent_customer_msg_id or order.original_message_id
 
     try:
         from handlers import process_delivery_ledger_event
@@ -321,9 +323,9 @@ async def deliver_order_by_id(
             package_str=newly_delivered_str,
             loader_name=loader_name_str,
             bot=bot,
-            chat_id=loader_group_id or client_chat_id,
+            chat_id=client_chat_id,  # ALWAYS Customer Group (Client Group)
             dedup_hash=dedup_hash,
-            reply_to_message_id=loader_reply_msg_id
+            reply_to_message_id=customer_target_msg_id  # Reply to Customer delivery message
         )
     except Exception as e_led:
         logger.exception(f"[LEDGER] Failed to process delivery ledger event for Order #{order.id}: {e_led}")
