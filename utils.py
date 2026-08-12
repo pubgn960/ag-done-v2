@@ -579,6 +579,75 @@ def format_export_prices(price_map: Dict[str, float]) -> str:
     return "\n".join(std_lines) + "\n\n" + "\n".join(spc_lines)
 
 
+def _fmt_price_val(val: float) -> str:
+    """Helper to format price cleanly (e.g. 16, 16.5)."""
+    return f"{int(val)}" if val.is_integer() else f"{val:g}"
+
+
+def format_ledger_entry_message(before: float, now: float, total: float) -> str:
+    """
+    Formats standard Delivery Ledger notice:
+    ━━━━━━━━━━━━━━━━━━
+
+    📊 Delivery Ledger
+
+    Before
+    16$
+
+    Now
+    64$
+
+    Total
+    80$
+
+    ━━━━━━━━━━━━━━━━━━
+    """
+    return (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 <b>Delivery Ledger</b>\n\n"
+        "Before\n"
+        f"{_fmt_price_val(before)}$\n\n"
+        "Now\n"
+        f"{_fmt_price_val(now)}$\n\n"
+        "Total\n"
+        f"{_fmt_price_val(total)}$\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def calculate_delivered_packages_value(packages_str: str) -> Tuple[Optional[float], bool]:
+    """
+    Calculates sum of prices for delivered package(s) string (e.g., '10800', '10800+5040', '2x10800').
+    Returns (total_value, all_known_bool).
+    """
+    if not packages_str or not packages_str.strip():
+        return None, False
+
+    parsed = parse_test_order_packages(packages_str)
+    if not parsed or not parsed.get("packages"):
+        return None, False
+
+    total_val = 0.0
+    all_known = True
+
+    for p in parsed["packages"]:
+        pkg_name = p.get("package")
+        qty = p.get("qty", 1)
+        if p.get("known") and pkg_name in PACKAGE_PRICES:
+            unit_price = PACKAGE_PRICES[pkg_name]
+            total_val += unit_price * qty
+        else:
+            all_known = False
+
+    if not all_known and parsed.get("known_total", 0) > 0:
+        return parsed.get("known_total"), False
+
+    if not all_known:
+        return None, False
+
+    return total_val, True
+
+
 def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, Any]]:
     """
     Parses complete order text to detect BOTH known and unknown packages and quantities.

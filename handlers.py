@@ -110,7 +110,9 @@ from utils import (
     validate_customer_update_for_issue,
     parse_bulk_prices_input,
     format_export_prices,
-    PACKAGE_PRICES
+    PACKAGE_PRICES,
+    format_ledger_entry_message,
+    calculate_delivered_packages_value
 )
 from database import (
     update_order_package_progress,
@@ -118,7 +120,15 @@ from database import (
     get_delivery_session_by_msg_id,
     close_delivery_session,
     get_all_package_prices_from_db,
-    bulk_update_package_prices_in_db
+    bulk_update_package_prices_in_db,
+    get_current_running_total,
+    record_delivery_ledger_entry,
+    get_last_ledger_entry,
+    get_ledger_entry_by_id,
+    undo_ledger_entry,
+    get_latest_ledger_entries,
+    get_ledger_period_stats,
+    reset_delivery_ledger
 )
 import json
 
@@ -1538,6 +1548,308 @@ async def bulk_price_update_text_handler(update: Update, context: ContextTypes.D
 
 
 # ==========================================
+# Production Delivery Ledger System
+# ==========================================
+
+async def process_delivery_ledger_event(
+    order_id: int,
+    package_str: str,
+    loader_name: Optional[str],
+    bot: Any,
+    chat_id: int,
+    dedup_hash: Optional[str] = None
+) -> None:
+    """
+    Calculates delivered value for newly delivered package(s), records entry in Delivery Ledger DB table,
+    updates running total, enforces deduplication, and sends Delivery Ledger notice message.
+    """
+    if not package_str:
+        return
+
+    now_val, all_known = calculate_delivered_packages_value(package_str)
+
+    if now_val is None or not all_known:
+        notice_text = f"⚠️ Price not found for package '{package_str}' on Order #{order_id}.\n\nUse /addprice to update ledger."
+        try:
+            await bot.send_message(chat_id=chat_id, text=notice_text)
+            logger.warning(f"[LEDGER_FAILSAFE] Unknown price for package '{package_str}' on Order #{order_id}.")
+        except Exception as e:
+            logger.exception(f"[LEDGER_FAILSAFE] Failed to send missing price notice: {e}")
+        return
+
+    entry, is_new = await record_delivery_ledger_entry(
+        order_id=order_id,
+        package=package_str,
+        now_value=now_val,
+        loader_name=loader_name,
+        dedup_hash=dedup_hash,
+        is_manual=False
+    )
+
+    if not is_new or not entry:
+        logger.info(f"[DUPLICATE_LEDGER_BLOCKED] Skipped duplicate ledger entry for Order #{order_id} ({package_str}).")
+        return
+
+    ledger_msg = format_ledger_entry_message(entry.before_total, entry.now_value, entry.running_total)
+
+    try:
+        await bot.send_message(chat_id=chat_id, text=ledger_msg, parse_mode="HTML")
+    except Exception as e:
+        logger.exception(f"[LEDGER] Failed to send ledger notification message: {e}")
+
+
+async def undo_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /undo.
+    Displays confirmation card for the latest ledger entry.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[LEDGER_UNDO] Unauthorized /undo attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    last_entry = await get_last_ledger_entry()
+    if not last_entry:
+        await update.message.reply_text("❌ No ledger entries found to undo.")
+        return
+
+    ts_str = last_entry.timestamp.strftime("%d %b %Y %H:%M UTC") if last_entry.timestamp else "N/A"
+    order_ref = f"Order #{last_entry.order_id}" if last_entry.order_id else "Manual Adjustment"
+    pkg_ref = last_entry.package or "N/A"
+    amt_val = last_entry.now_value
+    amt_str = f"{int(amt_val)}" if amt_val.is_integer() else f"{amt_val:g}"
+
+    confirm_card = (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>Last Ledger Entry</b>\n\n"
+        f"<b>{order_ref}</b>\n\n"
+        f"<b>Package</b>\n{pkg_ref}\n\n"
+        f"<b>Amount</b>\n{amt_str}$\n\n"
+        f"<b>Timestamp</b>\n{ts_str}\n\n"
+        "<b>Undo this entry?</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirm Undo", callback_data=f"ledger_undo_confirm:{last_entry.id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"ledger_undo_cancel:{last_entry.id}")
+        ]
+    ])
+    await update.message.reply_text(confirm_card, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def ledger_undo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles inline button confirmation for /undo.
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("ledger_undo_"):
+        return
+
+    user = query.from_user
+    if not user or not is_super_admin(user.id):
+        await query.answer("⛔ Only Super Admins can undo ledger entries.", show_alert=True)
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    parts = query.data.split(":")
+    action = parts[0]
+    entry_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+
+    if action == "ledger_undo_confirm":
+        undone = await undo_ledger_entry(entry_id, admin_id=user.id)
+        if undone:
+            amt_str = f"{int(undone.now_value)}" if undone.now_value.is_integer() else f"{undone.now_value:g}"
+            await query.edit_message_text(f"✅ <b>Ledger Entry #{entry_id} ({amt_str}$) Undone Successfully.</b>", parse_mode="HTML")
+        else:
+            await query.edit_message_text("❌ Ledger entry not found or already undone.")
+    elif action == "ledger_undo_cancel":
+        await query.edit_message_text("❌ <b>Ledger Undo Cancelled.</b>", parse_mode="HTML")
+
+
+async def addprice_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /addprice <amount> <reason>.
+    Manually adds a price adjustment to the ledger. Requires reason.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[LEDGER_MANUAL] Unauthorized /addprice attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    args = context.args or []
+    if len(args) < 2:
+        prompt = (
+            "⚠️ <b>Please provide an amount and a reason.</b>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/addprice 29 Special Pack Price Correction</code>"
+        )
+        await update.message.reply_text(prompt, parse_mode="HTML")
+        return
+
+    try:
+        amount = float(args[0])
+        if amount <= 0:
+            await update.message.reply_text("❌ Amount must be a positive number.")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Invalid numeric amount.")
+        return
+
+    reason = " ".join(args[1:]).strip()
+    admin_ref = f"@{user.username}" if user.username else f"Admin #{user.id}"
+
+    entry, _ = await record_delivery_ledger_entry(
+        order_id=None,
+        package="Manual Add",
+        now_value=amount,
+        loader_name=admin_ref,
+        reason=reason,
+        is_manual=True
+    )
+
+    if entry:
+        msg = format_ledger_entry_message(entry.before_total, entry.now_value, entry.running_total)
+        await update.message.reply_text(msg, parse_mode="HTML")
+
+
+async def subtractprice_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /subtractprice <amount> <reason>.
+    Manually subtracts a price adjustment from the ledger. Requires reason.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[LEDGER_MANUAL] Unauthorized /subtractprice attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    args = context.args or []
+    if len(args) < 2:
+        prompt = (
+            "⚠️ <b>Please provide an amount and a reason.</b>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/subtractprice 16 Duplicate Entry Correction</code>"
+        )
+        await update.message.reply_text(prompt, parse_mode="HTML")
+        return
+
+    try:
+        amount = float(args[0])
+        if amount <= 0:
+            await update.message.reply_text("❌ Amount must be a positive number.")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Invalid numeric amount.")
+        return
+
+    reason = " ".join(args[1:]).strip()
+    admin_ref = f"@{user.username}" if user.username else f"Admin #{user.id}"
+
+    entry, _ = await record_delivery_ledger_entry(
+        order_id=None,
+        package="Manual Subtract",
+        now_value=-amount,
+        loader_name=admin_ref,
+        reason=reason,
+        is_manual=True
+    )
+
+    if entry:
+        msg = format_ledger_entry_message(entry.before_total, entry.now_value, entry.running_total)
+        await update.message.reply_text(msg, parse_mode="HTML")
+
+
+async def ledger_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /ledger.
+    Displays latest 10 ledger entries.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[LEDGER] Unauthorized /ledger attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    entries = await get_latest_ledger_entries(10)
+    if not entries:
+        await update.message.reply_text("📋 <b>Delivery Ledger is empty.</b>", parse_mode="HTML")
+        return
+
+    lines = ["📊 <b>Delivery Ledger History (Latest 10)</b>\n"]
+    for e in reversed(entries):
+        order_ref = f"#{e.order_id}" if e.order_id else "Manual"
+        pkg_ref = e.package or "N/A"
+        amt_str = f"{int(e.now_value)}" if e.now_value.is_integer() else f"{e.now_value:g}"
+        tot_str = f"{int(e.running_total)}" if e.running_total.is_integer() else f"{e.running_total:g}"
+
+        lines.append(
+            f"#{e.id} | Order {order_ref}\n"
+            f"Package: {pkg_ref}\n"
+            f"Amount: {amt_str}$\n"
+            f"Total: {tot_str}$\n"
+            f"----------------"
+        )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def todaytotal_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /todaytotal.
+    Displays dynamic period statistics (Today, Week, Month, Running Total).
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[LEDGER] Unauthorized /todaytotal attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    stats = await get_ledger_period_stats()
+    today_rev = f"{int(stats['today_revenue'])}" if stats['today_revenue'].is_integer() else f"{stats['today_revenue']:g}"
+    week_rev = f"{int(stats['week_revenue'])}" if stats['week_revenue'].is_integer() else f"{stats['week_revenue']:g}"
+    month_rev = f"{int(stats['month_revenue'])}" if stats['month_revenue'].is_integer() else f"{stats['month_revenue']:g}"
+    run_tot = f"{int(stats['running_total'])}" if stats['running_total'].is_integer() else f"{stats['running_total']:g}"
+
+    msg = (
+        "📊 <b>Delivery Ledger Overview</b>\n\n"
+        f"<b>Today's Deliveries:</b> {stats['today_count']}\n"
+        f"<b>Today's Revenue:</b> {today_rev}$\n\n"
+        f"<b>This Week:</b> {week_rev}$\n"
+        f"<b>This Month:</b> {month_rev}$\n\n"
+        f"<b>Current Running Total:</b> {run_tot}$"
+    )
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+async def resetledger_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /resetledger.
+    Resets running total to 0$ upon confirmation (/resetledger confirm).
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[LEDGER_RESET] Unauthorized /resetledger attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    args = context.args or []
+    if not args or args[0].lower() != "confirm":
+        prompt = (
+            "⚠️ <b>Reset Delivery Ledger Running Total?</b>\n\n"
+            "This will reset the running total to 0$. Orders will NOT be deleted.\n\n"
+            "To confirm, type:\n"
+            "<code>/resetledger confirm</code>"
+        )
+        await update.message.reply_text(prompt, parse_mode="HTML")
+        return
+
+    success = await reset_delivery_ledger(user.id)
+    if success:
+        await update.message.reply_text("✅ <b>Delivery Ledger Running Total Reset to 0$.</b>", parse_mode="HTML")
+
+
+# ==========================================
 # Multi-Loader Category B Callback Handler
 # ==========================================
 
@@ -2932,7 +3244,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/restore</code> - Restore SQLite database\n\n"
         "<b>Price Management:</b>\n"
         "• <code>/exportprices</code> - Export current price list\n"
-        "• <code>/updateprices</code> - Bulk update price list\n"
+        "• <code>/updateprices</code> - Bulk update price list\n\n"
+        "<b>Delivery Ledger:</b>\n"
+        "• <code>/undo</code> - Undo last ledger entry (with confirmation)\n"
+        "• <code>/addprice &lt;amount&gt; &lt;reason&gt;</code> - Add manual price adjustment\n"
+        "• <code>/subtractprice &lt;amount&gt; &lt;reason&gt;</code> - Subtract manual price adjustment\n"
+        "• <code>/ledger</code> - View recent delivery ledger history\n"
+        "• <code>/todaytotal</code> - View today revenue & ledger statistics\n"
+        "• <code>/resetledger</code> - Reset ledger running total\n"
     )
     await update.effective_message.reply_text(help_msg, parse_mode="HTML")
 

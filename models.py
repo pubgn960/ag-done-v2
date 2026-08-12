@@ -7,7 +7,7 @@ Multi Loader Approval System, and Category A Only Price Workflow with prompt & c
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from sqlalchemy import String, Text, Integer, BigInteger, Float, DateTime, ForeignKey, Index
+from sqlalchemy import String, Text, Integer, BigInteger, Float, Boolean, DateTime, ForeignKey, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -237,3 +237,33 @@ class PackagePrice(Base):
 
     def __repr__(self) -> str:
         return f"<PackagePrice(package='{self.package}', price={self.price}, updated_by={self.updated_by})>"
+
+
+class DeliveryLedger(Base):
+    """
+    Stores individual delivery ledger entries and running totals for accounting.
+    Includes deduplication protection via dedup_hash, audit reasons, and manual flags.
+    """
+
+    __tablename__ = "delivery_ledger"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    package: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    before_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    now_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    running_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    loader: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    dedup_hash: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True, index=True)
+    is_manual: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<DeliveryLedger(id={self.id}, order_id={self.order_id}, now={self.now_value}, total={self.running_total}, manual={self.is_manual})>"

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import joinedload
 
 from config import Config
-from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice
+from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger
 
 logger = logging.getLogger(__name__)
 
@@ -1354,4 +1354,246 @@ async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_
         except Exception as e:
             await session.rollback()
             logger.error(f"[PRICE_UPDATE] Transaction rolled back due to error: {e}")
+            raise e
+
+
+# ==========================================
+# Production Delivery Ledger Operations
+# ==========================================
+
+async def get_current_running_total() -> float:
+    """
+    Returns the latest running total from the delivery_ledger table.
+    Defaults to 0.0 if empty.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        latest = res.scalar_one_or_none()
+        return latest.running_total if latest else 0.0
+
+
+async def record_delivery_ledger_entry(
+    order_id: Optional[int],
+    package: Optional[str],
+    now_value: float,
+    loader_name: Optional[str] = None,
+    dedup_hash: Optional[str] = None,
+    reason: Optional[str] = None,
+    is_manual: bool = False
+) -> Tuple[Optional[DeliveryLedger], bool]:
+    """
+    Records an independent delivery ledger entry and updates the running total.
+    Prevents duplicates via dedup_hash (logs [DUPLICATE_LEDGER_BLOCKED]).
+    Returns (entry, True) on success, or (None, False) if duplicate.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            if dedup_hash:
+                stmt = select(DeliveryLedger).where(DeliveryLedger.dedup_hash == dedup_hash)
+                dup = (await session.execute(stmt)).scalar_one_or_none()
+                if dup:
+                    logger.warning(
+                        f"[DUPLICATE_LEDGER_BLOCKED]\n"
+                        f"Blocked duplicate ledger entry for hash: {dedup_hash}\n"
+                        f"Order #{order_id} | Package: {package}"
+                    )
+                    return None, False
+
+            stmt_latest = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
+            latest = (await session.execute(stmt_latest)).scalar_one_or_none()
+            before_total = latest.running_total if latest else 0.0
+            new_running_total = before_total + now_value
+
+            now_dt = datetime.now(timezone.utc)
+            entry = DeliveryLedger(
+                order_id=order_id,
+                package=package,
+                price=now_value,
+                before_total=before_total,
+                now_value=now_value,
+                running_total=new_running_total,
+                loader=loader_name,
+                reason=reason,
+                dedup_hash=dedup_hash,
+                is_manual=is_manual,
+                timestamp=now_dt
+            )
+            session.add(entry)
+            await session.commit()
+            await session.refresh(entry)
+
+            log_tag = "[LEDGER_MANUAL]" if is_manual else "[LEDGER_ADD]"
+            logger.info(
+                f"{log_tag}\n"
+                f"Order #{order_id}\n"
+                f"Package: {package}\n"
+                f"Before: {before_total}$\n"
+                f"Now: {now_value}$\n"
+                f"Total: {new_running_total}$\n"
+                f"Loader: {loader_name}\n"
+                f"Timestamp: {now_dt.isoformat()}"
+            )
+            return entry, True
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[LEDGER_ADD] Failed to record delivery ledger entry: {e}")
+            raise e
+
+
+async def get_last_ledger_entry() -> Optional[DeliveryLedger]:
+    """
+    Retrieves the most recent delivery_ledger entry.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        return res.scalar_one_or_none()
+
+
+async def get_ledger_entry_by_id(entry_id: int) -> Optional[DeliveryLedger]:
+    """
+    Retrieves a specific delivery_ledger entry by ID.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(DeliveryLedger).where(DeliveryLedger.id == entry_id)
+        res = await session.execute(stmt)
+        return res.scalar_one_or_none()
+
+
+async def undo_ledger_entry(entry_id: int, admin_id: Optional[int] = None) -> Optional[DeliveryLedger]:
+    """
+    Safely undoes/deletes a ledger entry and recalculates subsequent running totals.
+    Logs [LEDGER_UNDO].
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(DeliveryLedger).where(DeliveryLedger.id == entry_id)
+            target = (await session.execute(stmt)).scalar_one_or_none()
+            if not target:
+                return None
+
+            now_val = target.now_value
+            pkg = target.package
+            order_id = target.order_id
+
+            await session.delete(target)
+            await session.commit()
+
+            stmt_all = select(DeliveryLedger).order_by(DeliveryLedger.id.asc())
+            all_entries = (await session.execute(stmt_all)).scalars().all()
+
+            running = 0.0
+            for item in all_entries:
+                item.before_total = running
+                running += item.now_value
+                item.running_total = running
+
+            await session.commit()
+
+            logger.info(
+                f"[LEDGER_UNDO]\n"
+                f"Admin: #{admin_id}\n"
+                f"Order: #{order_id}\n"
+                f"Package: {pkg}\n"
+                f"Undone Amount: {now_val}$\n"
+                f"New Running Total: {running}$"
+            )
+            return target
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[LEDGER_UNDO] Failed to undo ledger entry #{entry_id}: {e}")
+            raise e
+
+
+async def get_latest_ledger_entries(limit: int = 10) -> List[DeliveryLedger]:
+    """
+    Retrieves latest delivery_ledger entries for history display.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(limit)
+        res = await session.execute(stmt)
+        return list(res.scalars().all())
+
+
+async def get_ledger_period_stats() -> Dict[str, Any]:
+    """
+    Dynamically calculates Today's Deliveries count, Today's Revenue,
+    This Week's Revenue, This Month's Revenue, and Current Running Total based on entry timestamps.
+    """
+    async with AsyncSessionLocal() as session:
+        now_dt = datetime.now(timezone.utc)
+
+        today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=today_start.weekday())
+        month_start = today_start.replace(day=1)
+
+        stmt_today = select(
+            func.count(DeliveryLedger.id),
+            func.coalesce(func.sum(DeliveryLedger.now_value), 0.0)
+        ).where(DeliveryLedger.timestamp >= today_start)
+        res_today = (await session.execute(stmt_today)).first()
+        today_count = res_today[0] if res_today else 0
+        today_revenue = float(res_today[1]) if res_today else 0.0
+
+        stmt_week = select(func.coalesce(func.sum(DeliveryLedger.now_value), 0.0)).where(
+            DeliveryLedger.timestamp >= week_start
+        )
+        week_revenue = float((await session.execute(stmt_week)).scalar() or 0.0)
+
+        stmt_month = select(func.coalesce(func.sum(DeliveryLedger.now_value), 0.0)).where(
+            DeliveryLedger.timestamp >= month_start
+        )
+        month_revenue = float((await session.execute(stmt_month)).scalar() or 0.0)
+
+        running_total = await get_current_running_total()
+
+        return {
+            "today_count": today_count,
+            "today_revenue": today_revenue,
+            "week_revenue": week_revenue,
+            "month_revenue": month_revenue,
+            "running_total": running_total
+        }
+
+
+async def reset_delivery_ledger(admin_id: int) -> bool:
+    """
+    Resets the running total of the delivery ledger to 0.0 by recording a reset entry.
+    Orders remain 100% untouched.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            curr_total = await get_current_running_total()
+            if curr_total == 0.0:
+                return True
+
+            now_dt = datetime.now(timezone.utc)
+            reset_entry = DeliveryLedger(
+                order_id=None,
+                package="RESET",
+                price=-curr_total,
+                before_total=curr_total,
+                now_value=-curr_total,
+                running_total=0.0,
+                loader=f"Admin #{admin_id}",
+                reason="Admin Reset Ledger",
+                dedup_hash=f"RESET_{now_dt.timestamp()}",
+                is_manual=True,
+                timestamp=now_dt
+            )
+            session.add(reset_entry)
+            await session.commit()
+
+            logger.info(
+                f"[LEDGER_RESET]\n"
+                f"Admin: #{admin_id}\n"
+                f"Previous Total: {curr_total}$\n"
+                f"New Running Total: 0.0$\n"
+                f"Timestamp: {now_dt.isoformat()}"
+            )
+            return True
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[LEDGER_RESET] Failed to reset delivery ledger: {e}")
             raise e

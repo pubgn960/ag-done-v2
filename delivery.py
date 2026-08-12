@@ -297,6 +297,34 @@ async def deliver_order_by_id(
         await update_order_status(order.id, "Partially Delivered")
         logger.info(f"[DELIVERY] Partial Delivery Completed | Order #{order.id} ({delivered_cnt} packages delivered, remaining packages pending).")
 
+    # Trigger Delivery Ledger Accounting
+    newly_delivered_names = []
+    if active_ds and active_ds.selected_packages:
+        try:
+            sel_list = json.loads(active_ds.selected_packages)
+            newly_delivered_names = [it["package"] for it in sel_list if isinstance(it, dict) and "package" in it]
+        except Exception:
+            pass
+
+    if not newly_delivered_names and progress_items:
+        newly_delivered_names = [it["package"] for it in progress_items if isinstance(it, dict) and "package" in it]
+
+    newly_delivered_str = "+".join(newly_delivered_names) if newly_delivered_names else (order.package or "")
+    session_key = active_ds.delivery_session_message_id if active_ds else loader_reply_msg_id
+    dedup_hash = f"{order.id}:{newly_delivered_str}:{session_key}"
+    try:
+        from handlers import process_delivery_ledger_event
+        await process_delivery_ledger_event(
+            order_id=order.id,
+            package_str=newly_delivered_str,
+            loader_name=loader_name,
+            bot=bot,
+            chat_id=loader_group_id or client_chat_id,
+            dedup_hash=dedup_hash
+        )
+    except Exception as e_led:
+        logger.exception(f"[LEDGER] Failed to process delivery ledger event for Order #{order.id}: {e_led}")
+
     # Update Client Group Summary card if price_msg_id exists
     if order.price_msg_id and client_chat_id:
         try:

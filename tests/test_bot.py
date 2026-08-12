@@ -1760,9 +1760,111 @@ class TestIgnoredTrustedUsers(unittest.IsolatedAsyncioTestCase):
         update1249.effective_chat.id = -1001111222333
         update1249.effective_user.id = 1249984265
         update1249.effective_message.reply_text = AsyncMock()
-
         await source_group_handler(update1249, None)
         update1249.effective_message.reply_text.assert_not_called()
+
+
+class TestDeliveryLedgerSystem(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for Production Delivery Ledger & Running Total System."""
+
+    async def asyncSetUp(self):
+        from database import init_db
+        await init_db()
+
+    async def test_partial_deliveries_create_separate_ledger_entries(self):
+        from database import record_delivery_ledger_entry, get_current_running_total
+
+        e1, ok1 = await record_delivery_ledger_entry(order_id=101, package="10800", now_value=64.0, loader_name="Loader A", dedup_hash="101:10800:1")
+        self.assertTrue(ok1)
+        self.assertIsNotNone(e1)
+        self.assertEqual(e1.now_value, 64.0)
+
+        e2, ok2 = await record_delivery_ledger_entry(order_id=101, package="5040", now_value=33.0, loader_name="Loader A", dedup_hash="101:5040:2")
+        self.assertTrue(ok2)
+        self.assertEqual(e2.now_value, 33.0)
+
+        e3, ok3 = await record_delivery_ledger_entry(order_id=101, package="2400", now_value=16.5, loader_name="Loader A", dedup_hash="101:2400:3")
+        self.assertTrue(ok3)
+        self.assertEqual(e3.now_value, 16.5)
+
+    async def test_multi_package_delivery_combines_value(self):
+        from utils import calculate_delivered_packages_value
+        from database import record_delivery_ledger_entry
+
+        val, known = calculate_delivered_packages_value("10800+5040")
+        self.assertTrue(known)
+        self.assertEqual(val, 97.0)
+
+        e, ok = await record_delivery_ledger_entry(order_id=102, package="10800+5040", now_value=val, loader_name="Loader B", dedup_hash="102:multi:1")
+        self.assertTrue(ok)
+        self.assertEqual(e.now_value, 97.0)
+
+    async def test_duplicate_delivery_blocked(self):
+        from database import record_delivery_ledger_entry
+
+        e1, ok1 = await record_delivery_ledger_entry(order_id=103, package="2400", now_value=16.5, loader_name="Loader C", dedup_hash="DUP_TEST_HASH_123")
+        self.assertTrue(ok1)
+
+        e2, ok2 = await record_delivery_ledger_entry(order_id=103, package="2400", now_value=16.5, loader_name="Loader C", dedup_hash="DUP_TEST_HASH_123")
+        self.assertFalse(ok2)
+        self.assertIsNone(e2)
+
+    async def test_manual_adjustment_reason_requirement_and_execution(self):
+        from database import record_delivery_ledger_entry
+
+        e_add, ok1 = await record_delivery_ledger_entry(
+            order_id=None,
+            package="Manual Add",
+            now_value=29.0,
+            loader_name="Admin",
+            reason="Special Pack Price Correction",
+            is_manual=True
+        )
+        self.assertTrue(ok1)
+        self.assertTrue(e_add.is_manual)
+        self.assertEqual(e_add.reason, "Special Pack Price Correction")
+        self.assertEqual(e_add.now_value, 29.0)
+
+        e_sub, ok2 = await record_delivery_ledger_entry(
+            order_id=None,
+            package="Manual Subtract",
+            now_value=-16.0,
+            loader_name="Admin",
+            reason="Duplicate Entry Correction",
+            is_manual=True
+        )
+        self.assertTrue(ok2)
+        self.assertTrue(e_sub.is_manual)
+        self.assertEqual(e_sub.reason, "Duplicate Entry Correction")
+        self.assertEqual(e_sub.now_value, -16.0)
+
+    async def test_safe_undo_with_confirmation(self):
+        from database import record_delivery_ledger_entry, undo_ledger_entry
+
+        e, ok = await record_delivery_ledger_entry(order_id=105, package="880", now_value=8.0, loader_name="Loader D", dedup_hash="UNDO_HASH_105")
+        self.assertTrue(ok)
+
+        undone = await undo_ledger_entry(e.id, admin_id=1573531032)
+        self.assertIsNotNone(undone)
+        self.assertEqual(undone.id, e.id)
+
+    async def test_todaytotal_period_stats(self):
+        from database import get_ledger_period_stats
+        stats = await get_ledger_period_stats()
+        self.assertIn("today_count", stats)
+        self.assertIn("today_revenue", stats)
+        self.assertIn("week_revenue", stats)
+        self.assertIn("month_revenue", stats)
+        self.assertIn("running_total", stats)
+
+    async def test_reset_ledger(self):
+        from database import record_delivery_ledger_entry, reset_delivery_ledger, get_current_running_total
+
+        await record_delivery_ledger_entry(order_id=106, package="420", now_value=4.5, loader_name="Loader E", dedup_hash="RESET_TEST_HASH")
+        res = await reset_delivery_ledger(admin_id=1573531032)
+        self.assertTrue(res)
+        tot = await get_current_running_total()
+        self.assertEqual(tot, 0.0)
 
 
 if __name__ == "__main__":
