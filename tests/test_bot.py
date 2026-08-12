@@ -1127,6 +1127,18 @@ class TestDeliverySessionRouting(unittest.TestCase):
         self.assertTrue(has_valid_account_update_fields("123456\n654321"))
         self.assertTrue(has_valid_account_update_fields("2FA code: 888999"))
 
+    def test_reaction_api_and_loader_approval_messages(self):
+        from utils import ALLOWED_REACTION_EMOJIS, ISSUE_WORKFLOW_CONFIG, LoaderIssueType
+
+        # 1. Allowed reactions must contain only standard Unicode emojis
+        self.assertEqual(ALLOWED_REACTION_EMOJIS, {"✅", "❌", "❤️", "⏳"})
+
+        # 2. Check customer approval success message for Wrong Name
+        wn_cfg = ISSUE_WORKFLOW_CONFIG[LoaderIssueType.WRONG_NAME]
+        self.assertIn("✅ Customer confirmed that the account name is correct.", wn_cfg["loader_success_msg"])
+        self.assertIn("You may continue the delivery now.", wn_cfg["loader_success_msg"])
+        self.assertIn("Reply with delivery screenshots when finished.", wn_cfg["loader_success_msg"])
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

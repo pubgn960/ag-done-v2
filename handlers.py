@@ -1686,10 +1686,32 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
         logger.info(f"{log_tag}\nLoader reported issue '{issue_id}' for Order #{order.id}.")
         logger.info(f"[DELIVERY_PAUSED]\nDelivery session paused for Order #{order.id} (Issue: {issue_id}).")
 
+        # 1. Immediately reply to loader reply message in Loader Group BEFORE contacting customer
+        loader_wait_notice = (
+            "⏳ Waiting for customer confirmation...\n\n"
+            "Your report has been sent to the customer.\n\n"
+            "Delivery has been paused.\n\n"
+            "Please wait until the customer responds."
+        )
+        try:
+            await message.reply_text(loader_wait_notice)
+        except Exception as e:
+            logger.exception(f"[LOADER] Failed to send immediate loader wait notification for Order #{order.id}: {e}")
+
+        # Add ⏳ reaction to loader's reply message
+        await safe_set_message_reaction(
+            bot=context.bot,
+            chat_id=chat.id,
+            message_id=message.message_id,
+            emoji="⏳",
+            fallback_emoji=None,
+            log_tag="[REACTION]"
+        )
+
         # Update order issue state in DB
         await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_id)
 
-        # Copy screenshot (do NOT forward) directly to Client Group
+        # 2. Copy screenshot (do NOT forward) directly to Client Group
         client_chat_id = order.client_chat_id or BOT_SETTINGS["source_group_id"]
         if client_chat_id and order.original_message_id:
             cust_title = issue_cfg.get("customer_title", "⚠️ Verification Required")
@@ -1734,16 +1756,6 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.info(f"[CLIENT] Issue verification request sent to Client Group for Order #{order.id}.")
             except Exception as e:
                 logger.exception(f"[CLIENT] Failed to send issue verification request for Order #{order.id}: {e}")
-
-        # Add ⚠️ reaction to loader's reply message
-        await safe_set_message_reaction(
-            bot=context.bot,
-            chat_id=chat.id,
-            message_id=message.message_id,
-            emoji="⚠️",
-            fallback_emoji=None,
-            log_tag="[REACTION]"
-        )
 
         return
 

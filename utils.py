@@ -41,9 +41,9 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_text": "⚠️ <b>Name Verification Required</b>\n\nThe loader reported that the account name may be incorrect.",
         "approve_label": "✅ Approve",
         "reject_label": "❌ Update Account",
-        "loader_success_msg": "✅ Customer confirmed the account name is correct.\n\nPlease continue the delivery.",
+        "loader_success_msg": "✅ Customer confirmed that the account name is correct.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_failure_msg": "❌ Order Cancelled\n\nCustomer confirmed the account name is incorrect.\n\nPlease stop this delivery and wait for updated account details.",
-        "loader_yes_text": "✅ Customer confirmed the account name is correct.\n\nPlease continue the delivery.",
+        "loader_yes_text": "✅ Customer confirmed that the account name is correct.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_no_text": "❌ Order Cancelled\n\nCustomer confirmed the account name is incorrect.\n\nPlease stop this delivery and wait for updated account details.",
         "log_tag": "[WRONG_NAME]"
     },
@@ -56,9 +56,9 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_text": "⚠️ <b>Password Verification Required</b>\n\nThe loader reported that the password appears to be incorrect.",
         "approve_label": "✅ Correct Password",
         "reject_label": "❌ Update Password",
-        "loader_success_msg": "✅ Customer confirmed the password is correct.\n\nPlease continue the delivery.",
+        "loader_success_msg": "✅ Customer confirmed that the password is correct.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_failure_msg": "❌ Order Cancelled\n\nCustomer confirmed the password is incorrect.\n\nPlease stop this delivery and wait for updated password.",
-        "loader_yes_text": "✅ Customer confirmed the password is correct.\n\nPlease continue the delivery.",
+        "loader_yes_text": "✅ Customer confirmed that the password is correct.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_no_text": "❌ Order Cancelled\n\nCustomer confirmed the password is incorrect.\n\nPlease stop this delivery and wait for updated password.",
         "log_tag": "[WRONG_PASSWORD]"
     },
@@ -71,9 +71,9 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_text": "⚠️ <b>Google Account Verification</b>\n\nThe loader reported that this account is already linked with Google.",
         "approve_label": "✅ Continue",
         "reject_label": "❌ Update Account",
-        "loader_success_msg": "✅ Customer confirmed to continue with Google linked account.\n\nPlease continue delivery.",
+        "loader_success_msg": "✅ Customer confirmed to continue with Google linked account.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_failure_msg": "❌ Order Cancelled\n\nCustomer rejected Google linked account.\n\nPlease stop this delivery and wait for updated account details.",
-        "loader_yes_text": "✅ Customer confirmed to continue with Google linked account.\n\nPlease continue delivery.",
+        "loader_yes_text": "✅ Customer confirmed to continue with Google linked account.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_no_text": "❌ Order Cancelled\n\nCustomer rejected Google linked account.\n\nPlease stop this delivery and wait for updated account details.",
         "log_tag": "[GOOGLE_LINKED]"
     },
@@ -86,9 +86,9 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_text": "⚠️ <b>Two-Factor Authentication Required</b>\n\nThe loader requires additional verification.",
         "approve_label": "✅ Send Information",
         "reject_label": "❌ Cancel",
-        "loader_success_msg": "✅ Customer provided verification information.\n\nPlease continue delivery.",
+        "loader_success_msg": "✅ Customer provided verification information.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_failure_msg": "❌ Order Cancelled\n\nCustomer cancelled two-factor verification.\n\nPlease stop this delivery and wait for updated account details.",
-        "loader_yes_text": "✅ Customer provided verification information.\n\nPlease continue delivery.",
+        "loader_yes_text": "✅ Customer provided verification information.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_no_text": "❌ Order Cancelled\n\nCustomer cancelled two-factor verification.\n\nPlease stop this delivery and wait for updated account details.",
         "log_tag": "[TWO_FACTOR]"
     },
@@ -101,9 +101,9 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_text": "⚠️ <b>Login Verification Required</b>\n\nThe loader was unable to log in using the provided account details.",
         "approve_label": "✅ Retry Login",
         "reject_label": "❌ Update Account",
-        "loader_success_msg": "✅ Customer requested retry login with existing details.\n\nPlease try logging in again.",
+        "loader_success_msg": "✅ Customer requested retry login with existing details.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_failure_msg": "❌ Order Cancelled\n\nCustomer stated account details are incorrect.\n\nPlease stop this delivery and wait for updated account details.",
-        "loader_yes_text": "✅ Customer requested retry login with existing details.\n\nPlease try logging in again.",
+        "loader_yes_text": "✅ Customer requested retry login with existing details.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
         "loader_no_text": "❌ Order Cancelled\n\nCustomer stated account details are incorrect.\n\nPlease stop this delivery and wait for updated account details.",
         "log_tag": "[LOGIN_FAILED]"
     },
@@ -293,66 +293,45 @@ async def check_admin_permission(update: Update) -> bool:
     return False
 
 
+ALLOWED_REACTION_EMOJIS: Set[str] = {"✅", "❌", "❤️", "⏳"}
+
+
 async def safe_set_message_reaction(
     bot: Bot,
     chat_id: Optional[int],
     message_id: Optional[int],
-    emoji: str = "👍",
+    emoji: str = "✅",
     fallback_emoji: Optional[str] = None,
     log_tag: str = "[REACTION]"
 ) -> bool:
     """
-    Safely sets a Telegram reaction emoji on a message.
+    Safely sets a Telegram reaction emoji on a message using ONLY standard Unicode reactions:
+    ✅, ❌, ❤️, ⏳.
+    Never uses custom_emoji_id.
     Gracefully handles cases where reactions are disabled in chat or unsupported by API.
-    Never stops the workflow. Logs 'Reaction not supported' on failure.
     """
     if not chat_id or not message_id:
         return False
 
-    # Primary emoji attempt
-    try:
-        await bot.set_message_reaction(
-            chat_id=chat_id,
-            message_id=message_id,
-            reaction=[ReactionTypeEmoji(emoji=emoji)]
-        )
-        return True
-    except Exception as e:
-        logger.debug(f"Reaction '{emoji}' via ReactionTypeEmoji failed: {e}. Trying raw string list...")
+    emoji_map = {
+        "⚠️": "⏳",
+        "👍": "✅",
+        "📥": "⏳"
+    }
+    target_emoji = emoji_map.get(emoji, emoji)
+    if target_emoji not in ALLOWED_REACTION_EMOJIS:
+        target_emoji = "✅"
 
     try:
         await bot.set_message_reaction(
             chat_id=chat_id,
             message_id=message_id,
-            reaction=[emoji]
+            reaction=[ReactionTypeEmoji(emoji=target_emoji)]
         )
         return True
     except Exception as e:
-        logger.warning(f"Reaction not supported: {e}")
-
-    # Fallback emoji attempt if specified
-    if fallback_emoji:
-        try:
-            await bot.set_message_reaction(
-                chat_id=chat_id,
-                message_id=message_id,
-                reaction=[ReactionTypeEmoji(emoji=fallback_emoji)]
-            )
-            return True
-        except Exception:
-            pass
-
-        try:
-            await bot.set_message_reaction(
-                chat_id=chat_id,
-                message_id=message_id,
-                reaction=[fallback_emoji]
-            )
-            return True
-        except Exception as e2:
-            logger.warning(f"Reaction not supported: {e2}")
-
-    return False
+        logger.debug(f"{log_tag} Reaction '{target_emoji}' failed: {e}")
+        return False
 
 
 def get_uptime_str() -> str:
