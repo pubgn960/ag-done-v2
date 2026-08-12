@@ -144,7 +144,9 @@ async def post_init(application: Application) -> None:
         BotCommand("status", "Bot Status"),
         BotCommand("pending", "Pending Orders"),
         BotCommand("find", "Find Order"),
-        BotCommand("stats", "Statistics")
+        BotCommand("stats", "Statistics"),
+        BotCommand("exportprices", "Export Price List"),
+        BotCommand("updateprices", "Bulk Update Prices")
     ]
 
     valid_commands = []

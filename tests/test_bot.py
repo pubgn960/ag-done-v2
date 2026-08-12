@@ -1702,6 +1702,22 @@ class TestBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(is_super_admin(1573531032))
         self.assertFalse(is_super_admin(999999999))
 
+    async def test_command_menu_and_handler_audit(self):
+        from handlers import exportprices_command_handler, updateprices_command_handler
+
+        # Verify handlers exist and are callable
+        self.assertTrue(callable(exportprices_command_handler))
+        self.assertTrue(callable(updateprices_command_handler))
+
+        # Inspect main.py source code to verify set_my_commands and handler registration
+        with open("main.py", "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn('BotCommand("exportprices"', content)
+        self.assertIn('BotCommand("updateprices"', content)
+        self.assertIn('CommandHandler("exportprices", exportprices_command_handler)', content)
+        self.assertIn('CommandHandler("updateprices", updateprices_command_handler)', content)
+
 
 if __name__ == "__main__":
     unittest.main()
