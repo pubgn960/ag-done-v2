@@ -561,6 +561,29 @@ class TestTwoGroupDatabaseWorkflow(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(success)
         self.assertEqual(canceled_order.status, "Cancelled")
 
+    async def test_get_order_waiting_for_customer_update_import_and_query(self):
+        from database import init_db, create_order, update_order_status, delete_orders_by_email, get_order_waiting_for_customer_update
+        from handlers import get_order_waiting_for_customer_update as get_order_handler_import
+
+        self.assertEqual(get_order_waiting_for_customer_update, get_order_handler_import)
+
+        await init_db()
+        email = "waiting_update_test@example.com"
+        client_chat_id = -100999888777
+        await delete_orders_by_email(email)
+
+        # 1. No active waiting order -> returns None
+        none_ord = await get_order_waiting_for_customer_update(client_chat_id)
+        self.assertIsNone(none_ord)
+
+        # 2. Create order & set status to Waiting Customer Update
+        order = await create_order(email=email, client_chat_id=client_chat_id, package="10800")
+        await update_order_status(order.id, "Waiting Customer Update")
+
+        matched_ord = await get_order_waiting_for_customer_update(client_chat_id)
+        self.assertIsNotNone(matched_ord)
+        self.assertEqual(matched_ord.id, order.id)
+
         # Clean up
         await delete_orders_by_email(email)
         await delete_orders_by_email("cancel_test@example.com")

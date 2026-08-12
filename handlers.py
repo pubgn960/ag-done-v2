@@ -73,7 +73,10 @@ from database import (
     remove_loader_by_id,
     get_all_loaders,
     update_order_price,
-    update_order_issue_state
+    update_order_issue_state,
+    update_order_raw_text,
+    has_active_pending_issue,
+    get_order_waiting_for_customer_update
 )
 from models import Order
 from utils import (
