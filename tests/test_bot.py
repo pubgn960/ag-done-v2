@@ -1077,36 +1077,45 @@ class TestDeliverySessionRouting(unittest.TestCase):
 
     def test_generic_issue_workflow_engine(self):
         from utils import detect_loader_issue, has_valid_account_update_fields, ISSUE_WORKFLOW_CONFIG
+        from handlers import detect_loader_issue as detect_loader_issue_handler
 
-        # 1. Test keyword detection for all 5 issue types
-        res_wn = detect_loader_issue("wrong name")
-        self.assertIsNotNone(res_wn)
-        self.assertEqual(res_wn[1], "wrong_name")
-        self.assertEqual(res_wn[0]["customer_title"], "⚠️ Name Verification Required")
+        self.assertEqual(detect_loader_issue, detect_loader_issue_handler)
 
-        res_wp = detect_loader_issue("incorrect password")
-        self.assertIsNotNone(res_wp)
-        self.assertEqual(res_wp[1], "wrong_password")
+        # 1. Test all keywords for Wrong Name
+        for kw in ["wrong name", "wrongname", "name wrong", "WRONG NAME", "WrongName", "Name Wrong"]:
+            res = detect_loader_issue(kw)
+            self.assertIsNotNone(res, f"Failed matching: {kw}")
+            self.assertEqual(res[1], "wrong_name")
 
-        res_gl = detect_loader_issue("google account linked")
-        self.assertIsNotNone(res_gl)
-        self.assertEqual(res_gl[1], "google_linked")
+        # 2. Test all keywords for Wrong Password
+        for kw in ["wrong password", "wrongpassword", "password wrong", "incorrect password", "WRONG PASSWORD", "Incorrect Password"]:
+            res = detect_loader_issue(kw)
+            self.assertIsNotNone(res, f"Failed matching: {kw}")
+            self.assertEqual(res[1], "wrong_password")
 
-        res_2fa = detect_loader_issue("verification code needed")
-        self.assertIsNotNone(res_2fa)
-        self.assertEqual(res_2fa[1], "two_factor")
+        # 3. Test all keywords for Google Linked
+        for kw in ["google linked", "linked google", "google account linked", "already linked", "google bind", "GOOGLE LINKED", "Already Linked"]:
+            res = detect_loader_issue(kw)
+            self.assertIsNotNone(res, f"Failed matching: {kw}")
+            self.assertEqual(res[1], "google_linked")
 
-        res_lf = detect_loader_issue("unable to login")
-        self.assertIsNotNone(res_lf)
-        self.assertEqual(res_lf[1], "login_failed")
+        # 4. Test all keywords for 2FA
+        for kw in ["2fa", "2fa issue", "two factor", "two-factor", "verification code", "authenticator", "backup code", "2FA", "Two Factor"]:
+            res = detect_loader_issue(kw)
+            self.assertIsNotNone(res, f"Failed matching: {kw}")
+            self.assertEqual(res[1], "two_factor")
+
+        # 5. Test all keywords for Login Failed
+        for kw in ["login failed", "cannot login", "unable to login", "login error", "invalid credentials", "LOGIN FAILED", "Cannot Login"]:
+            res = detect_loader_issue(kw)
+            self.assertIsNotNone(res, f"Failed matching: {kw}")
+            self.assertEqual(res[1], "login_failed")
 
         # Unrelated text should return None
-        self.assertIsNone(detect_loader_issue("done"))
-        self.assertIsNone(detect_loader_issue("ok"))
-        self.assertIsNone(detect_loader_issue("thanks"))
-        self.assertIsNone(detect_loader_issue("❤️"))
+        for chatter in ["done", "ok", "thanks", "hello", "fast", "completed", "@alyan", "@username", "❤️", "🔥"]:
+            self.assertIsNone(detect_loader_issue(chatter), f"Should be None for: {chatter}")
 
-        # 2. Test valid account detail field validation
+        # 6. Test valid account detail field validation
         self.assertFalse(has_valid_account_update_fields("ok"))
         self.assertFalse(has_valid_account_update_fields("done"))
         self.assertFalse(has_valid_account_update_fields("thanks"))
