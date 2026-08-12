@@ -105,7 +105,8 @@ from utils import (
     LOADER_ISSUE_CONFIG,
     ISSUE_WORKFLOW_CONFIG,
     detect_loader_issue,
-    has_valid_account_update_fields
+    has_valid_account_update_fields,
+    validate_customer_update_for_issue
 )
 from database import (
     update_order_package_progress,
@@ -174,7 +175,8 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Check if this customer message is an updated account detail submission for a paused order
     waiting_order = await get_order_waiting_for_customer_update(chat.id)
     if waiting_order:
-        if has_valid_account_update_fields(text_content):
+        active_issue_type = waiting_order.issue_type or "wrong_name"
+        if validate_customer_update_for_issue(text_content, active_issue_type):
             logger.info(f"[CUSTOMER_UPDATED]\nCustomer submitted updated account details for Order #{waiting_order.id}.")
             logger.info(f"[DELIVERY_RESUMED]\nDelivery resumed for Order #{waiting_order.id}.")
 
@@ -723,7 +725,10 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
         await update_order_status(order.id, "Waiting Customer Update")
         await update_order_issue_state(order.id, "Waiting_Customer_Update", issue_id)
 
-        cust_ack = "❌ <b>Order Paused</b>\n\nPlease reply with your updated account details below."
+        cust_ack = issue_cfg.get(
+            "customer_update_prompt",
+            "❌ <b>Order Paused</b>\n\nPlease reply with your updated account details below."
+        )
         loader_notify_text = issue_cfg.get("loader_failure_msg", "❌ Customer stated details are incorrect. Please wait for updated account info.")
         reaction_emoji = "❌"
 

@@ -1152,6 +1152,53 @@ class TestDeliverySessionRouting(unittest.TestCase):
             cfg = ISSUE_WORKFLOW_CONFIG[it]
             self.assertFalse(cfg.get("requires_screenshot"))
 
+    def test_smart_customer_input_handling_per_issue_type(self):
+        from utils import validate_customer_update_for_issue, ISSUE_WORKFLOW_CONFIG, LoaderIssueType
+
+        # 1. Wrong Password
+        self.assertTrue(validate_customer_update_for_issue("Password: Pakistan123", "wrong_password"))
+        self.assertTrue(validate_customer_update_for_issue("Password = Pakistan123", "wrong_password"))
+        self.assertTrue(validate_customer_update_for_issue("My new password is Pakistan123", "wrong_password"))
+        self.assertTrue(validate_customer_update_for_issue("New password: Pakistan123", "wrong_password"))
+        self.assertTrue(validate_customer_update_for_issue("Pakistan123", "wrong_password"))
+
+        # 2. Wrong Name
+        self.assertTrue(validate_customer_update_for_issue("Account Name:\nPlayer123", "wrong_name"))
+        self.assertTrue(validate_customer_update_for_issue("Nickname:\nPlayer123", "wrong_name"))
+        self.assertTrue(validate_customer_update_for_issue("My name is Player123", "wrong_name"))
+        self.assertTrue(validate_customer_update_for_issue("Player123", "wrong_name"))
+
+        # 3. Google Linked
+        self.assertTrue(validate_customer_update_for_issue("Yes", "google_linked"))
+        self.assertTrue(validate_customer_update_for_issue("No", "google_linked"))
+        self.assertTrue(validate_customer_update_for_issue("Facebook", "google_linked"))
+        self.assertTrue(validate_customer_update_for_issue("Activision", "google_linked"))
+        self.assertTrue(validate_customer_update_for_issue("Use Facebook", "google_linked"))
+        self.assertTrue(validate_customer_update_for_issue("Email:\nabc@gmail.com\nPassword:\n123456", "google_linked"))
+
+        # 4. 2FA
+        self.assertTrue(validate_customer_update_for_issue("123456", "two_factor"))
+        self.assertTrue(validate_customer_update_for_issue("Authenticator Code:\n123456", "two_factor"))
+        self.assertTrue(validate_customer_update_for_issue("Verification Code:\n123456", "two_factor"))
+        self.assertTrue(validate_customer_update_for_issue("Backup Code:\nABCD-EFGH", "two_factor"))
+        self.assertTrue(validate_customer_update_for_issue("Recovery Code:\n12345678", "two_factor"))
+
+        # 5. Login Failed
+        self.assertTrue(validate_customer_update_for_issue("abc@gmail.com", "login_failed"))
+        self.assertTrue(validate_customer_update_for_issue("Pakistan123", "login_failed"))
+        self.assertTrue(validate_customer_update_for_issue("Email:\nabc@gmail.com\nPassword:\nPakistan123", "login_failed"))
+
+        # 6. General chatter should be rejected for ALL issue types
+        for chatter in ["ok", "done", "thanks", "hello", "fast", "completed", "❤️", "🔥", "👍"]:
+            self.assertFalse(validate_customer_update_for_issue(chatter, "wrong_password"), f"Chatter '{chatter}' should fail for wrong_password")
+            self.assertFalse(validate_customer_update_for_issue(chatter, "wrong_name"), f"Chatter '{chatter}' should fail for wrong_name")
+            self.assertFalse(validate_customer_update_for_issue(chatter, "two_factor"), f"Chatter '{chatter}' should fail for two_factor")
+
+        # 7. Check issue-specific customer prompts
+        for issue_type, cfg in ISSUE_WORKFLOW_CONFIG.items():
+            self.assertIn("customer_update_prompt", cfg)
+            self.assertIn("❌ <b>Order Paused</b>", cfg["customer_update_prompt"])
+
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
         from utils import parse_test_order_packages, update_unknown_package_price

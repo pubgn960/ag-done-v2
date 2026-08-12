@@ -41,6 +41,7 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_title": "⚠️ Name Verification Required",
         "customer_message": "The loader reported that the account name may be incorrect.",
         "customer_text": "⚠️ <b>Name Verification Required</b>\n\nThe loader reported that the account name may be incorrect.",
+        "customer_update_prompt": "❌ <b>Order Paused</b>\n\nPlease send the correct account name.\n\nExamples\n\nAccount Name:\nPlayer123\n\nor simply\n\nPlayer123",
         "approve_label": "✅ Approve",
         "reject_label": "❌ Update Account",
         "loader_success_msg": "✅ Customer confirmed that the account name is correct.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
@@ -58,6 +59,7 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_title": "⚠️ Password Verification Required",
         "customer_message": "The loader reported that the password appears to be incorrect.",
         "customer_text": "⚠️ <b>Password Verification Required</b>\n\nThe loader reported that the password appears to be incorrect.",
+        "customer_update_prompt": "❌ <b>Order Paused</b>\n\nPlease send your NEW password.\n\nExamples\n\nPassword:\nPakistan123\n\nor simply\n\nPakistan123",
         "approve_label": "✅ Correct Password",
         "reject_label": "❌ Update Password",
         "loader_success_msg": "✅ Customer confirmed that the password is correct.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
@@ -75,6 +77,7 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_title": "⚠️ Google Account Verification",
         "customer_message": "The loader reported that this account is already linked with Google.",
         "customer_text": "⚠️ <b>Google Account Verification</b>\n\nThe loader reported that this account is already linked with Google.",
+        "customer_update_prompt": "❌ <b>Order Paused</b>\n\nPlease send updated login details or tell us which login method should be used.\n\nExamples\n\nFacebook\n\nActivision\n\nEmail:\nabc@gmail.com\n\nPassword:\n123456",
         "approve_label": "✅ Continue",
         "reject_label": "❌ Update Account",
         "loader_success_msg": "✅ Customer confirmed to continue with Google linked account.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
@@ -92,6 +95,7 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_title": "⚠️ Two-Factor Authentication Required",
         "customer_message": "The loader requires additional verification.",
         "customer_text": "⚠️ <b>Two-Factor Authentication Required</b>\n\nThe loader requires additional verification.",
+        "customer_update_prompt": "❌ <b>Order Paused</b>\n\nPlease send one of the following\n\n• Verification Code\n\n• Authenticator Code\n\n• Backup Code\n\nExamples\n\n123456\n\nAuthenticator Code:\n123456",
         "approve_label": "✅ Send Information",
         "reject_label": "❌ Cancel",
         "loader_success_msg": "✅ Customer provided verification information.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
@@ -109,6 +113,7 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_title": "⚠️ Login Verification Required",
         "customer_message": "The loader was unable to log in using the provided account details.\n\nPlease verify the account information.",
         "customer_text": "⚠️ <b>Login Verification Required</b>\n\nThe loader was unable to log in using the provided account details.",
+        "customer_update_prompt": "❌ <b>Order Paused</b>\n\nPlease send the updated login details.\n\nExamples\n\nEmail:\nabc@gmail.com\n\nPassword:\nPakistan123\n\nor simply send the corrected information.",
         "approve_label": "✅ Retry Login",
         "reject_label": "❌ Update Account",
         "loader_success_msg": "✅ Customer requested retry login with existing details.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
@@ -125,6 +130,7 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_title": "⚠️ Account Credentials Verification",
         "customer_message": "The loader reported that the account credentials appear incorrect.",
         "customer_text": "⚠️ <b>Account Credentials Verification</b>\n\nThe loader reported that the account credentials appear incorrect.",
+        "customer_update_prompt": "❌ <b>Order Paused</b>\n\nPlease send your updated account details below.",
         "approve_label": "✅ Confirm Details",
         "reject_label": "❌ Update Account",
         "loader_success_msg": "✅ Customer confirmed account details. Please continue delivery.",
@@ -141,6 +147,7 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_title": "⚠️ Order Confirmation Required",
         "customer_message": "The loader requested confirmation for your order details.",
         "customer_text": "⚠️ <b>Order Confirmation Required</b>\n\nThe loader requested confirmation for your order details.",
+        "customer_update_prompt": "❌ <b>Order Paused</b>\n\nPlease send your updated order details below.",
         "approve_label": "✅ Confirm Order",
         "reject_label": "❌ Update Order",
         "loader_success_msg": "✅ Customer confirmed order. Please proceed with delivery.",
@@ -176,21 +183,29 @@ def detect_loader_issue(caption_text: str) -> Optional[Tuple[Dict[str, Any], str
     return None
 
 
-def has_valid_account_update_fields(text: str) -> bool:
+def validate_customer_update_for_issue(text: str, issue_type: Optional[str] = None) -> bool:
     """
-    Validates whether text submitted by customer contains at least one valid account detail field:
-    Email, Password, Recovery Codes, UID, Nickname, Account Name, Authenticator Code, Backup Codes, Platform, Login.
-    Ignores general chatter (ok, done, thanks, hello, ❤️, 🔥, etc.).
+    Validates whether customer response text is a valid account update depending on active issue type.
+    Rejects general chatter (ok, done, thanks, hello, ❤️, 🔥, etc.).
+    Supports both labeled fields (e.g. Password: 123) and plain text inputs (e.g. Pakistan123 for wrong_password).
     """
-    if not text:
+    if not text or not text.strip():
         return False
 
-    t_lower = text.lower().strip()
+    t_trimmed = text.strip()
+    t_lower = t_trimmed.lower()
 
-    # Ignore generic chatter
-    chatter_words = {"ok", "done", "thanks", "hello", "fast", "completed", "ty", "sure", "please", "yes", "no", "❤️", "🔥"}
-    if t_lower in chatter_words or any(emoji in t_lower for emoji in ["❤️", "🔥"]):
+    # 1. Ignore generic chatter
+    chatter_words = {
+        "ok", "done", "thanks", "hello", "fast", "completed", "ty", "sure", "please",
+        "thank you", "k", "kk", "thx", "❤️", "🔥", "👍", "😊"
+    }
+    if t_lower in chatter_words or any(emoji in t_lower for emoji in ["❤️", "🔥", "👍"]):
         return False
+
+    # 2. Check universal email match or field indicators
+    if re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', text):
+        return True
 
     valid_field_indicators = [
         "email", "mail", "gmail", "yahoo", "hotmail", "outlook", "icloud", "proton",
@@ -198,21 +213,36 @@ def has_valid_account_update_fields(text: str) -> bool:
         "recovery", "backup", "2fa", "authenticator", "code", "codes",
         "uid", "nickname", "nick", "username", "account", "name", "platform", "login"
     ]
-
-    # Check email pattern match
-    if re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', text):
-        return True
-
-    # Check if text contains field labels
     for indicator in valid_field_indicators:
         if re.search(r'\b' + re.escape(indicator) + r'\b', t_lower):
             return True
 
-    # Check multi-line digit lists (e.g. 6-digit 2FA / backup codes: 123456\n654321)
+    # 3. Issue-Aware Smart Validation for Plain Text
+    clean_issue = (issue_type.value if hasattr(issue_type, 'value') else str(issue_type or "")).lower()
+
+    if clean_issue == "wrong_password":
+        return len(t_trimmed) >= 3
+    elif clean_issue == "wrong_name":
+        return len(t_trimmed) >= 2
+    elif clean_issue == "two_factor":
+        if re.search(r'\b\d{4,8}\b', text) or re.search(r'^[A-Za-z0-9\-\s]{4,16}$', t_trimmed):
+            return True
+        return len(t_trimmed) >= 4
+    elif clean_issue == "google_linked":
+        return len(t_trimmed) >= 2
+    elif clean_issue == "login_failed":
+        return len(t_trimmed) >= 3
+
+    # Generic Fallback: If 4+ digit codes or non-chatter text >= 3 chars
     if re.search(r'\b\d{4,8}\b', text):
         return True
 
-    return False
+    return len(t_trimmed) >= 3
+
+
+def has_valid_account_update_fields(text: str, issue_type: Optional[str] = None) -> bool:
+    """Alias for validate_customer_update_for_issue for backward compatibility."""
+    return validate_customer_update_for_issue(text, issue_type)
 
 
 def setup_logging(level: int = logging.INFO) -> None:
