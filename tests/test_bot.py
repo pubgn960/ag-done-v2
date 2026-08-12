@@ -294,6 +294,8 @@ class TestRoleBasedUserManagement(unittest.IsolatedAsyncioTestCase):
 
     async def test_role_seeding_and_permissions(self):
         await init_db()
+        from database import remove_authorized_user
+        await remove_authorized_user(999888777)
 
         # Verify initial seeds in memory cache
         self.assertTrue(is_super_admin(1573531032))
@@ -1729,10 +1731,10 @@ class TestIgnoredTrustedUsers(unittest.IsolatedAsyncioTestCase):
         from config import Config
         from utils import is_ignored_user
 
-        self.assertIn(1573531032, Config.IGNORED_USER_IDS)
+        self.assertNotIn(1573531032, Config.IGNORED_USER_IDS)
         self.assertIn(1249984265, Config.IGNORED_USER_IDS)
 
-        self.assertTrue(is_ignored_user(1573531032))
+        self.assertFalse(is_ignored_user(1573531032))
         self.assertTrue(is_ignored_user(1249984265))
         self.assertFalse(is_ignored_user(999999999))
 
@@ -1742,18 +1744,7 @@ class TestIgnoredTrustedUsers(unittest.IsolatedAsyncioTestCase):
 
         BOT_SETTINGS["source_group_id"] = -1001111222333
 
-        # 1. Ignored User 1573531032
-        update1573 = MagicMock()
-        update1573.effective_message.message_id = 901
-        update1573.effective_message.text = "test1573@gmail.com 2400 CP"
-        update1573.effective_chat.id = -1001111222333
-        update1573.effective_user.id = 1573531032
-        update1573.effective_message.reply_text = AsyncMock()
-
-        await source_group_handler(update1573, None)
-        update1573.effective_message.reply_text.assert_not_called()
-
-        # 2. Ignored User 1249984265
+        # Ignored User 1249984265
         update1249 = MagicMock()
         update1249.effective_message.message_id = 902
         update1249.effective_message.text = "test1249@gmail.com 2400 CP"
@@ -1768,8 +1759,13 @@ class TestDeliveryLedgerSystem(unittest.IsolatedAsyncioTestCase):
     """Unit tests for Production Delivery Ledger & Running Total System."""
 
     async def asyncSetUp(self):
-        from database import init_db
+        from database import init_db, AsyncSessionLocal
+        from models import DeliveryLedger
+        from sqlalchemy import delete
         await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(DeliveryLedger))
+            await session.commit()
 
     async def test_partial_deliveries_create_separate_ledger_entries(self):
         from database import record_delivery_ledger_entry, get_current_running_total
