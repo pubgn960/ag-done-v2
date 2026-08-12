@@ -464,14 +464,14 @@ class TestKeywordDetector(unittest.TestCase):
         self.assertFalse(contains_order_keyword("Facebook")[0])
         self.assertFalse(contains_order_keyword("Activision ID")[0])
 
-        # Missing Password/Detail
-        self.assertFalse(contains_order_keyword("Facebook\nEmail: abc@gmail.com\n2400+880")[0])
+        # Email + Package without password or platform (Now detected under Email+Package Fallback Rule)
+        self.assertTrue(contains_order_keyword("Facebook\nEmail: abc@gmail.com\n2400+880")[0])
 
         # Missing Package
         self.assertFalse(contains_order_keyword("Facebook\nEmail: abc@gmail.com\nPassword: 123")[0])
 
-        # Missing Platform
-        self.assertFalse(contains_order_keyword("Email: abc@gmail.com\nPassword: 123\n2400+880")[0])
+        # Missing Platform but has Email + Package (Now detected under Email+Package Fallback Rule)
+        self.assertTrue(contains_order_keyword("Email: abc@gmail.com\nPassword: 123\n2400+880")[0])
 
 
 class TestEmailOrderPackageParser(unittest.TestCase):
@@ -2543,6 +2543,40 @@ class TestMultilingualDetectorAndPackageAliases(unittest.TestCase):
         p_mult5 = parse_test_order_packages("5k x2")
         self.assertEqual(p_mult5["packages"][0]["package"], "5040")
         self.assertEqual(p_mult5["packages"][0]["qty"], 2)
+
+    def test_email_and_package_fallback_rule(self):
+        from keywords import contains_order_keyword
+
+        # 1. Email + Package -> Order detected
+        msg1 = "order_user@gmail.com\n10800"
+        is_order1, _ = contains_order_keyword(msg1)
+        self.assertTrue(is_order1)
+
+        msg2 = "Customer: buyer@outlook.com\n5k*2"
+        is_order2, _ = contains_order_keyword(msg2)
+        self.assertTrue(is_order2)
+
+        # 2. Email only -> Not an order
+        msg_email_only = "user_only@gmail.com"
+        is_order_eo, _ = contains_order_keyword(msg_email_only)
+        self.assertFalse(is_order_eo)
+
+        # 3. Package only -> Existing behavior unchanged (Not an order)
+        msg_pkg_only = "10800"
+        is_order_po, _ = contains_order_keyword(msg_pkg_only)
+        self.assertFalse(is_order_po)
+
+        # 4. Real customer messages with Spanish fields -> Order detected
+        msg_spanish = (
+            "facebook\n\n"
+            "Correo o número fb:\nuser_spanish@gmail.com\n\n"
+            "Contraseña de fb:\npassword123\n\n"
+            "Códigos\n2534 6603\n\n"
+            "5k"
+        )
+        is_order_sp, platform_sp = contains_order_keyword(msg_spanish)
+        self.assertTrue(is_order_sp)
+        self.assertEqual(platform_sp, "facebook")
 
 
 if __name__ == "__main__":

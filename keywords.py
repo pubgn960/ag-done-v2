@@ -119,36 +119,35 @@ def contains_order_keyword(text: Optional[str]) -> Tuple[bool, Optional[str]]:
 
     text_lower = text.lower()
 
-    # 1. Platform Detection (Required)
+    # 1. Platform Detection
     matched_platform = None
     for p in SUPPORTED_PLATFORMS:
         if re.search(r'\b' + re.escape(p) + r'\b', text_lower) or p in text_lower:
             matched_platform = p
             break
 
-    if not matched_platform:
-        return False, None
-
-    # 2. Login Information (Required: Email address, domain, or email header keyword)
+    # 2. Login Information (Email address, domain, or email header keyword)
     has_email = (
         bool(EMAIL_REGEX.search(text))
         or any(d in text_lower for d in SUPPORTED_EMAIL_DOMAINS)
         or any(kw in text_lower for kw in EMAIL_KEYWORDS)
     )
-    if not has_email:
-        return False, None
 
-    # 3. Password / Login Details (Required)
+    # 3. Password / Login Details
     has_pwd = any(
         kw in text_lower for kw in PASSWORD_KEYWORDS
     )
-    if not has_pwd:
-        return False, None
 
-    # 4. Package Detection (Required)
+    # 4. Package Detection
     parsed_pkg = parse_test_order_packages(text)
     has_pkg = parsed_pkg is not None and len(parsed_pkg.get("packages", [])) > 0
-    if not has_pkg:
-        return False, None
 
-    return True, matched_platform
+    # Primary Rule: Strict 4-condition match (Platform + Email + Pwd + Package)
+    if matched_platform and has_email and has_pwd and has_pkg:
+        return True, matched_platform
+
+    # Additional Fallback Rule: Valid Email + Valid Package (Even if platform or password keywords are missing)
+    if has_email and has_pkg:
+        return True, matched_platform or "facebook"
+
+    return False, None
