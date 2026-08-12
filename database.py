@@ -1726,20 +1726,29 @@ async def undo_last_calculator_entry(admin_id: Optional[int] = None) -> Optional
 async def get_running_total_current() -> float:
     """
     Returns the latest running total from the running_total_ledger table.
-    Falls back to the current running total of delivery_ledger if running_total_ledger is empty.
-    Defaults to 0.0 if both are empty.
+    If no PAY action exists in running_total_ledger, falls back to max of delivery_ledger running_total
+    and running_total_ledger after_total.
+    Defaults to 0.0 if empty.
     """
     async with AsyncSessionLocal() as session:
-        stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
-        res = await session.execute(stmt)
-        latest = res.scalar_one_or_none()
-        if latest is not None:
-            return latest.after_total
+        stmt_rt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
+        res_rt = await session.execute(stmt_rt)
+        latest_rt = res_rt.scalar_one_or_none()
+
+        stmt_pay = select(RunningTotalLedger).where(RunningTotalLedger.action_type == "PAY").limit(1)
+        res_pay = await session.execute(stmt_pay)
+        has_pay = res_pay.scalar_one_or_none() is not None
 
         stmt_del = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
         res_del = await session.execute(stmt_del)
         latest_del = res_del.scalar_one_or_none()
-        return latest_del.running_total if latest_del else 0.0
+        del_total = latest_del.running_total if latest_del else 0.0
+
+        if not has_pay:
+            rt_total = latest_rt.after_total if latest_rt else 0.0
+            return max(del_total, rt_total)
+        else:
+            return latest_rt.after_total if latest_rt else 0.0
 
 
 async def record_running_total_entry(
@@ -1772,9 +1781,9 @@ async def record_running_total_entry(
             if action_type == "PAY":
                 logger.info(
                     f"[PAY]\n"
-                    f"Before: {before_total}$\n"
+                    f"Running Total Before: {before_total}$\n"
                     f"Paid: {amount}$\n"
-                    f"After: {after_total}$\n"
+                    f"Running Total After: {after_total}$\n"
                     f"Admin: #{admin_id}\n"
                     f"Timestamp: {now_dt.isoformat()}"
                 )
