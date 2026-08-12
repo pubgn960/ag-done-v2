@@ -615,6 +615,61 @@ def format_ledger_entry_message(before: float, now: float, total: float) -> str:
     )
 
 
+def format_calculator_result_message(before: float, now_val: float, total: float) -> str:
+    """
+    Formats standard Running Total Calculator result notice:
+    ━━━━━━━━━━━━━━━━━━
+
+    📊 Running Total
+
+    Before
+    97$
+
+    Now
+    +64$ (or -100$)
+
+    Total
+    161$ (or 61$)
+
+    ━━━━━━━━━━━━━━━━━━
+    """
+    if now_val >= 0:
+        now_str = f"+{_fmt_price_val(now_val)}"
+    else:
+        now_str = f"-{_fmt_price_val(abs(now_val))}"
+
+    return (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 <b>Running Total</b>\n\n"
+        "Before\n"
+        f"{_fmt_price_val(before)}$\n\n"
+        "Now\n"
+        f"{now_str}$\n\n"
+        "Total\n"
+        f"{_fmt_price_val(total)}$\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def format_calculator_total_message(total: float) -> str:
+    """
+    Formats /total card:
+    ━━━━━━━━━━━━━━━━━━
+
+    📊 Current Total
+
+    61$
+
+    ━━━━━━━━━━━━━━━━━━
+    """
+    return (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 <b>Current Total</b>\n\n"
+        f"{_fmt_price_val(total)}$\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
+
 def calculate_delivered_packages_value(packages_str: str) -> Tuple[Optional[float], bool]:
     """
     Calculates sum of prices for delivered package(s) string (e.g., '10800', '10800+5040', '2x10800').

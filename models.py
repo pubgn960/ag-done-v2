@@ -267,3 +267,27 @@ class DeliveryLedger(Base):
 
     def __repr__(self) -> str:
         return f"<DeliveryLedger(id={self.id}, order_id={self.order_id}, now={self.now_value}, total={self.running_total}, manual={self.is_manual})>"
+
+
+class CalculatorLedger(Base):
+    """
+    Stores individual entries and running totals for the Simple Running Total Calculator.
+    Positive values ADD, negative values SUBTRACT.
+    """
+
+    __tablename__ = "calculator_ledger"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    before_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    after_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    admin_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<CalculatorLedger(id={self.id}, amount={self.amount}, before={self.before_total}, after={self.after_total})>"

@@ -112,7 +112,9 @@ from utils import (
     format_export_prices,
     PACKAGE_PRICES,
     format_ledger_entry_message,
-    calculate_delivered_packages_value
+    calculate_delivered_packages_value,
+    format_calculator_result_message,
+    format_calculator_total_message
 )
 from database import (
     update_order_package_progress,
@@ -128,7 +130,11 @@ from database import (
     undo_ledger_entry,
     get_latest_ledger_entries,
     get_ledger_period_stats,
-    reset_delivery_ledger
+    reset_delivery_ledger,
+    get_calculator_current_total,
+    record_calculator_entry,
+    get_last_calculator_entry,
+    undo_last_calculator_entry
 )
 import json
 
@@ -1860,6 +1866,132 @@ async def resetledger_command_handler(update: Update, context: ContextTypes.DEFA
 
 
 # ==========================================
+# Simple Running Total Calculator Handlers
+# ==========================================
+
+async def calculate_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /calculate <amount>.
+    Positive values ADD, negative values SUBTRACT.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[CALCULATE] Unauthorized /calculate attempt by user #{user.id if user else 'Unknown'}.")
+        if update.effective_message:
+            await update.effective_message.reply_text("❌ You are not authorized to use this command.")
+        return
+
+    args = context.args or []
+    if not args:
+        prompt = (
+            "⚠️ <b>Please provide an amount.</b>\n\n"
+            "<b>Examples:</b>\n"
+            "<code>/calculate 64</code>\n"
+            "<code>/calculate -100</code>"
+        )
+        await update.effective_message.reply_text(prompt, parse_mode="HTML")
+        return
+
+    try:
+        amount = float(args[0])
+    except ValueError:
+        await update.effective_message.reply_text("❌ Invalid numeric amount.")
+        return
+
+    entry, before_val, now_val, after_val = await record_calculator_entry(amount, admin_id=user.id)
+    msg = format_calculator_result_message(before_val, now_val, after_val)
+    await update.effective_message.reply_text(msg, parse_mode="HTML")
+
+
+async def total_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /total.
+    Displays the current running total of the calculator.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[TOTAL] Unauthorized /total attempt by user #{user.id if user else 'Unknown'}.")
+        if update.effective_message:
+            await update.effective_message.reply_text("❌ You are not authorized to use this command.")
+        return
+
+    curr_total = await get_calculator_current_total()
+    msg = format_calculator_total_message(curr_total)
+    await update.effective_message.reply_text(msg, parse_mode="HTML")
+
+
+async def calc_undo_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /undo.
+    Displays confirmation card for the last calculator entry.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[UNDO] Unauthorized /undo attempt by user #{user.id if user else 'Unknown'}.")
+        if update.effective_message:
+            await update.effective_message.reply_text("❌ You are not authorized to use this command.")
+        return
+
+    last_entry = await get_last_calculator_entry()
+    if not last_entry:
+        await update.effective_message.reply_text("❌ No calculations found to undo.")
+        return
+
+    amt_val = last_entry.amount
+    amt_str = f"+{int(amt_val)}" if (amt_val >= 0 and amt_val.is_integer()) else (f"+{amt_val:g}" if amt_val >= 0 else (f"{int(amt_val)}" if amt_val.is_integer() else f"{amt_val:g}"))
+
+    confirm_card = (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>Last Entry</b>\n\n"
+        "<b>Amount</b>\n"
+        f"{amt_str}$\n\n"
+        "<b>Undo this calculation?</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirm", callback_data=f"calc_undo_confirm:{last_entry.id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"calc_undo_cancel:{last_entry.id}")
+        ]
+    ])
+    await update.effective_message.reply_text(confirm_card, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def calc_undo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles inline button confirmation for /undo.
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("calc_undo_"):
+        return
+
+    user = query.from_user
+    if not user or not is_super_admin(user.id):
+        await query.answer("❌ You are not authorized to use this command.", show_alert=True)
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    parts = query.data.split(":")
+    action = parts[0]
+    entry_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+
+    if action == "calc_undo_confirm":
+        undone = await undo_last_calculator_entry(admin_id=user.id)
+        if undone:
+            curr_tot = await get_calculator_current_total()
+            tot_str = f"{int(curr_tot)}" if curr_tot.is_integer() else f"{curr_tot:g}"
+            await query.edit_message_text(f"✅ <b>Calculation Undone Successfully.</b>\n\n<b>Restored Total:</b> {tot_str}$", parse_mode="HTML")
+        else:
+            await query.edit_message_text("❌ Calculation entry not found or already undone.")
+    elif action == "calc_undo_cancel":
+        await query.edit_message_text("❌ <b>Undo Cancelled.</b>", parse_mode="HTML")
+
+
+# ==========================================
 # Multi-Loader Category B Callback Handler
 # ==========================================
 
@@ -3255,6 +3387,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>Price Management:</b>\n"
         "• <code>/exportprices</code> - Export current price list\n"
         "• <code>/updateprices</code> - Bulk update price list\n\n"
+        "<b>Running Total Calculator:</b>\n"
+        "• <code>/calculate &lt;amount&gt;</code> - Add or subtract amount from running total\n"
+        "• <code>/total</code> - View current running total\n"
+        "• <code>/undo</code> - Undo last calculation (with confirmation)\n\n"
         "<b>Delivery Ledger:</b>\n"
         "• <code>/undo</code> - Undo last ledger entry (with confirmation)\n"
         "• <code>/addprice &lt;amount&gt; &lt;reason&gt;</code> - Add manual price adjustment\n"

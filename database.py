@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import joinedload
 
 from config import Config
-from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger
+from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger, CalculatorLedger
 
 logger = logging.getLogger(__name__)
 
@@ -1611,4 +1611,109 @@ async def reset_delivery_ledger(admin_id: int) -> bool:
         except Exception as e:
             await session.rollback()
             logger.error(f"[LEDGER_RESET] Failed to reset delivery ledger: {e}")
+            raise e
+
+
+# ==========================================
+# Simple Running Total Calculator Operations
+# ==========================================
+
+async def get_calculator_current_total() -> float:
+    """
+    Returns the latest running total from the calculator_ledger table.
+    Defaults to 0.0 if empty.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(CalculatorLedger).order_by(CalculatorLedger.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        latest = res.scalar_one_or_none()
+        return latest.after_total if latest else 0.0
+
+
+async def record_calculator_entry(amount: float, admin_id: Optional[int] = None) -> Tuple[CalculatorLedger, float, float, float]:
+    """
+    Records a calculation entry (+ or -) and updates running total atomically.
+    Logs [CALCULATE]. Returns (entry, before_total, amount, after_total).
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt_latest = select(CalculatorLedger).order_by(CalculatorLedger.id.desc()).limit(1)
+            latest = (await session.execute(stmt_latest)).scalar_one_or_none()
+            before_total = latest.after_total if latest else 0.0
+            after_total = before_total + amount
+            now_dt = datetime.now(timezone.utc)
+
+            entry = CalculatorLedger(
+                amount=amount,
+                before_total=before_total,
+                after_total=after_total,
+                admin_id=admin_id,
+                timestamp=now_dt
+            )
+            session.add(entry)
+            await session.commit()
+            await session.refresh(entry)
+
+            logger.info(
+                f"[CALCULATE]\n"
+                f"Before: {before_total}$\n"
+                f"Now: {amount}$\n"
+                f"After: {after_total}$\n"
+                f"Admin: #{admin_id}\n"
+                f"Timestamp: {now_dt.isoformat()}"
+            )
+            return entry, before_total, amount, after_total
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[CALCULATE] Transaction rolled back due to error: {e}")
+            raise e
+
+
+async def get_last_calculator_entry() -> Optional[CalculatorLedger]:
+    """
+    Retrieves the most recent calculation entry.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(CalculatorLedger).order_by(CalculatorLedger.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        return res.scalar_one_or_none()
+
+
+async def undo_last_calculator_entry(admin_id: Optional[int] = None) -> Optional[CalculatorLedger]:
+    """
+    Undoes the last calculator entry and recalculates subsequent running totals.
+    Logs [UNDO].
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(CalculatorLedger).order_by(CalculatorLedger.id.desc()).limit(1)
+            target = (await session.execute(stmt)).scalar_one_or_none()
+            if not target:
+                return None
+
+            amt = target.amount
+            await session.delete(target)
+            await session.commit()
+
+            stmt_all = select(CalculatorLedger).order_by(CalculatorLedger.id.asc())
+            all_entries = (await session.execute(stmt_all)).scalars().all()
+
+            running = 0.0
+            for item in all_entries:
+                item.before_total = running
+                running += item.amount
+                item.after_total = running
+
+            await session.commit()
+
+            logger.info(
+                f"[UNDO]\n"
+                f"Admin: #{admin_id}\n"
+                f"Undone Amount: {amt}$\n"
+                f"Restored Total: {running}$"
+            )
+            return target
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[UNDO] Failed to undo calculator entry: {e}")
             raise e

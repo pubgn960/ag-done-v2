@@ -1915,5 +1915,91 @@ class TestDeliveryLedgerSystem(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tot, 0.0)
 
 
+class TestSimpleRunningTotalCalculator(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for Simple Running Total Calculator module."""
+
+    async def asyncSetUp(self):
+        from database import init_db, AsyncSessionLocal
+        from models import CalculatorLedger
+        from sqlalchemy import delete
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(CalculatorLedger))
+            await session.commit()
+
+    async def test_positive_and_negative_calculations(self):
+        from database import record_calculator_entry, get_calculator_current_total
+
+        self.assertEqual(await get_calculator_current_total(), 0.0)
+
+        e1, b1, n1, a1 = await record_calculator_entry(97.0, admin_id=1573531032)
+        self.assertEqual(b1, 0.0)
+        self.assertEqual(n1, 97.0)
+        self.assertEqual(a1, 97.0)
+        self.assertEqual(await get_calculator_current_total(), 97.0)
+
+        e2, b2, n2, a2 = await record_calculator_entry(64.0, admin_id=1573531032)
+        self.assertEqual(b2, 97.0)
+        self.assertEqual(n2, 64.0)
+        self.assertEqual(a2, 161.0)
+        self.assertEqual(await get_calculator_current_total(), 161.0)
+
+        e3, b3, n3, a3 = await record_calculator_entry(-100.0, admin_id=1573531032)
+        self.assertEqual(b3, 161.0)
+        self.assertEqual(n3, -100.0)
+        self.assertEqual(a3, 61.0)
+        self.assertEqual(await get_calculator_current_total(), 61.0)
+
+    async def test_undo_calculator_entry(self):
+        from database import record_calculator_entry, undo_last_calculator_entry, get_calculator_current_total
+
+        await record_calculator_entry(97.0, admin_id=1573531032)
+        await record_calculator_entry(64.0, admin_id=1573531032)
+        await record_calculator_entry(-100.0, admin_id=1573531032)
+
+        self.assertEqual(await get_calculator_current_total(), 61.0)
+
+        undone = await undo_last_calculator_entry(admin_id=1573531032)
+        self.assertIsNotNone(undone)
+        self.assertEqual(undone.amount, -100.0)
+        self.assertEqual(await get_calculator_current_total(), 161.0)
+
+    async def test_formatting_messages(self):
+        from utils import format_calculator_result_message, format_calculator_total_message
+
+        pos_msg = format_calculator_result_message(97.0, 64.0, 161.0)
+        self.assertIn("Before\n97$", pos_msg)
+        self.assertIn("Now\n+64$", pos_msg)
+        self.assertIn("Total\n161$", pos_msg)
+
+        neg_msg = format_calculator_result_message(161.0, -100.0, 61.0)
+        self.assertIn("Before\n161$", neg_msg)
+        self.assertIn("Now\n-100$", neg_msg)
+        self.assertIn("Total\n61$", neg_msg)
+
+        tot_msg = format_calculator_total_message(61.0)
+        self.assertIn("Current Total", tot_msg)
+        self.assertIn("61$", tot_msg)
+
+    async def test_unauthorized_user_blocked(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from handlers import calculate_command_handler, total_command_handler, calc_undo_command_handler
+
+        unauth_update = MagicMock()
+        unauth_update.effective_user.id = 999111222
+        unauth_update.effective_message.reply_text = AsyncMock()
+
+        await calculate_command_handler(unauth_update, None)
+        unauth_update.effective_message.reply_text.assert_called_with("❌ You are not authorized to use this command.")
+
+        unauth_update.effective_message.reply_text.reset_mock()
+        await total_command_handler(unauth_update, None)
+        unauth_update.effective_message.reply_text.assert_called_with("❌ You are not authorized to use this command.")
+
+        unauth_update.effective_message.reply_text.reset_mock()
+        await calc_undo_command_handler(unauth_update, None)
+        unauth_update.effective_message.reply_text.assert_called_with("❌ You are not authorized to use this command.")
+
+
 if __name__ == "__main__":
     unittest.main()

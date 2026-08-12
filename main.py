@@ -80,7 +80,11 @@ from handlers import (
     subtractprice_command_handler,
     ledger_command_handler,
     todaytotal_command_handler,
-    resetledger_command_handler
+    resetledger_command_handler,
+    calculate_command_handler,
+    total_command_handler,
+    calc_undo_command_handler,
+    calc_undo_callback_handler
 )
 
 # Initialize application logging
@@ -154,7 +158,9 @@ async def post_init(application: Application) -> None:
         BotCommand("stats", "Statistics"),
         BotCommand("exportprices", "Export Price List"),
         BotCommand("updateprices", "Bulk Update Prices"),
-        BotCommand("undo", "Undo Last Ledger Entry"),
+        BotCommand("calculate", "Add or Subtract Amount"),
+        BotCommand("total", "View Current Total"),
+        BotCommand("undo", "Undo Last Calculation"),
         BotCommand("addprice", "Add Price Adjustment"),
         BotCommand("subtractprice", "Subtract Price Adjustment"),
         BotCommand("ledger", "View Delivery Ledger"),
@@ -249,7 +255,9 @@ def main() -> None:
     application.add_handler(CommandHandler("restore", restore_command))
     application.add_handler(CommandHandler("exportprices", exportprices_command_handler))
     application.add_handler(CommandHandler("updateprices", updateprices_command_handler))
-    application.add_handler(CommandHandler("undo", undo_command_handler))
+    application.add_handler(CommandHandler("calculate", calculate_command_handler))
+    application.add_handler(CommandHandler("total", total_command_handler))
+    application.add_handler(CommandHandler("undo", calc_undo_command_handler))
     application.add_handler(CommandHandler("addprice", addprice_command_handler))
     application.add_handler(CommandHandler("subtractprice", subtractprice_command_handler))
     application.add_handler(CommandHandler("ledger", ledger_command_handler))
@@ -268,6 +276,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(loader_pkg_confirm_callback_handler, pattern="^pkg_confirm:"))
     application.add_handler(CallbackQueryHandler(loader_pkg_cancel_callback_handler, pattern="^pkg_cancel:"))
     application.add_handler(CallbackQueryHandler(ledger_undo_callback_handler, pattern="^ledger_undo_"))
+    application.add_handler(CallbackQueryHandler(calc_undo_callback_handler, pattern="^calc_undo_"))
 
     # Register price_input_text_handler first for reply messages
     application.add_handler(
