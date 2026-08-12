@@ -1767,6 +1767,58 @@ class TestDeliveryLedgerSystem(unittest.IsolatedAsyncioTestCase):
             await session.execute(delete(DeliveryLedger))
             await session.commit()
 
+    async def test_first_delivery(self):
+        from database import record_delivery_ledger_entry, get_current_running_total
+
+        before_start = await get_current_running_total()
+        self.assertEqual(before_start, 0.0)
+
+        e1, ok1 = await record_delivery_ledger_entry(order_id=201, package="10800", now_value=64.0, loader_name="Loader A", dedup_hash="201:10800:1")
+        self.assertTrue(ok1)
+        self.assertEqual(e1.before_total, 0.0)
+        self.assertEqual(e1.now_value, 64.0)
+        self.assertEqual(e1.running_total, 64.0)
+
+    async def test_running_total_accumulation(self):
+        from database import record_delivery_ledger_entry, get_current_running_total
+
+        await record_delivery_ledger_entry(order_id=202, package="10800", now_value=64.0, dedup_hash="202:1")
+        self.assertEqual(await get_current_running_total(), 64.0)
+
+        await record_delivery_ledger_entry(order_id=202, package="5040", now_value=33.0, dedup_hash="202:2")
+        self.assertEqual(await get_current_running_total(), 97.0)
+
+    async def test_ledger_reply_message_and_missing_loader_name(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from handlers import process_delivery_ledger_event
+        from database import get_last_ledger_entry
+
+        mock_bot = MagicMock()
+        mock_bot.send_message = AsyncMock()
+
+        await process_delivery_ledger_event(
+            order_id=301,
+            package_str="10800",
+            loader_name=None,  # Missing loader name fallback test
+            bot=mock_bot,
+            chat_id=-100999,
+            dedup_hash="301:10800:reply_test",
+            reply_to_message_id=888  # Delivery message reply ID
+        )
+
+        mock_bot.send_message.assert_called_once()
+        call_kwargs = mock_bot.send_message.call_args.kwargs
+        self.assertEqual(call_kwargs["chat_id"], -100999)
+        self.assertEqual(call_kwargs["reply_to_message_id"], 888)
+        self.assertIn("Delivery Ledger", call_kwargs["text"])
+        self.assertIn("Before\n0$", call_kwargs["text"])
+        self.assertIn("Now\n64$", call_kwargs["text"])
+        self.assertIn("Total\n64$", call_kwargs["text"])
+
+        last_e = await get_last_ledger_entry()
+        self.assertIsNotNone(last_e)
+        self.assertEqual(last_e.loader, "Loader")  # Fallback verified
+
     async def test_partial_deliveries_create_separate_ledger_entries(self):
         from database import record_delivery_ledger_entry, get_current_running_total
 

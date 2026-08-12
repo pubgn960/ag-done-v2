@@ -1557,7 +1557,8 @@ async def process_delivery_ledger_event(
     loader_name: Optional[str],
     bot: Any,
     chat_id: int,
-    dedup_hash: Optional[str] = None
+    dedup_hash: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None
 ) -> None:
     """
     Calculates delivered value for newly delivered package(s), records entry in Delivery Ledger DB table,
@@ -1571,7 +1572,11 @@ async def process_delivery_ledger_event(
     if now_val is None or not all_known:
         notice_text = f"⚠️ Price not found for package '{package_str}' on Order #{order_id}.\n\nUse /addprice to update ledger."
         try:
-            await bot.send_message(chat_id=chat_id, text=notice_text)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=notice_text,
+                reply_to_message_id=reply_to_message_id
+            )
             logger.warning(f"[LEDGER_FAILSAFE] Unknown price for package '{package_str}' on Order #{order_id}.")
         except Exception as e:
             logger.exception(f"[LEDGER_FAILSAFE] Failed to send missing price notice: {e}")
@@ -1581,7 +1586,7 @@ async def process_delivery_ledger_event(
         order_id=order_id,
         package=package_str,
         now_value=now_val,
-        loader_name=loader_name,
+        loader_name=loader_name or "Loader",
         dedup_hash=dedup_hash,
         is_manual=False
     )
@@ -1593,7 +1598,12 @@ async def process_delivery_ledger_event(
     ledger_msg = format_ledger_entry_message(entry.before_total, entry.now_value, entry.running_total)
 
     try:
-        await bot.send_message(chat_id=chat_id, text=ledger_msg, parse_mode="HTML")
+        await bot.send_message(
+            chat_id=chat_id,
+            text=ledger_msg,
+            reply_to_message_id=reply_to_message_id,
+            parse_mode="HTML"
+        )
     except Exception as e:
         logger.exception(f"[LEDGER] Failed to send ledger notification message: {e}")
 

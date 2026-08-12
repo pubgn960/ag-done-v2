@@ -312,15 +312,18 @@ async def deliver_order_by_id(
     newly_delivered_str = "+".join(newly_delivered_names) if newly_delivered_names else (order.package or "")
     session_key = active_ds.delivery_session_message_id if active_ds else loader_reply_msg_id
     dedup_hash = f"{order.id}:{newly_delivered_str}:{session_key}"
+    loader_name_str = f"Loader #{active_ds.loader_id}" if active_ds and active_ds.loader_id else "Loader"
+
     try:
         from handlers import process_delivery_ledger_event
         await process_delivery_ledger_event(
             order_id=order.id,
             package_str=newly_delivered_str,
-            loader_name=loader_name,
+            loader_name=loader_name_str,
             bot=bot,
             chat_id=loader_group_id or client_chat_id,
-            dedup_hash=dedup_hash
+            dedup_hash=dedup_hash,
+            reply_to_message_id=loader_reply_msg_id
         )
     except Exception as e_led:
         logger.exception(f"[LEDGER] Failed to process delivery ledger event for Order #{order.id}: {e_led}")
