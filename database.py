@@ -1415,9 +1415,17 @@ async def record_delivery_ledger_entry(
                     )
                     return None, False
 
-            stmt_latest = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
-            latest = (await session.execute(stmt_latest)).scalar_one_or_none()
-            before_total = latest.running_total if latest else 0.0
+            # Get current active running total from RunningTotalLedger
+            stmt_rt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
+            latest_rt = (await session.execute(stmt_rt)).scalar_one_or_none()
+
+            if latest_rt is not None:
+                before_total = latest_rt.after_total
+            else:
+                stmt_del = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
+                latest_del = (await session.execute(stmt_del)).scalar_one_or_none()
+                before_total = latest_del.running_total if latest_del else 0.0
+
             new_running_total = before_total + now_value
 
             now_dt = datetime.now(timezone.utc)
@@ -1435,6 +1443,20 @@ async def record_delivery_ledger_entry(
                 timestamp=now_dt
             )
             session.add(entry)
+
+            # Sync RunningTotalLedger table
+            action_type = "MANUAL_PLUS" if (is_manual and now_value >= 0) else ("MANUAL_MINUS" if is_manual else "AUTO_DELIVERY")
+            rt_entry = RunningTotalLedger(
+                action_type=action_type,
+                amount=now_value,
+                before_total=before_total,
+                after_total=new_running_total,
+                order_id=order_id,
+                admin_id=None,
+                timestamp=now_dt
+            )
+            session.add(rt_entry)
+
             await session.commit()
             await session.refresh(entry)
 
@@ -1726,29 +1748,20 @@ async def undo_last_calculator_entry(admin_id: Optional[int] = None) -> Optional
 async def get_running_total_current() -> float:
     """
     Returns the latest running total from the running_total_ledger table.
-    If no PAY action exists in running_total_ledger, falls back to max of delivery_ledger running_total
-    and running_total_ledger after_total.
+    Falls back to delivery_ledger running_total if running_total_ledger is empty.
     Defaults to 0.0 if empty.
     """
     async with AsyncSessionLocal() as session:
         stmt_rt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
         res_rt = await session.execute(stmt_rt)
         latest_rt = res_rt.scalar_one_or_none()
-
-        stmt_pay = select(RunningTotalLedger).where(RunningTotalLedger.action_type == "PAY").limit(1)
-        res_pay = await session.execute(stmt_pay)
-        has_pay = res_pay.scalar_one_or_none() is not None
+        if latest_rt is not None:
+            return latest_rt.after_total
 
         stmt_del = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
         res_del = await session.execute(stmt_del)
         latest_del = res_del.scalar_one_or_none()
-        del_total = latest_del.running_total if latest_del else 0.0
-
-        if not has_pay:
-            rt_total = latest_rt.after_total if latest_rt else 0.0
-            return max(del_total, rt_total)
-        else:
-            return latest_rt.after_total if latest_rt else 0.0
+        return latest_del.running_total if latest_del else 0.0
 
 
 async def record_running_total_entry(

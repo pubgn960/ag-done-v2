@@ -1760,11 +1760,12 @@ class TestDeliveryLedgerSystem(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from database import init_db, AsyncSessionLocal
-        from models import DeliveryLedger
+        from models import DeliveryLedger, RunningTotalLedger
         from sqlalchemy import delete
         await init_db()
         async with AsyncSessionLocal() as session:
             await session.execute(delete(DeliveryLedger))
+            await session.execute(delete(RunningTotalLedger))
             await session.commit()
 
     async def test_first_delivery(self):
@@ -2006,10 +2007,11 @@ class TestSimpleRunningTotalSystem(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from database import init_db, AsyncSessionLocal
-        from models import RunningTotalLedger
+        from models import DeliveryLedger, RunningTotalLedger
         from sqlalchemy import delete
         await init_db()
         async with AsyncSessionLocal() as session:
+            await session.execute(delete(DeliveryLedger))
             await session.execute(delete(RunningTotalLedger))
             await session.commit()
 
@@ -2112,6 +2114,41 @@ class TestSimpleRunningTotalSystem(unittest.IsolatedAsyncioTestCase):
 
         await manual_running_total_text_handler(unauth_update, None)
         unauth_update.effective_message.reply_text.assert_not_called()
+
+    async def test_bug1_delivery_after_pay_starts_from_zero(self):
+        from database import record_delivery_ledger_entry, execute_pay_reset, get_running_total_current
+
+        await record_delivery_ledger_entry(order_id=501, package="10800", now_value=225.0, dedup_hash="b1_1")
+        await record_delivery_ledger_entry(order_id=502, package="5040", now_value=33.0, dedup_hash="b1_2")
+        await record_delivery_ledger_entry(order_id=503, package="10800", now_value=64.0, dedup_hash="b1_3")
+
+        self.assertEqual(await get_running_total_current(), 322.0)
+
+        entry, before, paid, current = await execute_pay_reset(admin_id=1573531032)
+        self.assertEqual(before, 322.0)
+        self.assertEqual(paid, 322.0)
+        self.assertEqual(current, 0.0)
+        self.assertEqual(await get_running_total_current(), 0.0)
+
+        e_next, ok = await record_delivery_ledger_entry(order_id=504, package="420", now_value=5.5, dedup_hash="b1_4")
+        self.assertTrue(ok)
+        self.assertEqual(e_next.before_total, 0.0)
+        self.assertEqual(e_next.now_value, 5.5)
+        self.assertEqual(e_next.running_total, 5.5)
+        self.assertEqual(await get_running_total_current(), 5.5)
+
+    async def test_bug2_decimal_negative_manual_adjustment_preserves_sign(self):
+        from database import record_delivery_ledger_entry, execute_manual_adjustment, get_running_total_current
+
+        await record_delivery_ledger_entry(order_id=601, package="327.5", now_value=327.5, dedup_hash="b2_1")
+        self.assertEqual(await get_running_total_current(), 327.5)
+
+        entry, before_val, now_val, after_val, act_type = await execute_manual_adjustment(-327.5, admin_id=1573531032)
+        self.assertEqual(before_val, 327.5)
+        self.assertEqual(now_val, -327.5)
+        self.assertEqual(after_val, 0.0)
+        self.assertEqual(act_type, "MANUAL_MINUS")
+        self.assertEqual(await get_running_total_current(), 0.0)
 
 
 if __name__ == "__main__":
