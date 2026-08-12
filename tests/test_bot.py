@@ -2316,5 +2316,144 @@ class TestMultiPackageSelectionRegression(unittest.TestCase):
         self.assertEqual(total_price, 97.0)
 
 
+class TestSuperAdminLogicPermissionsAndOrderBypass(unittest.IsolatedAsyncioTestCase):
+    """Unit and integration tests for Super Admin permissions and Order Detector bypass."""
+
+    async def asyncSetUp(self):
+        from database import init_db, AsyncSessionLocal
+        from models import DeliveryLedger, RunningTotalLedger, Order
+        from sqlalchemy import delete
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(DeliveryLedger))
+            await session.execute(delete(RunningTotalLedger))
+            await session.execute(delete(Order))
+            await session.commit()
+
+    async def test_super_admin_command_access(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from handlers import (
+            pay_running_total_command_handler,
+            running_total_command_handler,
+            users_command,
+            manual_running_total_text_handler,
+        )
+
+        super_admin_id = 1573531032
+
+        # 1. Super Admin uses /pay
+        update_pay = MagicMock()
+        update_pay.effective_user.id = super_admin_id
+        update_pay.effective_message.reply_text = AsyncMock()
+
+        await pay_running_total_command_handler(update_pay, None)
+        update_pay.effective_message.reply_text.assert_called_once()
+        self.assertIn("Payment Recorded", update_pay.effective_message.reply_text.call_args[0][0])
+
+        # 2. Super Admin uses /total
+        update_total = MagicMock()
+        update_total.effective_user.id = super_admin_id
+        update_total.effective_message.reply_text = AsyncMock()
+
+        await running_total_command_handler(update_total, None)
+        update_total.effective_message.reply_text.assert_called_once()
+        self.assertIn("Current Delivery Total", update_total.effective_message.reply_text.call_args[0][0])
+
+        # 3. Super Admin uses /users
+        update_users = MagicMock()
+        update_users.effective_user.id = super_admin_id
+        update_users.effective_message.reply_text = AsyncMock()
+
+        await users_command(update_users, None)
+        update_users.effective_message.reply_text.assert_called_once()
+        self.assertIn("Super Admin", update_users.effective_message.reply_text.call_args[0][0])
+
+        # 4. Super Admin uses +10
+        update_plus = MagicMock()
+        update_plus.effective_user.id = super_admin_id
+        update_plus.effective_message.text = "+10"
+        update_plus.effective_message.reply_text = AsyncMock()
+
+        await manual_running_total_text_handler(update_plus, None)
+        update_plus.effective_message.reply_text.assert_called_once()
+        self.assertIn("+10$", update_plus.effective_message.reply_text.call_args[0][0])
+
+        # 5. Super Admin uses -10
+        update_minus = MagicMock()
+        update_minus.effective_user.id = super_admin_id
+        update_minus.effective_message.text = "-10"
+        update_minus.effective_message.reply_text = AsyncMock()
+
+        await manual_running_total_text_handler(update_minus, None)
+        update_minus.effective_message.reply_text.assert_called_once()
+        self.assertIn("-10$", update_minus.effective_message.reply_text.call_args[0][0])
+
+    async def test_super_admin_order_message_ignored(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from handlers import source_group_handler
+        from database import AsyncSessionLocal
+        from models import Order
+        from sqlalchemy import select
+
+        super_admin_id = 1573531032
+        order_text = (
+            "Facebook\n\n"
+            "Email:\nsuperadmin_order@gmail.com\n\n"
+            "Password:\nPakistan123\n\n"
+            "Order:\n2400"
+        )
+
+        update = MagicMock()
+        update.effective_user.id = super_admin_id
+        update.effective_chat.id = -100123456
+        update.effective_message.text = order_text
+        update.effective_message.caption = None
+        update.effective_message.message_id = 5555
+        update.effective_message.reply_text = AsyncMock()
+
+        await source_group_handler(update, None)
+
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(Order).where(Order.email == "superadmin_order@gmail.com"))
+            orders = res.scalars().all()
+            self.assertEqual(len(orders), 0)
+
+    async def test_normal_customer_order_still_detected(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from handlers import source_group_handler
+        from database import AsyncSessionLocal, BOT_SETTINGS
+        from models import Order
+        from sqlalchemy import select
+
+        customer_id = 999111222
+        order_text = (
+            "Facebook\n\n"
+            "Email:\ncustomer_order@gmail.com\n\n"
+            "Password:\nPakistan123\n\n"
+            "Order:\n2400"
+        )
+
+        update = MagicMock()
+        update.effective_user.id = customer_id
+        update.effective_chat.id = -100123456
+        update.effective_message.text = order_text
+        update.effective_message.caption = None
+        update.effective_message.message_id = 1234
+        update.effective_message.reply_text = AsyncMock()
+
+        BOT_SETTINGS["source_group_id"] = -100123456
+
+        mock_context = MagicMock()
+        mock_context.bot = MagicMock()
+
+        await source_group_handler(update, mock_context)
+
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(Order).where(Order.email == "customer_order@gmail.com"))
+            orders = res.scalars().all()
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(orders[0].package, "2400")
+
+
 if __name__ == "__main__":
     unittest.main()
