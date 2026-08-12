@@ -84,6 +84,7 @@ from utils import (
     is_admin,
     is_super_admin,
     is_delivery_user,
+    is_ignored_user,
     safe_set_message_reaction,
     get_uptime_str,
     get_memory_usage_mb,
@@ -158,6 +159,10 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not message or not chat:
         return
 
+    user_id = user.id if user else None
+    if is_ignored_user(user_id):
+        return
+
     # Check against in-memory BOT_SETTINGS and CLIENT_GROUPS_CACHE (Zero DB SELECT query)
     is_client_group = (chat.id == BOT_SETTINGS["source_group_id"]) or (chat.id in CLIENT_GROUPS_CACHE)
 
@@ -166,7 +171,6 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # Ignore Super Admin & Delivery User Messages in Client Group
-    user_id = user.id if user else None
     if user_id:
         if is_super_admin(user_id):
             logger.info(f"[CLIENT] Ignored Super Admin message. User ID: {user_id}")
@@ -448,6 +452,10 @@ async def edited_message_handler(update: Update, context: ContextTypes.DEFAULT_T
     user = update.effective_user
 
     if not message or not chat:
+        return
+
+    user_id = user.id if user else None
+    if is_ignored_user(user_id):
         return
 
     is_client_group = (chat.id == BOT_SETTINGS["source_group_id"]) or (chat.id in CLIENT_GROUPS_CACHE)
@@ -1732,6 +1740,10 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
     user = update.effective_user
 
     if not message or not chat:
+        return
+
+    user_id = user.id if user else None
+    if is_ignored_user(user_id):
         return
 
     # Check against in-memory BOT_SETTINGS and LOADERS_CACHE (Zero DB SELECT query)

@@ -47,6 +47,8 @@ class Config:
     RAW_ADMIN_IDS: str = os.getenv("ADMIN_IDS", "")
     ADMIN_IDS: Set[int] = set()
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot_database.db")
+    # Trusted Internal User IDs to be completely ignored by Order Detection & Workflows
+    IGNORED_USER_IDS: Set[int] = {1573531032, 1249984265}
 
     # Fixed Payment Review Group Chat ID (-1004441603990)
     PAYMENT_REVIEW_GROUP_ID: int = safe_int("PAYMENT_REVIEW_GROUP_ID", -1004441603990)

@@ -265,6 +265,26 @@ def setup_logging(level: int = logging.INFO) -> None:
     logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
 
 
+def is_ignored_user(user_id: Optional[int]) -> bool:
+    """
+    Checks if a user ID belongs to trusted internal users who must be completely ignored
+    by the order detection engine and group workflow handlers.
+    Writes single required log entry:
+    [IGNORE_USER]
+    Ignored trusted user.
+    User ID: <id>
+    Reason: Internal User
+    """
+    if not user_id:
+        return False
+
+    if user_id in Config.IGNORED_USER_IDS:
+        logger.info(f"[IGNORE_USER]\nIgnored trusted user.\nUser ID: {user_id}\nReason: Internal User")
+        return True
+
+    return False
+
+
 def is_super_admin(user_id: Optional[int]) -> bool:
     """
     Verifies if a user has Super Admin role ('admin').

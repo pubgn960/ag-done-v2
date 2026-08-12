@@ -1722,5 +1722,48 @@ class TestBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
         self.assertIn('updateprices', h_content)
 
 
+class TestIgnoredTrustedUsers(unittest.IsolatedAsyncioTestCase):
+    """Tests trusted user ID ignore rules in order detection engine & group handlers."""
+
+    def test_ignored_user_ids_config(self):
+        from config import Config
+        from utils import is_ignored_user
+
+        self.assertIn(1573531032, Config.IGNORED_USER_IDS)
+        self.assertIn(1249984265, Config.IGNORED_USER_IDS)
+
+        self.assertTrue(is_ignored_user(1573531032))
+        self.assertTrue(is_ignored_user(1249984265))
+        self.assertFalse(is_ignored_user(999999999))
+
+    async def test_ignored_users_in_source_group_handler(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from handlers import source_group_handler, BOT_SETTINGS
+
+        BOT_SETTINGS["source_group_id"] = -1001111222333
+
+        # 1. Ignored User 1573531032
+        update1573 = MagicMock()
+        update1573.effective_message.message_id = 901
+        update1573.effective_message.text = "test1573@gmail.com 2400 CP"
+        update1573.effective_chat.id = -1001111222333
+        update1573.effective_user.id = 1573531032
+        update1573.effective_message.reply_text = AsyncMock()
+
+        await source_group_handler(update1573, None)
+        update1573.effective_message.reply_text.assert_not_called()
+
+        # 2. Ignored User 1249984265
+        update1249 = MagicMock()
+        update1249.effective_message.message_id = 902
+        update1249.effective_message.text = "test1249@gmail.com 2400 CP"
+        update1249.effective_chat.id = -1001111222333
+        update1249.effective_user.id = 1249984265
+        update1249.effective_message.reply_text = AsyncMock()
+
+        await source_group_handler(update1249, None)
+        update1249.effective_message.reply_text.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
