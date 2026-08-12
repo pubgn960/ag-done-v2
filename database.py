@@ -1726,13 +1726,20 @@ async def undo_last_calculator_entry(admin_id: Optional[int] = None) -> Optional
 async def get_running_total_current() -> float:
     """
     Returns the latest running total from the running_total_ledger table.
-    Defaults to 0.0 if empty.
+    Falls back to the current running total of delivery_ledger if running_total_ledger is empty.
+    Defaults to 0.0 if both are empty.
     """
     async with AsyncSessionLocal() as session:
         stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
         res = await session.execute(stmt)
         latest = res.scalar_one_or_none()
-        return latest.after_total if latest else 0.0
+        if latest is not None:
+            return latest.after_total
+
+        stmt_del = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
+        res_del = await session.execute(stmt_del)
+        latest_del = res_del.scalar_one_or_none()
+        return latest_del.running_total if latest_del else 0.0
 
 
 async def record_running_total_entry(
@@ -1762,16 +1769,26 @@ async def record_running_total_entry(
             await session.commit()
             await session.refresh(entry)
 
-            log_tag = f"[{action_type}]"
-            logger.info(
-                f"{log_tag}\n"
-                f"Before: {before_total}$\n"
-                f"Amount: {amount}$\n"
-                f"After: {after_total}$\n"
-                f"Order: #{order_id}\n"
-                f"Admin: #{admin_id}\n"
-                f"Timestamp: {now_dt.isoformat()}"
-            )
+            if action_type == "PAY":
+                logger.info(
+                    f"[PAY]\n"
+                    f"Before: {before_total}$\n"
+                    f"Paid: {amount}$\n"
+                    f"After: {after_total}$\n"
+                    f"Admin: #{admin_id}\n"
+                    f"Timestamp: {now_dt.isoformat()}"
+                )
+            else:
+                log_tag = f"[{action_type}]"
+                logger.info(
+                    f"{log_tag}\n"
+                    f"Before: {before_total}$\n"
+                    f"Amount: {amount}$\n"
+                    f"After: {after_total}$\n"
+                    f"Order: #{order_id}\n"
+                    f"Admin: #{admin_id}\n"
+                    f"Timestamp: {now_dt.isoformat()}"
+                )
             return entry
         except Exception as e:
             await session.rollback()
@@ -1799,6 +1816,7 @@ async def execute_auto_delivery_total(order_id: int, now_val: float) -> Tuple[Ru
 async def execute_pay_reset(admin_id: int) -> Tuple[Optional[RunningTotalLedger], float, float, float]:
     """
     Records a PAY entry setting the current Running Total to 0$.
+    Always uses the full accumulated Running Total as the paid amount.
     """
     before_val = await get_running_total_current()
     if before_val == 0.0:

@@ -2038,21 +2038,32 @@ class TestSimpleRunningTotalSystem(unittest.IsolatedAsyncioTestCase):
     async def test_pay_resets_total_to_zero_and_new_deliveries_restart(self):
         from database import execute_auto_delivery_total, execute_pay_reset, get_running_total_current
 
-        await execute_auto_delivery_total(order_id=161, now_val=64.0)
-        await execute_auto_delivery_total(order_id=162, now_val=33.0)
-        await execute_auto_delivery_total(order_id=163, now_val=16.5)
-        self.assertEqual(await get_running_total_current(), 113.5)
+        # 1. Multiple deliveries: 225$ + 33$ = 258$
+        e1, b1, n1, a1 = await execute_auto_delivery_total(order_id=201, now_val=225.0)
+        self.assertEqual(b1, 0.0)
+        self.assertEqual(n1, 225.0)
+        self.assertEqual(a1, 225.0)
 
+        e2, b2, n2, a2 = await execute_auto_delivery_total(order_id=202, now_val=33.0)
+        self.assertEqual(b2, 225.0)
+        self.assertEqual(n2, 33.0)
+        self.assertEqual(a2, 258.0)
+        self.assertEqual(await get_running_total_current(), 258.0)
+
+        # 2. Super Admin executes /pay
         entry, before, paid, current = await execute_pay_reset(admin_id=1573531032)
-        self.assertEqual(before, 113.5)
-        self.assertEqual(paid, 113.5)
+        self.assertEqual(before, 258.0)
+        self.assertEqual(paid, 258.0)
         self.assertEqual(current, 0.0)
         self.assertEqual(await get_running_total_current(), 0.0)
 
-        e_next, b_next, n_next, a_next = await execute_auto_delivery_total(order_id=164, now_val=64.0)
+        # 3. New delivery starts from zero again
+        e_next, b_next, n_next, a_next = await execute_auto_delivery_total(order_id=203, now_val=64.0)
         self.assertEqual(b_next, 0.0)
         self.assertEqual(n_next, 64.0)
         self.assertEqual(a_next, 64.0)
+
+        # 4. Restart recovery test
         self.assertEqual(await get_running_total_current(), 64.0)
 
     async def test_manual_plus_and_minus_adjustments(self):
