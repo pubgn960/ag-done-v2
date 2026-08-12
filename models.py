@@ -139,6 +139,7 @@ class Order(Base):
     media_group_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     raw_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     issue_state: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    issue_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     last_issue_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     package_progress: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, index=True)

@@ -1430,24 +1430,30 @@ class TestLoaderReviewWorkflow(unittest.IsolatedAsyncioTestCase):
 
         order = await create_order(email=email, package="2400 CP")
         self.assertIsNone(order.issue_state)
+        self.assertIsNone(order.issue_type)
 
         # 1. Loader reports WRONG_NAME
         updated1 = await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", "wrong_name")
         self.assertEqual(updated1.issue_state, "Waiting_Customer_Confirmation")
+        self.assertEqual(updated1.issue_type, "wrong_name")
         self.assertEqual(updated1.last_issue_type, "wrong_name")
 
-        # 2. Customer confirms YES
-        updated2 = await update_order_issue_state(order.id, "Confirmed", "wrong_name")
-        self.assertEqual(updated2.issue_state, "Confirmed")
+        # 2. Customer rejects NO -> Waiting_Customer_Update
+        updated2 = await update_order_issue_state(order.id, "Waiting_Customer_Update", "wrong_name")
+        self.assertEqual(updated2.issue_state, "Waiting_Customer_Update")
+        self.assertEqual(updated2.issue_type, "wrong_name")
 
-        # 3. Loader reports LOGIN_FAILED on another attempt
-        updated3 = await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", "login_failed")
-        self.assertEqual(updated3.issue_state, "Waiting_Customer_Confirmation")
-        self.assertEqual(updated3.last_issue_type, "login_failed")
+        # 3. Customer submits update -> Resolved (issue_type cleared)
+        updated3 = await update_order_issue_state(order.id, "Resolved")
+        self.assertEqual(updated3.issue_state, "Resolved")
+        self.assertIsNone(updated3.issue_type)
+        self.assertEqual(updated3.last_issue_type, "wrong_name")
 
-        # 4. Customer rejects NO
-        updated4 = await update_order_issue_state(order.id, "Rejected", "login_failed")
-        self.assertEqual(updated4.issue_state, "Rejected")
+        # 4. Loader reports LOGIN_FAILED on another attempt
+        updated4 = await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", "login_failed")
+        self.assertEqual(updated4.issue_state, "Waiting_Customer_Confirmation")
+        self.assertEqual(updated4.issue_type, "login_failed")
+        self.assertEqual(updated4.last_issue_type, "login_failed")
 
         # Clean up
         await delete_orders_by_email(email)
