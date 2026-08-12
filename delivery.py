@@ -12,7 +12,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from telegram import Bot, InputMediaPhoto, InputMediaDocument, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Bot, Message, InputMediaPhoto, InputMediaDocument, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import TelegramError, RetryAfter, TimedOut, NetworkError
 
 from config import Config
