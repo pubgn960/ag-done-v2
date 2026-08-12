@@ -2202,5 +2202,86 @@ class TestSimpleRunningTotalSystem(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(e.now_value, 49.5)
 
 
+class TestMultiPackageSelectionRegression(unittest.TestCase):
+    """Regression tests to verify multi-package selection UI and calculation."""
+
+    def test_selecting_two_packages_simultaneously(self):
+        from utils import parse_test_order_packages, toggle_package_selection
+
+        parsed = parse_test_order_packages("10800+5040+2400")
+        items = parsed["packages"]
+
+        # Select 10800
+        items, s1 = toggle_package_selection(items, 0, loader_id=10)
+        self.assertEqual(s1, "Selected")
+        self.assertEqual(items[0]["status"], "Selected")
+
+        # Select 5040 simultaneously
+        items, s2 = toggle_package_selection(items, 1, loader_id=10)
+        self.assertEqual(s2, "Selected")
+        self.assertEqual(items[1]["status"], "Selected")
+
+        # Verify both remain Selected simultaneously
+        selected_count = sum(1 for it in items if it.get("status") == "Selected")
+        self.assertEqual(selected_count, 2)
+        self.assertEqual(items[2]["status"], "Pending")
+
+    def test_selecting_all_packages_simultaneously(self):
+        from utils import parse_test_order_packages, toggle_package_selection
+
+        parsed = parse_test_order_packages("10800+5040+2400")
+        items = parsed["packages"]
+
+        for i in range(3):
+            items, status = toggle_package_selection(items, i, loader_id=10)
+            self.assertEqual(status, "Selected")
+
+        selected_count = sum(1 for it in items if it.get("status") == "Selected")
+        self.assertEqual(selected_count, 3)
+
+    def test_deselecting_a_package(self):
+        from utils import parse_test_order_packages, toggle_package_selection
+
+        parsed = parse_test_order_packages("10800+5040+2400")
+        items = parsed["packages"]
+
+        # Select 10800 and 5040
+        items, _ = toggle_package_selection(items, 0, loader_id=10)
+        items, _ = toggle_package_selection(items, 1, loader_id=10)
+
+        # Deselect 5040
+        items, s_desel = toggle_package_selection(items, 1, loader_id=10)
+        self.assertEqual(s_desel, "Deselected")
+        self.assertEqual(items[1]["status"], "Pending")
+        self.assertEqual(items[0]["status"], "Selected")
+
+    def test_confirm_delivery_with_multiple_selected_packages(self):
+        from utils import parse_test_order_packages, toggle_package_selection, mark_selected_packages_delivered, calculate_delivered_packages_value
+
+        parsed = parse_test_order_packages("10800+5040+2400")
+        items = parsed["packages"]
+
+        # Loader selects 10800 and 5040
+        items, _ = toggle_package_selection(items, 0, loader_id=10)
+        items, _ = toggle_package_selection(items, 1, loader_id=10)
+
+        selected_items = [it for it in items if it.get("status") == "Selected"]
+        self.assertEqual(len(selected_items), 2)
+
+        # Confirm delivery
+        updated_items, is_all, del_cnt = mark_selected_packages_delivered(items, loader_id=10, selected_items=selected_items)
+        self.assertFalse(is_all)
+        self.assertEqual(del_cnt, 2)
+
+        # Delivered packages: 10800 + 5040 -> Price: 64$ + 33$ = 97$
+        pkg_names = [it["package"] for it in selected_items]
+        pkg_str = "+".join(pkg_names)
+        self.assertEqual(pkg_str, "10800+5040")
+
+        total_price, ok = calculate_delivered_packages_value(pkg_str)
+        self.assertTrue(ok)
+        self.assertEqual(total_price, 97.0)
+
+
 if __name__ == "__main__":
     unittest.main()

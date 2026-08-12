@@ -319,11 +319,8 @@ async def deliver_order_by_id(
         curr_delivered = [it["package"] for it in updated_items if isinstance(it, dict) and it.get("status") == "Delivered" and it["package"] not in prev_delivered]
         newly_delivered_names = curr_delivered
 
-    if not newly_delivered_names and progress_items:
-        for it in progress_items:
-            if isinstance(it, dict) and it.get("status") == "Delivered":
-                newly_delivered_names = [it["package"]]
-                break
+    if not newly_delivered_names and updated_items:
+        newly_delivered_names = [it["package"] for it in updated_items if isinstance(it, dict) and it.get("status") == "Delivered"]
 
     newly_delivered_str = "+".join(newly_delivered_names) if newly_delivered_names else (order.package or "")
     session_key = active_ds.delivery_session_message_id if active_ds else loader_reply_msg_id
