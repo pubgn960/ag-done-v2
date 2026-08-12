@@ -7,7 +7,7 @@ Multi Loader Approval System, and Category A Only Price Workflow with prompt & c
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from sqlalchemy import String, Text, Integer, BigInteger, DateTime, ForeignKey, Index
+from sqlalchemy import String, Text, Integer, BigInteger, Float, DateTime, ForeignKey, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -216,3 +216,24 @@ class DeliverySession(Base):
 
 # Compound index for email + creation timestamp queries
 Index("idx_orders_email_created_desc", Order.email, Order.created_at.desc())
+
+
+class PackagePrice(Base):
+    """
+    Stores official production package prices in the database.
+    Allows Super Admins to dynamically update prices via /updateprices command.
+    """
+
+    __tablename__ = "package_prices"
+
+    package: Mapped[str] = mapped_column(String(50), primary_key=True)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    updated_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<PackagePrice(package='{self.package}', price={self.price}, updated_by={self.updated_by})>"

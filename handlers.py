@@ -106,13 +106,18 @@ from utils import (
     ISSUE_WORKFLOW_CONFIG,
     detect_loader_issue,
     has_valid_account_update_fields,
-    validate_customer_update_for_issue
+    validate_customer_update_for_issue,
+    parse_bulk_prices_input,
+    format_export_prices,
+    PACKAGE_PRICES
 )
 from database import (
     update_order_package_progress,
     create_delivery_session,
     get_delivery_session_by_msg_id,
-    close_delivery_session
+    close_delivery_session,
+    get_all_package_prices_from_db,
+    bulk_update_package_prices_in_db
 )
 import json
 
@@ -123,6 +128,9 @@ LOADER_ADD_SESSION: Dict[int, Dict[str, Any]] = {}
 
 # Temporary memory state for interactive price input workflow (order_id -> session dict)
 PRICE_INPUT_SESSION: Dict[int, Dict[str, Any]] = {}
+
+# Temporary memory state for Super Admin /updateprices bulk update (user_id -> bool)
+BULK_PRICE_UPDATE_SESSIONS: Dict[int, bool] = {}
 
 
 def is_valid_price_string(text: str) -> bool:
@@ -1405,6 +1413,120 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
 
     # Remove active price session
     PRICE_INPUT_SESSION.pop(target_order_id, None)
+
+
+# ==========================================
+# Production Bulk Price Update System
+# ==========================================
+
+async def exportprices_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /exportprices.
+    Reads ALL package prices from the database (NOT hardcoded values)
+    and replies with the current production price list.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[PRICE_EXPORT] Unauthorized /exportprices attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    try:
+        prices = await get_all_package_prices_from_db()
+        if not prices:
+            prices = PACKAGE_PRICES
+
+        export_text = format_export_prices(prices)
+        await update.message.reply_text(export_text)
+        now_str = datetime.now(timezone.utc).isoformat()
+        logger.info(f"[PRICE_EXPORT] Admin #{user.id}, Timestamp {now_str}, Number of Packages Exported: {len(prices)}")
+    except Exception as e:
+        logger.exception(f"[PRICE_EXPORT] Failed to export prices for admin #{user.id}: {e}")
+        await update.message.reply_text("❌ Failed to export price list.")
+
+
+async def updateprices_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /updateprices.
+    Prompts Super Admin to reply/send the complete price list in ONE message.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[PRICE_UPDATE] Unauthorized /updateprices attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    BULK_PRICE_UPDATE_SESSIONS[user.id] = True
+
+    prompt_text = (
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📋 <b>Bulk Price Update</b>\n\n"
+        "Please send the COMPLETE price list.\n\n"
+        "Example\n\n"
+        "10800 64\n"
+        "5040 33\n"
+        "2400 16.5\n"
+        "880 8\n"
+        "420 4.5\n"
+        "80 1\n\n"
+        "108000 563\n"
+        "96000 503\n"
+        "72000 375\n"
+        "...\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await update.message.reply_text(prompt_text, parse_mode="HTML")
+    logger.info(f"[PRICE_UPDATE] Prompted Super Admin #{user.id} for bulk price list update.")
+
+
+async def bulk_price_update_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Intercepts text messages sent by Super Admin when BULK_PRICE_UPDATE_SESSIONS is active.
+    Parses, validates, atomically updates database, reloads in-memory cache, and replies with result.
+    Returns True if handled, False otherwise.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        return False
+
+    if not BULK_PRICE_UPDATE_SESSIONS.get(user.id):
+        return False
+
+    message = update.effective_message
+    if not message or not message.text:
+        return False
+
+    text = message.text.strip()
+    if text.startswith("/"):
+        BULK_PRICE_UPDATE_SESSIONS.pop(user.id, None)
+        return False
+
+    BULK_PRICE_UPDATE_SESSIONS.pop(user.id, None)
+
+    price_map, err_msg = parse_bulk_prices_input(text)
+    if err_msg:
+        logger.warning(f"[PRICE_UPDATE] Bulk price update validation failed for admin #{user.id}:\n{err_msg}")
+        await message.reply_text(err_msg)
+        return True
+
+    try:
+        success = await bulk_update_package_prices_in_db(price_map, updated_by_id=user.id)
+        if success:
+            user_ref = f"@{user.username}" if user.username else f"User #{user.id}"
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            success_msg = (
+                "✅ <b>Price List Updated Successfully</b>\n\n"
+                "<b>22 Packages Updated</b>\n\n"
+                f"<b>Updated By:</b>\n{user_ref}\n\n"
+                f"<b>Updated At:</b>\n{now_str}"
+            )
+            await message.reply_text(success_msg, parse_mode="HTML")
+            logger.info(f"[PRICE_UPDATE] Super Admin #{user.id} successfully updated {len(price_map)} package prices.")
+        else:
+            await message.reply_text("❌ Database update failed. Transaction rolled back.")
+    except Exception as e:
+        logger.exception(f"[PRICE_UPDATE] Error executing bulk price update for admin #{user.id}: {e}")
+        await message.reply_text("❌ Database update failed. Transaction rolled back.")
+
+    return True
 
 
 # ==========================================

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import joinedload
 
 from config import Config
-from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession
+from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,7 @@ async def init_db() -> None:
     await reload_auth_users_cache()
     await reload_bot_settings_cache()
     await reload_loaders_cache()
+    await seed_and_load_package_prices()
 
 
 # ==========================================
@@ -1243,3 +1244,114 @@ async def close_delivery_session(session_id: int) -> None:
         await session.execute(stmt)
         await session.commit()
         logger.info(f"[DELIVERY_SESSION] Closed Delivery Session #{session_id}.")
+
+
+DEFAULT_PACKAGE_PRICES: Dict[str, float] = {
+    "108000": 563.0,
+    "96000": 503.0,
+    "72000": 375.0,
+    "55200": 291.0,
+    "48000": 254.0,
+    "43200": 229.0,
+    "38400": 211.0,
+    "24000": 132.0,
+    "21600": 119.0,
+    "19200": 109.0,
+    "16800": 95.0,
+    "14400": 82.0,
+    "12000": 69.0,
+    "10800": 64.0,
+    "9600": 55.0,
+    "7200": 42.0,
+    "5040": 33.0,
+    "4800": 29.0,
+    "2400": 16.5,
+    "880": 8.0,
+    "420": 4.5,
+    "80": 1.0,
+}
+
+
+async def seed_and_load_package_prices() -> Dict[str, float]:
+    """
+    Seeds default package prices into DB if empty or missing,
+    loads all package prices from DB, and updates in-memory cache.
+    """
+    from utils import reload_package_prices_cache
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(PackagePrice)
+        res = await session.execute(stmt)
+        existing_prices = {p.package: p.price for p in res.scalars().all()}
+
+        missing = set(DEFAULT_PACKAGE_PRICES.keys()) - set(existing_prices.keys())
+        if missing:
+            for pkg in missing:
+                session.add(PackagePrice(
+                    package=pkg,
+                    price=DEFAULT_PACKAGE_PRICES[pkg],
+                    updated_at=datetime.now(timezone.utc)
+                ))
+            await session.commit()
+            logger.info(f"[PRICE_DB] Seeded {len(missing)} missing default package prices into database.")
+
+            res = await session.execute(select(PackagePrice))
+            existing_prices = {p.package: p.price for p in res.scalars().all()}
+
+        reload_package_prices_cache(existing_prices)
+        logger.info(f"[PRICE_DB] Loaded {len(existing_prices)} package prices from database into cache.")
+        return existing_prices
+
+
+async def get_all_package_prices_from_db() -> Dict[str, float]:
+    """
+    Retrieves all 22 package prices directly from the database table.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(PackagePrice)
+        res = await session.execute(stmt)
+        prices = {p.package: p.price for p in res.scalars().all()}
+        return prices
+
+
+async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_by_id: Optional[int] = None) -> bool:
+    """
+    Atomically updates all package prices in the database in a single transaction.
+    Reloads in-memory cache upon success.
+    Rolls back completely if any database error occurs.
+    """
+    from utils import reload_package_prices_cache
+
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(select(PackagePrice))
+            old_prices = {p.package: p.price for p in res.scalars().all()}
+
+            now = datetime.now(timezone.utc)
+
+            for pkg, new_price in price_map.items():
+                old_p = old_prices.get(pkg)
+                stmt = select(PackagePrice).where(PackagePrice.package == pkg)
+                existing = (await session.execute(stmt)).scalar_one_or_none()
+                if existing:
+                    existing.price = new_price
+                    existing.updated_by = updated_by_id
+                    existing.updated_at = now
+                else:
+                    session.add(PackagePrice(
+                        package=pkg,
+                        price=new_price,
+                        updated_by=updated_by_id,
+                        updated_at=now
+                    ))
+
+                logger.info(f"[PRICE_UPDATE] Package {pkg}: Old Price {old_p} -> New Price {new_price} | Updated By #{updated_by_id} at {now.isoformat()}")
+
+            await session.commit()
+            reload_package_prices_cache(price_map)
+            logger.info(f"[PRICE_UPDATE] Successfully updated {len(price_map)} package prices in database.")
+            return True
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[PRICE_UPDATE] Transaction rolled back due to error: {e}")
+            raise e

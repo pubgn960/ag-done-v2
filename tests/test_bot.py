@@ -1559,5 +1559,149 @@ class TestDuplicateDeliveryFingerprint(unittest.IsolatedAsyncioTestCase):
         await delete_orders_by_email(email)
 
 
+class TestBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for the Production Bulk Price Update System."""
+
+    async def asyncSetUp(self):
+        from database import seed_and_load_package_prices
+        await seed_and_load_package_prices()
+
+    async def test_export_prices_format(self):
+        from database import get_all_package_prices_from_db
+        from utils import format_export_prices
+
+        db_prices = await get_all_package_prices_from_db()
+        self.assertEqual(len(db_prices), 22)
+        export_text = format_export_prices(db_prices)
+        self.assertIn("10800 64", export_text)
+        self.assertIn("2400 16.5", export_text)
+        self.assertIn("108000 563", export_text)
+
+    async def test_parse_bulk_prices_valid_input(self):
+        from utils import parse_bulk_prices_input
+
+        sample_input = """
+        10800 65
+        5040 = 34
+        2400 : 17
+        880 -> 8.5
+        420 => 5
+        80 1.5
+
+        108000 570
+        96000 510
+        72000 380
+        55200 295
+        48000 260
+        43200 235
+        38400 215
+        24000 135
+        21600 122
+        19200 112
+        16800 98
+        14400 85
+        12000 72
+        9600 58
+        7200 45
+        4800 31
+        """
+        price_map, err = parse_bulk_prices_input(sample_input)
+        self.assertIsNone(err)
+        self.assertIsNotNone(price_map)
+        self.assertEqual(len(price_map), 22)
+        self.assertEqual(price_map["10800"], 65.0)
+        self.assertEqual(price_map["5040"], 34.0)
+        self.assertEqual(price_map["2400"], 17.0)
+
+    async def test_validation_errors_and_rollback(self):
+        from utils import parse_bulk_prices_input
+        from database import get_all_package_prices_from_db
+
+        initial_prices = await get_all_package_prices_from_db()
+
+        # 1. Unknown Package
+        _, err1 = parse_bulk_prices_input("9999 100")
+        self.assertIsNotNone(err1)
+        self.assertIn("❌ Unknown Package", err1)
+        self.assertIn("9999", err1)
+
+        # 2. Invalid Price
+        _, err2 = parse_bulk_prices_input("10800 abc")
+        self.assertIsNotNone(err2)
+        self.assertIn("❌ Invalid Price", err2)
+
+        # 3. Duplicate Package
+        dup_text = "10800 64\n10800 65"
+        _, err3 = parse_bulk_prices_input(dup_text)
+        self.assertIsNotNone(err3)
+        self.assertIn("❌ Duplicate Package", err3)
+
+        # 4. Missing Packages
+        partial_text = "10800 64\n5040 33"
+        _, err4 = parse_bulk_prices_input(partial_text)
+        self.assertIsNotNone(err4)
+        self.assertIn("❌ Missing Packages", err4)
+        self.assertIn("2400", err4)
+
+        # Verify DB remained untouched
+        after_prices = await get_all_package_prices_from_db()
+        self.assertEqual(initial_prices, after_prices)
+
+    async def test_atomic_bulk_update_and_cache_reload(self):
+        from utils import parse_bulk_prices_input, calculate_test_price, PACKAGE_PRICES
+        from database import bulk_update_package_prices_in_db, get_all_package_prices_from_db, DEFAULT_PACKAGE_PRICES
+
+        valid_input = """
+        10800 70
+        5040 35
+        2400 18
+        880 9
+        420 5
+        80 2
+
+        108000 600
+        96000 520
+        72000 390
+        55200 300
+        48000 270
+        43200 240
+        38400 220
+        24000 140
+        21600 125
+        19200 115
+        16800 100
+        14400 88
+        12000 75
+        9600 60
+        7200 46
+        4800 32
+        """
+        price_map, err = parse_bulk_prices_input(valid_input)
+        self.assertIsNone(err)
+
+        # Update DB & Cache
+        success = await bulk_update_package_prices_in_db(price_map, updated_by_id=1573531032)
+        self.assertTrue(success)
+
+        # Verify Cache updated immediately without restart
+        self.assertEqual(PACKAGE_PRICES["10800"], 70.0)
+        self.assertEqual(calculate_test_price("10800"), 70.0)
+        self.assertEqual(calculate_test_price("2400"), 18.0)
+        self.assertEqual(calculate_test_price("10800 + 5040"), 105.0)
+
+        # Verify DB persisted
+        db_prices = await get_all_package_prices_from_db()
+        self.assertEqual(db_prices["10800"], 70.0)
+
+        # Restore default prices
+        await bulk_update_package_prices_in_db(DEFAULT_PACKAGE_PRICES, updated_by_id=1573531032)
+        self.assertEqual(calculate_test_price("10800"), 64.0)
+
+    async def test_unauthorized_user_blocked(self):
+        from utils import is_super_admin
+        self.assertTrue(is_super_admin(1573531032))
+        self.assertFalse(is_super_admin(999999999))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -70,7 +70,10 @@ from handlers import (
     status_command,
     removesource_command,
     removedelivery_command,
-    resetgroups_command
+    resetgroups_command,
+    exportprices_command_handler,
+    updateprices_command_handler,
+    bulk_price_update_text_handler
 )
 
 # Initialize application logging
@@ -229,6 +232,8 @@ def main() -> None:
     application.add_handler(CommandHandler("export", export_command))
     application.add_handler(CommandHandler("backup", backup_command))
     application.add_handler(CommandHandler("restore", restore_command))
+    application.add_handler(CommandHandler("exportprices", exportprices_command_handler))
+    application.add_handler(CommandHandler("updateprices", updateprices_command_handler))
 
     # Register Interactive Callback Query Handlers
     application.add_handler(CallbackQueryHandler(duplicate_order_callback_handler, pattern="^dup_"))
@@ -247,6 +252,13 @@ def main() -> None:
         MessageHandler(
             filters.REPLY & filters.TEXT & (~filters.COMMAND),
             price_input_text_handler
+        ),
+        group=0
+    )
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & (~filters.COMMAND),
+            bulk_price_update_text_handler
         ),
         group=0
     )

@@ -433,6 +433,12 @@ def get_db_type_name() -> str:
     return "Unknown DB"
 
 
+SUPPORTED_PACKAGES: Set[str] = {
+    "80", "420", "880", "2400", "4800", "5040", "7200", "9600", "10800",
+    "12000", "14400", "16800", "19200", "21600", "24000", "38400", "43200",
+    "48000", "55200", "72000", "96000", "108000"
+}
+
 PACKAGE_PRICES: Dict[str, float] = {
     "108000": 563.0,
     "96000": 503.0,
@@ -458,8 +464,99 @@ PACKAGE_PRICES: Dict[str, float] = {
     "80": 1.0,
 }
 
-# Backward compatibility alias
 TEST_PACKAGE_PRICES = PACKAGE_PRICES
+
+
+def reload_package_prices_cache(new_prices: Dict[str, float]) -> None:
+    """Reloads in-memory package price cache immediately without restarting."""
+    global PACKAGE_PRICES
+    PACKAGE_PRICES.clear()
+    PACKAGE_PRICES.update(new_prices)
+
+
+def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+    """
+    Parses and validates a bulk price update text block.
+    Supports formats:
+      10800 64
+      10800 = 64
+      10800 : 64
+      10800 -> 64
+      10800 => 64
+    Strips noise tokens (CP, cp, $, ⚡, 🎉, etc.).
+    Returns (price_map, None) on success, or (None, error_msg) on failure.
+    """
+    if not text or not text.strip():
+        return None, "❌ Empty input text."
+
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if not lines:
+        return None, "❌ Empty input text."
+
+    parsed_map: Dict[str, float] = {}
+    seen_packages: Set[str] = set()
+
+    for line in lines:
+        clean_line = re.sub(r'[$⚡🎉]|\bcp\b', '', line, flags=re.IGNORECASE).strip()
+        if not clean_line:
+            continue
+
+        parts = re.split(r'\s*(?:->|=>|=|\:|\s)\s*', clean_line)
+        parts = [p for p in parts if p]
+
+        if len(parts) != 2:
+            return None, f"❌ Invalid Price\n\n{line}"
+
+        raw_pkg, raw_price = parts[0].strip(), parts[1].strip()
+
+        if not raw_pkg.isdigit():
+            return None, f"❌ Unknown Package\n\n{raw_pkg}"
+
+        pkg_str = str(int(raw_pkg))
+
+        if pkg_str not in SUPPORTED_PACKAGES:
+            return None, f"❌ Unknown Package\n\n{pkg_str}"
+
+        if pkg_str in seen_packages:
+            return None, f"❌ Duplicate Package\n\n{pkg_str}"
+
+        try:
+            price_val = float(raw_price)
+            if price_val <= 0:
+                return None, f"❌ Invalid Price\n\n{line}"
+        except ValueError:
+            return None, f"❌ Invalid Price\n\n{line}"
+
+        parsed_map[pkg_str] = price_val
+        seen_packages.add(pkg_str)
+
+    missing_packages = SUPPORTED_PACKAGES - seen_packages
+    if missing_packages:
+        sorted_missing = sorted(list(missing_packages), key=lambda x: int(x), reverse=True)
+        missing_text = "\n\n".join(sorted_missing)
+        return None, f"❌ Missing Packages\n\n{missing_text}"
+
+    return parsed_map, None
+
+
+def format_export_prices(price_map: Dict[str, float]) -> str:
+    """
+    Formats prices for export in standard format matching requirements:
+    Standard Packs first, blank line, Special Packs second.
+    """
+    standard_order = ["10800", "5040", "2400", "880", "420", "80"]
+    special_order = [
+        "108000", "96000", "72000", "55200", "48000", "43200", "38400",
+        "24000", "21600", "19200", "16800", "14400", "12000", "9600", "7200", "4800"
+    ]
+
+    def _fmt_price(val: float) -> str:
+        return f"{int(val)}" if val.is_integer() else f"{val:g}"
+
+    std_lines = [f"{pkg} {_fmt_price(price_map.get(pkg, 0))}" for pkg in standard_order if pkg in price_map]
+    spc_lines = [f"{pkg} {_fmt_price(price_map.get(pkg, 0))}" for pkg in special_order if pkg in price_map]
+
+    return "\n".join(std_lines) + "\n\n" + "\n".join(spc_lines)
 
 
 def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, Any]]:
