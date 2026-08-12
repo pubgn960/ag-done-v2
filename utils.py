@@ -670,6 +670,89 @@ def format_calculator_total_message(total: float) -> str:
     )
 
 
+def format_running_total_current_message(total: float) -> str:
+    """
+    Formats /total response:
+    ━━━━━━━━━━━━━━━━━━
+
+    📊 Current Delivery Total
+
+    113.5$
+
+    ━━━━━━━━━━━━━━━━━━
+    """
+    return (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 <b>Current Delivery Total</b>\n\n"
+        f"{_fmt_price_val(total)}$\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def format_pay_record_message(before: float, paid: float, current: float) -> str:
+    """
+    Formats /pay response:
+    ━━━━━━━━━━━━━━━━━━
+
+    ✅ Payment Recorded
+
+    Before
+    113.5$
+
+    Paid
+    113.5$
+
+    Current Total
+    0$
+
+    ━━━━━━━━━━━━━━━━━━
+    """
+    return (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "✅ <b>Payment Recorded</b>\n\n"
+        "Before\n"
+        f"{_fmt_price_val(before)}$\n\n"
+        "Paid\n"
+        f"{_fmt_price_val(paid)}$\n\n"
+        "Current Total\n"
+        f"{_fmt_price_val(current)}$\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def format_manual_adjustment_message(before: float, now_val: float, total: float) -> str:
+    """
+    Formats manual + / - adjustments:
+    ━━━━━━━━━━━━━━━━━━
+
+    Before
+    64$
+
+    Now
+    +10$ (or -10$)
+
+    Total
+    74$ (or 64$)
+
+    ━━━━━━━━━━━━━━━━━━
+    """
+    if now_val >= 0:
+        now_str = f"+{_fmt_price_val(now_val)}"
+    else:
+        now_str = f"-{_fmt_price_val(abs(now_val))}"
+
+    return (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "Before\n"
+        f"{_fmt_price_val(before)}$\n\n"
+        "Now\n"
+        f"{now_str}$\n\n"
+        "Total\n"
+        f"{_fmt_price_val(total)}$\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
+
 def calculate_delivered_packages_value(packages_str: str) -> Tuple[Optional[float], bool]:
     """
     Calculates sum of prices for delivered package(s) string (e.g., '10800', '10800+5040', '2x10800').

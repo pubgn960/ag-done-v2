@@ -2001,5 +2001,110 @@ class TestSimpleRunningTotalCalculator(unittest.IsolatedAsyncioTestCase):
         unauth_update.effective_message.reply_text.assert_called_with("❌ You are not authorized to use this command.")
 
 
+class TestSimpleRunningTotalSystem(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for Production Simple Running Total System."""
+
+    async def asyncSetUp(self):
+        from database import init_db, AsyncSessionLocal
+        from models import RunningTotalLedger
+        from sqlalchemy import delete
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(RunningTotalLedger))
+            await session.commit()
+
+    async def test_automatic_delivery_calculation_and_multi_deliveries(self):
+        from database import execute_auto_delivery_total, get_running_total_current
+
+        self.assertEqual(await get_running_total_current(), 0.0)
+
+        e1, b1, n1, a1 = await execute_auto_delivery_total(order_id=161, now_val=64.0)
+        self.assertEqual(b1, 0.0)
+        self.assertEqual(n1, 64.0)
+        self.assertEqual(a1, 64.0)
+        self.assertEqual(await get_running_total_current(), 64.0)
+
+        e2, b2, n2, a2 = await execute_auto_delivery_total(order_id=162, now_val=33.0)
+        self.assertEqual(b2, 64.0)
+        self.assertEqual(n2, 33.0)
+        self.assertEqual(a2, 97.0)
+
+        e3, b3, n3, a3 = await execute_auto_delivery_total(order_id=163, now_val=16.5)
+        self.assertEqual(b3, 97.0)
+        self.assertEqual(n3, 16.5)
+        self.assertEqual(a3, 113.5)
+        self.assertEqual(await get_running_total_current(), 113.5)
+
+    async def test_pay_resets_total_to_zero_and_new_deliveries_restart(self):
+        from database import execute_auto_delivery_total, execute_pay_reset, get_running_total_current
+
+        await execute_auto_delivery_total(order_id=161, now_val=64.0)
+        await execute_auto_delivery_total(order_id=162, now_val=33.0)
+        await execute_auto_delivery_total(order_id=163, now_val=16.5)
+        self.assertEqual(await get_running_total_current(), 113.5)
+
+        entry, before, paid, current = await execute_pay_reset(admin_id=1573531032)
+        self.assertEqual(before, 113.5)
+        self.assertEqual(paid, 113.5)
+        self.assertEqual(current, 0.0)
+        self.assertEqual(await get_running_total_current(), 0.0)
+
+        e_next, b_next, n_next, a_next = await execute_auto_delivery_total(order_id=164, now_val=64.0)
+        self.assertEqual(b_next, 0.0)
+        self.assertEqual(n_next, 64.0)
+        self.assertEqual(a_next, 64.0)
+        self.assertEqual(await get_running_total_current(), 64.0)
+
+    async def test_manual_plus_and_minus_adjustments(self):
+        from database import execute_auto_delivery_total, execute_manual_adjustment, get_running_total_current
+
+        await execute_auto_delivery_total(order_id=161, now_val=64.0)
+        self.assertEqual(await get_running_total_current(), 64.0)
+
+        e_plus, b_plus, n_plus, a_plus, act_plus = await execute_manual_adjustment(10.0, admin_id=1573531032)
+        self.assertEqual(b_plus, 64.0)
+        self.assertEqual(n_plus, 10.0)
+        self.assertEqual(a_plus, 74.0)
+        self.assertEqual(act_plus, "MANUAL_PLUS")
+        self.assertEqual(await get_running_total_current(), 74.0)
+
+        e_minus, b_minus, n_minus, a_minus, act_minus = await execute_manual_adjustment(-10.0, admin_id=1573531032)
+        self.assertEqual(b_minus, 74.0)
+        self.assertEqual(n_minus, -10.0)
+        self.assertEqual(a_minus, 64.0)
+        self.assertEqual(act_minus, "MANUAL_MINUS")
+        self.assertEqual(await get_running_total_current(), 64.0)
+
+    async def test_undo_last_action(self):
+        from database import execute_auto_delivery_total, execute_manual_adjustment, undo_last_running_total_action, get_running_total_current
+
+        await execute_auto_delivery_total(order_id=161, now_val=64.0)
+        await execute_manual_adjustment(10.0, admin_id=1573531032)
+        self.assertEqual(await get_running_total_current(), 74.0)
+
+        undone = await undo_last_running_total_action(admin_id=1573531032)
+        self.assertIsNotNone(undone)
+        self.assertEqual(undone.amount, 10.0)
+        self.assertEqual(await get_running_total_current(), 64.0)
+
+    async def test_unauthorized_users_ignored(self):
+        from unittest.mock import MagicMock, AsyncMock
+        from handlers import running_total_command_handler, pay_running_total_command_handler, manual_running_total_text_handler
+
+        unauth_update = MagicMock()
+        unauth_update.effective_user.id = 999888777
+        unauth_update.effective_message.reply_text = AsyncMock()
+        unauth_update.effective_message.text = "+100"
+
+        await running_total_command_handler(unauth_update, None)
+        unauth_update.effective_message.reply_text.assert_not_called()
+
+        await pay_running_total_command_handler(unauth_update, None)
+        unauth_update.effective_message.reply_text.assert_not_called()
+
+        await manual_running_total_text_handler(unauth_update, None)
+        unauth_update.effective_message.reply_text.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

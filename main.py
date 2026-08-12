@@ -84,7 +84,12 @@ from handlers import (
     calculate_command_handler,
     total_command_handler,
     calc_undo_command_handler,
-    calc_undo_callback_handler
+    calc_undo_callback_handler,
+    running_total_command_handler,
+    pay_running_total_command_handler,
+    manual_running_total_text_handler,
+    running_total_undo_command_handler,
+    running_total_undo_callback_handler
 )
 
 # Initialize application logging
@@ -160,7 +165,8 @@ async def post_init(application: Application) -> None:
         BotCommand("updateprices", "Bulk Update Prices"),
         BotCommand("calculate", "Add or Subtract Amount"),
         BotCommand("total", "View Current Total"),
-        BotCommand("undo", "Undo Last Calculation"),
+        BotCommand("pay", "Record Payment & Reset Total"),
+        BotCommand("undo", "Undo Last Action"),
         BotCommand("addprice", "Add Price Adjustment"),
         BotCommand("subtractprice", "Subtract Price Adjustment"),
         BotCommand("ledger", "View Delivery Ledger"),
@@ -256,8 +262,9 @@ def main() -> None:
     application.add_handler(CommandHandler("exportprices", exportprices_command_handler))
     application.add_handler(CommandHandler("updateprices", updateprices_command_handler))
     application.add_handler(CommandHandler("calculate", calculate_command_handler))
-    application.add_handler(CommandHandler("total", total_command_handler))
-    application.add_handler(CommandHandler("undo", calc_undo_command_handler))
+    application.add_handler(CommandHandler("total", running_total_command_handler))
+    application.add_handler(CommandHandler("pay", pay_running_total_command_handler))
+    application.add_handler(CommandHandler("undo", running_total_undo_command_handler))
     application.add_handler(CommandHandler("addprice", addprice_command_handler))
     application.add_handler(CommandHandler("subtractprice", subtractprice_command_handler))
     application.add_handler(CommandHandler("ledger", ledger_command_handler))
@@ -277,6 +284,16 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(loader_pkg_cancel_callback_handler, pattern="^pkg_cancel:"))
     application.add_handler(CallbackQueryHandler(ledger_undo_callback_handler, pattern="^ledger_undo_"))
     application.add_handler(CallbackQueryHandler(calc_undo_callback_handler, pattern="^calc_undo_"))
+    application.add_handler(CallbackQueryHandler(running_total_undo_callback_handler, pattern="^rt_undo_"))
+
+    # Register manual_running_total_text_handler for + / - numeric adjustments
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(r"^[\+\-]\d+(\.\d+)?$") & (~filters.COMMAND),
+            manual_running_total_text_handler
+        ),
+        group=0
+    )
 
     # Register price_input_text_handler first for reply messages
     application.add_handler(

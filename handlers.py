@@ -114,7 +114,10 @@ from utils import (
     format_ledger_entry_message,
     calculate_delivered_packages_value,
     format_calculator_result_message,
-    format_calculator_total_message
+    format_calculator_total_message,
+    format_running_total_current_message,
+    format_pay_record_message,
+    format_manual_adjustment_message
 )
 from database import (
     update_order_package_progress,
@@ -134,7 +137,12 @@ from database import (
     get_calculator_current_total,
     record_calculator_entry,
     get_last_calculator_entry,
-    undo_last_calculator_entry
+    undo_last_calculator_entry,
+    get_running_total_current,
+    execute_pay_reset,
+    execute_manual_adjustment,
+    get_last_running_total_entry,
+    undo_last_running_total_action
 )
 import json
 
@@ -1992,6 +2000,133 @@ async def calc_undo_callback_handler(update: Update, context: ContextTypes.DEFAU
 
 
 # ==========================================
+# Production Simple Running Total Handlers
+# ==========================================
+
+async def running_total_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /total.
+    Displays the current running total of all delivered orders.
+    Everyone else is ignored.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[TOTAL] Unauthorized /total attempt ignored for user #{user.id if user else 'Unknown'}.")
+        return
+
+    curr_tot = await get_running_total_current()
+    msg = format_running_total_current_message(curr_tot)
+    await update.effective_message.reply_text(msg, parse_mode="HTML")
+
+
+async def pay_running_total_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /pay.
+    Considers the entire current Running Total as paid and resets total to 0$.
+    Everyone else is ignored.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[PAY] Unauthorized /pay attempt ignored for user #{user.id if user else 'Unknown'}.")
+        return
+
+    entry, before_val, paid_val, current_val = await execute_pay_reset(admin_id=user.id)
+    msg = format_pay_record_message(before_val, paid_val, current_val)
+    await update.effective_message.reply_text(msg, parse_mode="HTML")
+
+
+async def manual_running_total_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles plain numeric messages starting with '+' or '-' (e.g. +10, -10, +16.5, -4.5).
+    Super Admin only. Everyone else must be ignored.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        # Silently ignore non-super-admins
+        return
+
+    msg_text = update.effective_message.text.strip() if update.effective_message and update.effective_message.text else ""
+    if not (msg_text.startswith("+") or msg_text.startswith("-")):
+        return
+
+    raw_num = msg_text
+    try:
+        val = float(raw_num)
+    except ValueError:
+        return  # Not a plain numeric adjustment
+
+    entry, before_val, now_val, after_val, action_type = await execute_manual_adjustment(val, admin_id=user.id)
+    reply_msg = format_manual_adjustment_message(before_val, now_val, after_val)
+    await update.effective_message.reply_text(reply_msg, parse_mode="HTML")
+
+
+async def running_total_undo_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command /undo.
+    Displays confirmation card for the last action in running_total_ledger.
+    Everyone else is ignored.
+    """
+    user = update.effective_user
+    if not user or not is_super_admin(user.id):
+        logger.warning(f"[UNDO] Unauthorized /undo attempt ignored for user #{user.id if user else 'Unknown'}.")
+        return
+
+    last_entry = await get_last_running_total_entry()
+    if not last_entry:
+        await update.effective_message.reply_text("❌ No actions found to undo.")
+        return
+
+    card_text = (
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "Undo last action?\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirm", callback_data=f"rt_undo_confirm:{last_entry.id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"rt_undo_cancel:{last_entry.id}")
+        ]
+    ])
+    await update.effective_message.reply_text(card_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def running_total_undo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles inline callback confirmation for /undo.
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("rt_undo_"):
+        return
+
+    user = query.from_user
+    if not user or not is_super_admin(user.id):
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    parts = query.data.split(":")
+    action = parts[0]
+
+    if action == "rt_undo_confirm":
+        undone = await undo_last_running_total_action(admin_id=user.id)
+        if undone:
+            curr_tot = await get_running_total_current()
+            tot_str = f"{int(curr_tot)}" if curr_tot.is_integer() else f"{curr_tot:g}"
+            await query.edit_message_text(f"✅ <b>Action Undone Successfully.</b>\n\n<b>Restored Total:</b> {tot_str}$", parse_mode="HTML")
+        else:
+            await query.edit_message_text("❌ Action not found or already undone.")
+    elif action == "rt_undo_cancel":
+        await query.edit_message_text("❌ <b>Undo Cancelled.</b>", parse_mode="HTML")
+
+
+# ==========================================
 # Multi-Loader Category B Callback Handler
 # ==========================================
 
@@ -3387,10 +3522,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>Price Management:</b>\n"
         "• <code>/exportprices</code> - Export current price list\n"
         "• <code>/updateprices</code> - Bulk update price list\n\n"
-        "<b>Running Total Calculator:</b>\n"
-        "• <code>/calculate &lt;amount&gt;</code> - Add or subtract amount from running total\n"
-        "• <code>/total</code> - View current running total\n"
-        "• <code>/undo</code> - Undo last calculation (with confirmation)\n\n"
+        "<b>Simple Running Total System:</b>\n"
+        "• <code>/total</code> - View current delivery total\n"
+        "• <code>/pay</code> - Record payment and reset total to 0$\n"
+        "• <code>+amount / -amount</code> - Plain numeric manual adjustments\n"
+        "• <code>/undo</code> - Undo last action (with confirmation)\n\n"
         "<b>Delivery Ledger:</b>\n"
         "• <code>/undo</code> - Undo last ledger entry (with confirmation)\n"
         "• <code>/addprice &lt;amount&gt; &lt;reason&gt;</code> - Add manual price adjustment\n"

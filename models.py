@@ -291,3 +291,29 @@ class CalculatorLedger(Base):
 
     def __repr__(self) -> str:
         return f"<CalculatorLedger(id={self.id}, amount={self.amount}, before={self.before_total}, after={self.after_total})>"
+
+
+class RunningTotalLedger(Base):
+    """
+    Stores individual entries and running totals for the Production Simple Running Total System.
+    Action types: AUTO_DELIVERY, MANUAL_PLUS, MANUAL_MINUS, PAY, UNDO.
+    """
+
+    __tablename__ = "running_total_ledger"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    before_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    after_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    admin_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<RunningTotalLedger(id={self.id}, action='{self.action_type}', amount={self.amount}, before={self.before_total}, after={self.after_total})>"

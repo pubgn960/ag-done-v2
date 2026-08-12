@@ -330,6 +330,15 @@ async def deliver_order_by_id(
     except Exception as e_led:
         logger.exception(f"[LEDGER] Failed to process delivery ledger event for Order #{order.id}: {e_led}")
 
+    try:
+        from database import execute_auto_delivery_total
+        from utils import calculate_delivered_packages_value
+        val, ok_p = calculate_delivered_packages_value(newly_delivered_str)
+        if ok_p and val is not None and val > 0:
+            await execute_auto_delivery_total(order.id, val)
+    except Exception as e_rt:
+        logger.exception(f"[RUNNING_TOTAL] Failed to auto record running total for Order #{order.id}: {e_rt}")
+
     # Update Client Group Summary card if price_msg_id exists
     if order.price_msg_id and client_chat_id:
         try:

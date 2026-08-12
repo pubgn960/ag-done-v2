@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import joinedload
 
 from config import Config
-from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger, CalculatorLedger
+from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger, CalculatorLedger, RunningTotalLedger
 
 logger = logging.getLogger(__name__)
 
@@ -1716,4 +1716,190 @@ async def undo_last_calculator_entry(admin_id: Optional[int] = None) -> Optional
         except Exception as e:
             await session.rollback()
             logger.error(f"[UNDO] Failed to undo calculator entry: {e}")
+            raise e
+
+
+# ==========================================
+# Production Simple Running Total Operations
+# ==========================================
+
+async def get_running_total_current() -> float:
+    """
+    Returns the latest running total from the running_total_ledger table.
+    Defaults to 0.0 if empty.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        latest = res.scalar_one_or_none()
+        return latest.after_total if latest else 0.0
+
+
+async def record_running_total_entry(
+    action_type: str,
+    amount: float,
+    before_total: float,
+    after_total: float,
+    order_id: Optional[int] = None,
+    admin_id: Optional[int] = None
+) -> RunningTotalLedger:
+    """
+    Inserts a RunningTotalLedger record inside a DB transaction and logs details.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            now_dt = datetime.now(timezone.utc)
+            entry = RunningTotalLedger(
+                action_type=action_type,
+                amount=amount,
+                before_total=before_total,
+                after_total=after_total,
+                order_id=order_id,
+                admin_id=admin_id,
+                timestamp=now_dt
+            )
+            session.add(entry)
+            await session.commit()
+            await session.refresh(entry)
+
+            log_tag = f"[{action_type}]"
+            logger.info(
+                f"{log_tag}\n"
+                f"Before: {before_total}$\n"
+                f"Amount: {amount}$\n"
+                f"After: {after_total}$\n"
+                f"Order: #{order_id}\n"
+                f"Admin: #{admin_id}\n"
+                f"Timestamp: {now_dt.isoformat()}"
+            )
+            return entry
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[RUNNING_TOTAL] Failed to record {action_type} entry: {e}")
+            raise e
+
+
+async def execute_auto_delivery_total(order_id: int, now_val: float) -> Tuple[RunningTotalLedger, float, float, float]:
+    """
+    Records an AUTO_DELIVERY entry adding delivered package price to the Running Total.
+    """
+    before_val = await get_running_total_current()
+    after_val = before_val + now_val
+    entry = await record_running_total_entry(
+        action_type="AUTO_DELIVERY",
+        amount=now_val,
+        before_total=before_val,
+        after_total=after_val,
+        order_id=order_id,
+        admin_id=None
+    )
+    return entry, before_val, now_val, after_val
+
+
+async def execute_pay_reset(admin_id: int) -> Tuple[Optional[RunningTotalLedger], float, float, float]:
+    """
+    Records a PAY entry setting the current Running Total to 0$.
+    """
+    before_val = await get_running_total_current()
+    if before_val == 0.0:
+        return None, 0.0, 0.0, 0.0
+
+    entry = await record_running_total_entry(
+        action_type="PAY",
+        amount=before_val,
+        before_total=before_val,
+        after_total=0.0,
+        order_id=None,
+        admin_id=admin_id
+    )
+    return entry, before_val, before_val, 0.0
+
+
+async def execute_manual_adjustment(amount: float, admin_id: int) -> Tuple[RunningTotalLedger, float, float, float, str]:
+    """
+    Records a MANUAL_PLUS or MANUAL_MINUS entry.
+    """
+    action_type = "MANUAL_PLUS" if amount >= 0 else "MANUAL_MINUS"
+    before_val = await get_running_total_current()
+    after_val = before_val + amount
+
+    entry = await record_running_total_entry(
+        action_type=action_type,
+        amount=amount,
+        before_total=before_val,
+        after_total=after_val,
+        order_id=None,
+        admin_id=admin_id
+    )
+    return entry, before_val, amount, after_val, action_type
+
+
+async def get_last_running_total_entry() -> Optional[RunningTotalLedger]:
+    """
+    Retrieves the most recent running total ledger entry.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        return res.scalar_one_or_none()
+
+
+async def undo_last_running_total_action(admin_id: int) -> Optional[RunningTotalLedger]:
+    """
+    Undoes the last action in running_total_ledger and recalculates running total.
+    Logs [UNDO].
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
+            target = (await session.execute(stmt)).scalar_one_or_none()
+            if not target:
+                return None
+
+            undone_action = target.action_type
+            undone_amount = target.amount
+
+            await session.delete(target)
+            await session.commit()
+
+            # Recalculate remaining running totals in chronological order
+            stmt_all = select(RunningTotalLedger).order_by(RunningTotalLedger.id.asc())
+            all_entries = (await session.execute(stmt_all)).scalars().all()
+
+            running = 0.0
+            for item in all_entries:
+                item.before_total = running
+                if item.action_type == "PAY":
+                    running = 0.0
+                else:
+                    running += item.amount
+                item.after_total = running
+
+            await session.commit()
+
+            now_dt = datetime.now(timezone.utc)
+            undo_record = RunningTotalLedger(
+                action_type="UNDO",
+                amount=-undone_amount,
+                before_total=target.after_total,
+                after_total=running,
+                order_id=target.order_id,
+                admin_id=admin_id,
+                timestamp=now_dt
+            )
+            session.add(undo_record)
+            await session.commit()
+
+            logger.info(
+                f"[UNDO]\n"
+                f"Action Undone: {undone_action}\n"
+                f"Amount: {undone_amount}$\n"
+                f"Restored Total: {running}$\n"
+                f"Admin: #{admin_id}\n"
+                f"Timestamp: {now_dt.isoformat()}"
+            )
+            return target
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[UNDO] Failed to undo running total action: {e}")
             raise e
