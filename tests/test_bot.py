@@ -2455,5 +2455,95 @@ class TestSuperAdminLogicPermissionsAndOrderBypass(unittest.IsolatedAsyncioTestC
             self.assertEqual(orders[0].package, "2400")
 
 
+class TestMultilingualDetectorAndPackageAliases(unittest.TestCase):
+    """Unit and regression tests for multilingual order detection and package aliases."""
+
+    def test_real_customer_message_1_activision(self):
+        from keywords import contains_order_keyword
+        from utils import parse_test_order_packages
+
+        msg = (
+            "Activision\n\n"
+            "Correo:\nuser1@gmail.com\n\n"
+            "Contraseña:\npassword123\n\n"
+            "Nick:\nPlayer1\n\n"
+            "10800*3"
+        )
+        is_order, platform = contains_order_keyword(msg)
+        self.assertTrue(is_order)
+        self.assertEqual(platform, "activision")
+
+        parsed = parse_test_order_packages(msg)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "10800")
+        self.assertEqual(parsed["packages"][0]["qty"], 3)
+
+    def test_real_customer_message_2_facebook_spanish(self):
+        from keywords import contains_order_keyword
+        from utils import parse_test_order_packages
+
+        msg = (
+            "facebook\n\n"
+            "Correo o número fb:\nuser2@gmail.com\n\n"
+            "Contraseña de fb:\npass123\n\n"
+            "Códigos\n\n"
+            "2534 6603\n\n"
+            "3075 1980\n\n"
+            "5k"
+        )
+        is_order, platform = contains_order_keyword(msg)
+        self.assertTrue(is_order)
+        self.assertEqual(platform, "facebook")
+
+        parsed = parse_test_order_packages(msg)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "5040")
+        self.assertEqual(parsed["packages"][0]["qty"], 1)
+
+    def test_package_aliases_and_multiplication_notation(self):
+        from utils import parse_test_order_packages
+
+        # 5k -> 5040
+        p5k = parse_test_order_packages("5k")
+        self.assertEqual(p5k["packages"][0]["package"], "5040")
+        self.assertEqual(p5k["packages"][0]["qty"], 1)
+
+        # 10k -> 10800
+        p10k = parse_test_order_packages("10k")
+        self.assertEqual(p10k["packages"][0]["package"], "10800")
+        self.assertEqual(p10k["packages"][0]["qty"], 1)
+
+        # 2.4k -> 2400
+        p24k = parse_test_order_packages("2.4k")
+        self.assertEqual(p24k["packages"][0]["package"], "2400")
+
+        # 10800*3
+        p_mult1 = parse_test_order_packages("10800*3")
+        self.assertEqual(p_mult1["packages"][0]["package"], "10800")
+        self.assertEqual(p_mult1["packages"][0]["qty"], 3)
+
+        # 5040x3
+        p_mult2 = parse_test_order_packages("5040x3")
+        self.assertEqual(p_mult2["packages"][0]["package"], "5040")
+        self.assertEqual(p_mult2["packages"][0]["qty"], 3)
+
+        # 2400 ×2
+        p_mult3 = parse_test_order_packages("2400 ×2")
+        self.assertEqual(p_mult3["packages"][0]["package"], "2400")
+        self.assertEqual(p_mult3["packages"][0]["qty"], 2)
+
+        # 5k*2
+        p_mult4 = parse_test_order_packages("5k*2")
+        self.assertEqual(p_mult4["packages"][0]["package"], "5040")
+        self.assertEqual(p_mult4["packages"][0]["qty"], 2)
+
+        # 5k x2
+        p_mult5 = parse_test_order_packages("5k x2")
+        self.assertEqual(p_mult5["packages"][0]["package"], "5040")
+        self.assertEqual(p_mult5["packages"][0]["qty"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

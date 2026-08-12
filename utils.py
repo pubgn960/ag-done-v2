@@ -804,12 +804,31 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
     if target_section:
         raw_text = target_section.lower().strip()
     else:
-        if not any(k in order_text.lower() for k in ("email:", "password:", "recovery codes:", "recovery:", "uid:", "phone:")):
+        email_and_pwd_headers = (
+            "email:", "mail:", "correo:", "correo electrónico:", "correo electronico:", "correo o número:", "correo o numero:", "correo o número fb:", "correo o numero fb:",
+            "password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:", "contraseña de fb:", "contrasena de fb:",
+            "recovery codes:", "recovery:", "códigos:", "codigos:", "uid:", "phone:"
+        )
+        if not any(k in order_text.lower() for k in email_and_pwd_headers):
             raw_text = order_text.lower().strip()
         else:
             return None
 
-    # 1. Normalize shorthand notation and thousands formatting (by descending package length/value)
+    # 1. Normalize package aliases (e.g. 5k -> 5040, 10k -> 10800, 2.4k -> 2400, 2,4k -> 2400)
+    aliases_map = {
+        "5k": "5040",
+        "10k": "10800",
+        "2.4k": "2400",
+        "2,4k": "2400",
+        "10.8k": "10800",
+        "10,8k": "10800",
+        "5.04k": "5040",
+        "5,04k": "5040",
+    }
+    for alias, target_pkg in sorted(aliases_map.items(), key=lambda x: -len(x[0])):
+        raw_text = re.sub(r'\b' + re.escape(alias) + r'\b', target_pkg, raw_text)
+
+    # 2. Normalize shorthand notation and thousands formatting (by descending package length/value)
     for pkg_val in sorted(PACKAGE_PRICES.keys(), key=lambda x: (-len(x), -int(x))):
         val_int = int(pkg_val)
         fmt_comma = f"{val_int:,}"
@@ -820,10 +839,10 @@ def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, A
             k_str = f"{k_val:g}k"
             raw_text = re.sub(r'\b' + re.escape(k_str) + r'\b', pkg_val, raw_text)
 
-    # 2. Normalize spaces around quantity multipliers (e.g. '2400 x 2' -> '2400x2', '2 x 2400' -> '2x2400')
+    # 3. Normalize spaces around quantity multipliers (e.g. '2400 x 2' -> '2400x2', '5k * 2' -> '5040*2', '10800*3' -> '10800*3')
     raw_text = re.sub(r'\s*([*xX×])\s*', r'\1', raw_text)
 
-    # 3. Normalize ALL supported package separators (+, ,, &, /, newline, remaining whitespace) into '+'
+    # 4. Normalize ALL supported package separators (+, ,, &, /, newline, remaining whitespace) into '+'
     raw_text = re.sub(r'[,&/\n\r+|]+', '+', raw_text)
     raw_text = re.sub(r'\s+', '+', raw_text)
 
@@ -1102,10 +1121,21 @@ def format_order_details_block(raw_text: Optional[str], fallback_email: Optional
     in_order_sec = False
 
     OTHER_SECTION_HEADERS = (
-        "email:", "mail:", "password:", "pass:", "pwd:", "recovery:",
-        "recovery code:", "recovery codes:", "backup codes:", "2fa:",
-        "authenticator:", "phone:", "uid:", "account id:", "nickname:", "username:",
-        "nick:", "platform:", "login:"
+        "email:", "mail:", "correo:", "correo electrónico:", "correo electronico:",
+        "correo o número:", "correo o numero:", "correo o número fb:", "correo o numero fb:",
+        "password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:",
+        "contraseña de fb:", "contrasena de fb:",
+        "recovery:", "recovery code:", "recovery codes:", "backup codes:",
+        "código:", "códigos:", "codigo:", "codigos:", "2fa:", "authenticator:",
+        "phone:", "teléfono:", "telefono:", "celular:", "número:", "numero:",
+        "uid:", "account id:", "nickname:", "username:", "nick:", "ign:", "usuario:", "nombre:",
+        "platform:", "login:"
+    )
+
+    STANDALONE_HEADERS = (
+        "order", "package", "packages", "cp", "order:", "package:", "packages:", "cp:",
+        "códigos", "codigos", "código", "codigo", "contraseña", "contrasena", "clave",
+        "correo", "email", "password", "pass", "pwd", "recovery", "nick", "ign", "usuario"
     )
 
     for line in lines:
@@ -1115,13 +1145,13 @@ def format_order_details_block(raw_text: Optional[str], fallback_email: Optional
         if re.match(r'^(?:order|packages|package|cp)\s*[:=\-]', line_lower) or line_lower in ("order", "package", "packages", "cp", "order:", "package:", "packages:", "cp:"):
             in_order_sec = True
             continue
-        elif not in_order_sec and not any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) and not re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', line_strip):
-            if re.search(r'\b(?:108000|96000|72000|48000|43200|38400|24000|21600|19200|16800|14400|12000|10800|9600|7200|5040|2400|880|420|80)\b', line_lower):
+        elif not in_order_sec and not any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) and line_lower not in STANDALONE_HEADERS and not re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', line_strip):
+            if re.search(r'\b(?:108000|96000|72000|48000|43200|38400|24000|21600|19200|16800|14400|12000|10800|9600|7200|5040|2400|880|420|80|5k|10k|2\.4k|2,4k)\b', line_lower) or re.search(r'\b\d+(?:cp)?[*xX×]\d+', line_lower):
                 in_order_sec = True
                 continue
 
         if in_order_sec:
-            if any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS):
+            if any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) or line_lower in STANDALONE_HEADERS:
                 in_order_sec = False
             else:
                 continue
@@ -1129,13 +1159,13 @@ def format_order_details_block(raw_text: Optional[str], fallback_email: Optional
         if line_lower in ("facebook", "fb", "meta", "activision", "activision id") or line_lower.startswith("platform:"):
             p_name = line_strip.split(":", 1)[-1].strip() if ":" in line_strip else line_strip
             details_lines.append(f"🎮 Platform:\n{p_name}" if p_name else "🎮 Platform:")
-        elif line_lower.startswith("nick:") or line_lower.startswith("nickname:") or line_lower.startswith("username:"):
+        elif any(line_lower.startswith(h) for h in ("nick:", "nickname:", "username:", "ign:", "usuario:", "nombre:")):
             n_val = line_strip.split(":", 1)[-1].strip()
             details_lines.append(f"👤 Nick:\n{n_val}" if n_val else "👤 Nick:")
-        elif line_lower.startswith("email:") or line_lower.startswith("mail:"):
+        elif any(line_lower.startswith(h) for h in ("email:", "mail:", "correo:", "correo electrónico:", "correo electronico:", "correo o número:", "correo o numero:", "correo o número fb:", "correo o numero fb:")):
             e_val = line_strip.split(":", 1)[-1].strip()
             details_lines.append(f"📧 Email:\n{e_val}" if e_val else "📧 Email:")
-        elif line_lower.startswith("password:") or line_lower.startswith("pass:") or line_lower.startswith("pwd:"):
+        elif any(line_lower.startswith(h) for h in ("password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:", "contraseña de fb:", "contrasena de fb:")):
             p_val = line_strip.split(":", 1)[-1].strip()
             details_lines.append(f"🔑 Password:\n{p_val}" if p_val else "🔑 Password:")
         else:

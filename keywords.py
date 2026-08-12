@@ -19,7 +19,19 @@ SUPPORTED_PLATFORMS: List[str] = [
     "activision id"
 ]
 
-# 2. Supported Email Domains (case-insensitive)
+# 2. Supported Email Keywords & Domains (case-insensitive, English & Spanish)
+EMAIL_KEYWORDS: List[str] = [
+    "email",
+    "correo",
+    "correo electrónico",
+    "correo electronico",
+    "correo o número",
+    "correo o numero",
+    "correo o número fb",
+    "correo o numero fb",
+    "mail"
+]
+
 SUPPORTED_EMAIL_DOMAINS: List[str] = [
     "gmail.com",
     "googlemail.com",
@@ -55,18 +67,31 @@ EMAIL_REGEX = re.compile(
     re.IGNORECASE
 )
 
-# 3. Password / Login Details Keywords (case-insensitive)
+# 3. Password / Login Details / Credential Keywords (case-insensitive, English & Spanish)
 PASSWORD_KEYWORDS: List[str] = [
     "password",
     "pass",
     "pwd",
     "login",
+    "contraseña",
+    "contrasena",
+    "clave",
+    "contraseña de fb",
+    "contrasena de fb",
+    "código",
+    "códigos",
+    "codigo",
+    "codigos",
     "recovery",
     "recovery code",
     "recovery codes",
     "backup codes",
     "2fa",
-    "authenticator"
+    "authenticator",
+    "nick",
+    "ign",
+    "usuario",
+    "nombre"
 ]
 
 # 5. International Phone Number Regex (Optional)
@@ -77,12 +102,12 @@ PHONE_REGEX = re.compile(
 
 def contains_order_keyword(text: Optional[str]) -> Tuple[bool, Optional[str]]:
     """
-    Strictly checks if a given message is a valid customer order.
+    Multilingual Order Detection logic:
     Requires ALL 4 conditions to be satisfied:
-    - Platform Detection
-    - Login / Email Information
-    - Password / Login Details
-    - Package Detection
+    1. Platform Detection (Facebook, FB, Meta, Activision, etc.)
+    2. Email / Login Information (Email address, domain, or email field header like Correo)
+    3. Password / Credentials / Details (Password, Contraseña, Clave, Recovery, Códigos, Nick, etc.)
+    4. Package Detection (Catalog package, alias like 5k/10k/2.4k, multiplication like 10800*3, or package desc)
 
     Returns:
         Tuple[bool, Optional[str]]: (is_valid, matched_platform_keyword)
@@ -104,15 +129,18 @@ def contains_order_keyword(text: Optional[str]) -> Tuple[bool, Optional[str]]:
     if not matched_platform:
         return False, None
 
-    # 2. Login Information (Required: Email domain or Email address regex)
-    has_email = bool(EMAIL_REGEX.search(text)) or any(d in text_lower for d in SUPPORTED_EMAIL_DOMAINS)
+    # 2. Login Information (Required: Email address, domain, or email header keyword)
+    has_email = (
+        bool(EMAIL_REGEX.search(text))
+        or any(d in text_lower for d in SUPPORTED_EMAIL_DOMAINS)
+        or any(kw in text_lower for kw in EMAIL_KEYWORDS)
+    )
     if not has_email:
         return False, None
 
     # 3. Password / Login Details (Required)
     has_pwd = any(
-        re.search(r'\b' + re.escape(kw) + r'\b', text_lower) or kw in text_lower
-        for kw in PASSWORD_KEYWORDS
+        kw in text_lower for kw in PASSWORD_KEYWORDS
     )
     if not has_pwd:
         return False, None
