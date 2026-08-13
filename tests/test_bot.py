@@ -2969,5 +2969,100 @@ class TestCanonicalPackageAliasNormalizationFix(unittest.IsolatedAsyncioTestCase
         self.assertEqual(msg, expected)
 
 
+class TestCPPackAndRecoveryCodeSeparation(unittest.TestCase):
+    """Test suite for CP PACK field priority, recovery code separation, and thousands separators."""
+
+    def test_sample_52(self):
+        from order_parser import parse_order_v2
+        sample = (
+            "Order #:52\n\n"
+            "Login: Activision\n\n"
+            "Email: yenilicet1996@gmail.com\n\n"
+            "Password: Licet1996\n\n"
+            "IGN \"Nick\" : 5G·Tomorrow\n\n"
+            "CP PACK : 12.000\n\n"
+            "Mode: SaFe\n\n"
+            "Time: FAST"
+        )
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["customer_ref_id"], "52")
+        self.assertEqual(p["login_method"], "Activision")
+        self.assertEqual(p["email"], "yenilicet1996@gmail.com")
+        self.assertEqual(len(p["packages"]), 1)
+        self.assertEqual(p["packages"][0]["package"], "12000")
+
+    def test_sample_54_recovery_codes_separated(self):
+        from order_parser import parse_order_v2
+        sample = (
+            "Order #:54\n\n"
+            "Login: Facebook\n\n"
+            "Email: vierimansilla6141@gmail.com\n\n"
+            "Password: mmchina6141\n\n"
+            "Codes: (solo FB) 👇🏼👇🏼👇🏼:\n\n"
+            "14627274\n"
+            "16259506\n"
+            "33195095\n"
+            "35621615\n"
+            "41430777\n\n"
+            "IGN \"Nick\": VieriM\n\n"
+            "CP PACK: 12.000\n\n"
+            "Mode: SaFe\n\n"
+            "Time: Fast"
+        )
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["customer_ref_id"], "54")
+        self.assertEqual(p["login_method"], "Facebook")
+        self.assertEqual(p["email"], "vierimansilla6141@gmail.com")
+
+        # Recovery codes captured
+        self.assertEqual(len(p["recovery_codes"]), 5)
+        self.assertIn("14627274", p["recovery_codes"])
+
+        # Packages must contain ONLY 12000, ZERO recovery codes!
+        self.assertEqual(len(p["packages"]), 1)
+        self.assertEqual(p["packages"][0]["package"], "12000")
+        pkg_names = [item["package"] for item in p["packages"]]
+        for code in p["recovery_codes"]:
+            self.assertNotIn(code, pkg_names)
+
+    def test_sample_55(self):
+        from order_parser import parse_order_v2
+        sample = "Order #:55\n\nLogin: Activision\n\nEmail: eudesvicentearellano@gmail.com\n\nPassword: arellano26\n\nIGN \"Nick\" : ThePUKITIS\n\nCP PACK : 4800"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["packages"][0]["package"], "4800")
+
+    def test_sample_56(self):
+        from order_parser import parse_order_v2
+        sample = "Order #:56\n\nLogin: Activision\n\nEmail: juanincodm367@gmail.com\n\nPassword: 319702Ju*\n\nIGN \"Nick\" : ƦGИ・VɅELOR\n\nCP PACK : 12,000"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["packages"][0]["package"], "12000")
+
+    def test_sample_57(self):
+        from order_parser import parse_order_v2
+        sample = "Order #:57\n\nLogin: Activision\n\nEmail: christopherw121094@gmail.com\n\nPassword: codwarch94\n\nIGN \"Nick\" :NN_warch1210\n\nCP PACK : 4.800"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["packages"][0]["package"], "4800")
+
+    def test_sample_58(self):
+        from order_parser import parse_order_v2
+        p = parse_order_v2("CP PACK : 12,000")
+        self.assertEqual(p["packages"][0]["package"], "12000")
+
+    def test_sample_59(self):
+        from order_parser import parse_order_v2
+        p = parse_order_v2("CP PACK : 24.000")
+        self.assertEqual(p["packages"][0]["package"], "24000")
+
+    def test_sample_60(self):
+        from order_parser import parse_order_v2
+        p = parse_order_v2("CP PACK : 9.600")
+        self.assertEqual(p["packages"][0]["package"], "9600")
+
+
 if __name__ == "__main__":
     unittest.main()

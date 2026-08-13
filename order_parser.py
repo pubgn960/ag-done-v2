@@ -1,8 +1,9 @@
 """
 Production Order Parser v2 — Real Customer Pattern Support.
 Parses complex, multilingual customer order messages, extracts structured fields,
-handles package multipliers and aliases, ignores customer reference prefixes (e.g. 991#),
-and classifies orders while enforcing security logging (no passwords/credentials logged).
+handles package multipliers and aliases, ignores customer reference prefixes (e.g. 991#, Order #:54),
+gives explicit priority to CP PACK fields, isolates recovery codes, and classifies orders
+while enforcing security logging (no passwords/credentials logged).
 """
 
 import re
@@ -14,25 +15,27 @@ logger = logging.getLogger(__name__)
 # Default Alias Mapping (Configurable)
 DEFAULT_PACKAGE_ALIASES: Dict[str, str] = {
     "5k": "5040",
-    "5k": "5040",
     "5000": "5040",
     "5040": "5040",
-    "10k": "10800",
     "10k": "10800",
     "10000": "10800",
     "10800": "10800",
     "2.4k": "2400",
-    "2.4k": "2400",
-    "2,4k": "2400",
     "2,4k": "2400",
     "2400": "2400",
-    "10.8k": "10800",
+    "4.8k": "4800",
+    "4,8k": "4800",
+    "4800": "4800",
+    "9.6k": "9600",
+    "9,6k": "9600",
+    "9600": "9600",
+    "12k": "12000",
+    "12000": "12000",
+    "24k": "24000",
+    "24000": "24000",
     "10.8k": "10800",
     "10,8k": "10800",
-    "10,8k": "10800",
     "5.04k": "5040",
-    "5.04k": "5040",
-    "5,04k": "5040",
     "5,04k": "5040",
 }
 
@@ -58,21 +61,27 @@ PHONE_REGEX = re.compile(
     r'(?:\+|\b00)\d{1,3}[\s.-]?\d{6,14}\b'
 )
 
-# Customer Reference / Order ID Prefix Regex (e.g. "991#", "1000#", "75#", "1#")
+# Customer Reference / Order ID Prefix Regex (e.g. "Order #:54", "Order #54", "Order: #54", "991#", "#54")
 CUSTOMER_REF_REGEX = re.compile(
-    r'^\s*(\d+)#',
+    r'\border\s*#?\s*[:=\-]?\s*#?\s*(\d+)\b|^\s*#?(\d+)#',
     re.IGNORECASE | re.MULTILINE
 )
 
-# Recovery Codes Header Regex
+# Explicit CP PACK Header Regex (e.g. "CP PACK: 12.000", "CP PACK : 4.800")
+CP_PACK_REGEX = re.compile(
+    r'\b(?:cp\s*pack|cp\s*package|pack\s*cp)\s*[:=\.\-]?\s*(?P<val>[^\n\r]+)',
+    re.IGNORECASE
+)
+
+# Recovery Codes Header Regex (e.g. "Codes:", "Codes: (solo FB)", "Códigos:", "Recovery Codes:")
 RECOVERY_HEADER_REGEX = re.compile(
-    r'^(?:código|códigos|codigo|codigos|recovery code|recovery codes|backup codes)\b',
+    r'^\s*(?:codes?|código|códigos|codigo|codigos|recovery\s*codes?|backup\s*codes?)\b',
     re.IGNORECASE
 )
 
 # Recovery Code Pattern (8 digits or 4+4 digits)
 RECOVERY_CODE_PATTERN = re.compile(
-    r'^\s*(\d{8}|\d{4}\s*\d{4})\s*$'
+    r'^\s*(\d{6,12}|\d{4}\s*\d{4})\s*$'
 )
 
 
@@ -87,7 +96,7 @@ def get_dynamic_package_prices() -> Dict[str, float]:
             "43200": 240.0, "38400": 215.0, "24000": 135.0, "21600": 120.0,
             "19200": 110.0, "16800": 95.0, "14400": 80.0, "12000": 70.0,
             "10800": 64.0, "9600": 57.0, "7200": 45.0, "5040": 33.0,
-            "2400": 16.5, "880": 8.0, "420": 4.5, "80": 1.0
+            "4800": 29.0, "2400": 16.5, "880": 8.0, "420": 4.5, "80": 1.0
         }
 
 
@@ -96,17 +105,19 @@ def normalize_package_alias(pkg_name: Optional[str], alias_map: Optional[Dict[st
     Normalizes package alias to canonical package string.
     Case-insensitive, e.g.:
     "5k" -> "5040"
-    "5K" -> "5040"
     "5000" -> "5040"
-    "5040" -> "5040"
-    "10k" -> "10800"
-    "10000" -> "10800"
+    "12.000" -> "12000"
+    "4.800" -> "4800"
     """
     if not pkg_name:
         return ""
     pkg_str = str(pkg_name).strip()
-    pkg_lower = pkg_str.lower()
 
+    # Strip dots/commas from thousands formatted numbers (e.g. 12.000 -> 12000, 4.800 -> 4800)
+    if re.match(r'^\d{1,3}[.,]\d{3}$', pkg_str):
+        pkg_str = re.sub(r'[.,]', '', pkg_str)
+
+    pkg_lower = pkg_str.lower()
     aliases = dict(DEFAULT_PACKAGE_ALIASES)
     if alias_map:
         aliases.update(alias_map)
@@ -115,12 +126,12 @@ def normalize_package_alias(pkg_name: Optional[str], alias_map: Optional[Dict[st
 
 
 def extract_customer_ref_id(text: Optional[str]) -> Optional[str]:
-    """Extracts customer reference ID prefix like '991#' from message start."""
+    """Extracts customer reference ID prefix like '54', '991', etc."""
     if not text:
         return None
     match = CUSTOMER_REF_REGEX.search(text)
     if match:
-        return match.group(1)
+        return match.group(1) or match.group(2)
     return None
 
 
@@ -165,7 +176,7 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    # 1. Customer Ref ID (e.g. "991#", "1000#")
+    # 1. Customer Ref ID (e.g. "Order #:54", "991#", "#54")
     customer_ref_id = extract_customer_ref_id(text)
 
     # 2. Email & Phone Extraction
@@ -184,10 +195,11 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
     elif any(k in text_lower for k in ("facebook", "fb", "meta")):
         login_method = "Facebook"
 
-    # 4. Line-by-line Classification (Username, Password, Recovery Codes, Package Candidate Lines)
+    # 4. Line-by-line Classification (Username, Password, Recovery Codes, CP PACK, Package Candidate Lines)
     username = None
     password = None
     recovery_codes: List[str] = []
+    explicit_cp_pack_candidates: List[str] = []
     package_candidate_lines: List[str] = []
     ignored_lines: Set[int] = set()
 
@@ -195,13 +207,14 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
     next_line_is_username = False
     next_line_is_password = False
     next_line_is_email = False
+    has_explicit_cp_pack = False
 
     for idx, line in enumerate(lines):
         l_strip = line.strip()
         l_lower = l_strip.lower()
 
-        # Ignore Customer Ref Line like "991#", "1000#"
-        if CUSTOMER_REF_REGEX.match(l_strip):
+        # Ignore Customer Ref Line like "Order #:54", "991#", "#54"
+        if re.search(r'\border\s*#?\s*[:=\-]?\s*#?\s*\d+\b', l_lower, re.IGNORECASE) or CUSTOMER_REF_REGEX.match(l_strip):
             ignored_lines.add(idx)
             continue
 
@@ -210,6 +223,18 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             ignored_lines.add(idx)
             continue
         if l_lower in ("facebook", "fb", "meta", "activision", "activacion", "activación", "activision id"):
+            ignored_lines.add(idx)
+            continue
+
+        # Check Explicit CP PACK Header (Highest Priority for Package Extraction)
+        cp_match = CP_PACK_REGEX.search(l_strip)
+        if cp_match:
+            cp_val = cp_match.group("val").strip()
+            # Clean trailing details if present on line (e.g. "12.000 Mode: Safe")
+            if "mode:" in cp_val.lower():
+                cp_val = cp_val.lower().split("mode:", 1)[0].strip()
+            explicit_cp_pack_candidates.append(cp_val)
+            has_explicit_cp_pack = True
             ignored_lines.add(idx)
             continue
 
@@ -231,19 +256,22 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             ignored_lines.add(idx)
             continue
 
-        # Recovery Code Section Header
-        if RECOVERY_HEADER_REGEX.match(l_strip):
+        # Check Recovery Code Section Header
+        if RECOVERY_HEADER_REGEX.search(l_strip) or l_lower.startswith("codes") or l_lower.startswith("código") or l_lower.startswith("codigo"):
             in_recovery_sec = True
             ignored_lines.add(idx)
             continue
 
         if in_recovery_sec:
-            if RECOVERY_CODE_PATTERN.match(l_strip):
+            # Check if line is a recovery code line
+            if RECOVERY_CODE_PATTERN.match(l_strip) or re.match(r'^\d{6,12}$', l_strip):
                 recovery_codes.append(l_strip)
                 ignored_lines.add(idx)
                 continue
             else:
-                in_recovery_sec = False
+                # End recovery code section if line is a new field header
+                if any(h in l_lower for h in ("ign", "nick", "cp pack", "mode", "time", "email", "password", "clave")):
+                    in_recovery_sec = False
 
         # Email Headers or Email address line
         if EMAIL_REGEX.search(l_strip):
@@ -270,12 +298,14 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             continue
 
         # Username Headers
-        if re.match(r'^(?:nick\s*name|nick|apodo\s*en\s*el\s*juego|apodo|usuario|ign|nombre)\s*[:=\.\-]?$', l_lower) or l_lower.startswith("nick"):
+        if re.match(r'^(?:nick\s*name|nick|apodo\s*en\s*el\s*juego|apodo|usuario|ign|nombre|ign\s*"nick")\s*[:=\.\-]?$', l_lower) or "ign" in l_lower or l_lower.startswith("nick"):
             ignored_lines.add(idx)
             val = line.split(":", 1)[-1].strip() if ":" in line else line
-            if l_lower.startswith("nick ") and ":" not in line:
+            if "ign" in l_lower and ":" in line:
+                val = line.split(":", 1)[-1].strip()
+            elif l_lower.startswith("nick ") and ":" not in line:
                 val = line[5:].strip()
-            if val and val.lower() not in ("nick", "apodo", "apodo en el juego", "nick name", "nick:"):
+            if val and val.lower() not in ("nick", "apodo", "apodo en el juego", "nick name", "nick:", "ign"):
                 if "apodo en el juego:" in val.lower():
                     val = val.split(":", 1)[-1].strip()
                 if val:
@@ -306,8 +336,11 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             package_candidate_lines.append(l_strip)
             continue
 
-    # Fallback to non-ignored lines if no explicit package candidate was found
-    if not package_candidate_lines:
+    # Priority 1: Explicit CP PACK field takes absolute priority
+    if has_explicit_cp_pack and explicit_cp_pack_candidates:
+        package_candidate_lines = explicit_cp_pack_candidates
+    elif not package_candidate_lines:
+        # Priority 3: Fallback to non-ignored lines
         for idx, line in enumerate(lines):
             if idx not in ignored_lines and line.strip():
                 package_candidate_lines.append(line.strip())
@@ -319,6 +352,9 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
     has_unknown = False
 
     raw_pkg_text = "\n".join(package_candidate_lines)
+
+    # Normalize thousands separators (12.000 -> 12000, 4.800 -> 4800, 24.000 -> 24000, 9.600 -> 9600)
+    raw_pkg_text = re.sub(r'\b(\d{1,3})[.,](\d{3})\b', r'\1\2', raw_pkg_text)
 
     # Normalize aliases first in pkg text (case-insensitive)
     for alias, target_pkg in sorted(aliases.items(), key=lambda x: -len(x[0])):
