@@ -14,21 +14,26 @@ logger = logging.getLogger(__name__)
 # Default Alias Mapping (Configurable)
 DEFAULT_PACKAGE_ALIASES: Dict[str, str] = {
     "5k": "5040",
-    "5K": "5040",
+    "5k": "5040",
+    "5000": "5040",
+    "5040": "5040",
     "10k": "10800",
-    "10K": "10800",
+    "10k": "10800",
+    "10000": "10800",
+    "10800": "10800",
     "2.4k": "2400",
-    "2.4K": "2400",
+    "2.4k": "2400",
     "2,4k": "2400",
-    "2,4K": "2400",
+    "2,4k": "2400",
+    "2400": "2400",
     "10.8k": "10800",
-    "10.8K": "10800",
+    "10.8k": "10800",
     "10,8k": "10800",
-    "10,8K": "10800",
+    "10,8k": "10800",
     "5.04k": "5040",
-    "5.04K": "5040",
+    "5.04k": "5040",
     "5,04k": "5040",
-    "5,04K": "5040",
+    "5,04k": "5040",
 }
 
 # Supported Platforms (case-insensitive)
@@ -84,6 +89,29 @@ def get_dynamic_package_prices() -> Dict[str, float]:
             "10800": 64.0, "9600": 57.0, "7200": 45.0, "5040": 33.0,
             "2400": 16.5, "880": 8.0, "420": 4.5, "80": 1.0
         }
+
+
+def normalize_package_alias(pkg_name: Optional[str], alias_map: Optional[Dict[str, str]] = None) -> str:
+    """
+    Normalizes package alias to canonical package string.
+    Case-insensitive, e.g.:
+    "5k" -> "5040"
+    "5K" -> "5040"
+    "5000" -> "5040"
+    "5040" -> "5040"
+    "10k" -> "10800"
+    "10000" -> "10800"
+    """
+    if not pkg_name:
+        return ""
+    pkg_str = str(pkg_name).strip()
+    pkg_lower = pkg_str.lower()
+
+    aliases = dict(DEFAULT_PACKAGE_ALIASES)
+    if alias_map:
+        aliases.update(alias_map)
+
+    return aliases.get(pkg_lower, pkg_str)
 
 
 def extract_customer_ref_id(text: Optional[str]) -> Optional[str]:
@@ -238,7 +266,7 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             ignored_lines.add(idx)
             val = line.split(":", 1)[-1].strip() if ":" in line else ""
             if not val:
-                next_line_is_email = True  # ignore next line
+                next_line_is_email = True
             continue
 
         # Username Headers
@@ -292,9 +320,9 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
 
     raw_pkg_text = "\n".join(package_candidate_lines)
 
-    # Normalize aliases first in pkg text
+    # Normalize aliases first in pkg text (case-insensitive)
     for alias, target_pkg in sorted(aliases.items(), key=lambda x: -len(x[0])):
-        raw_pkg_text = re.sub(r'\b' + re.escape(alias) + r'\b', target_pkg, raw_pkg_text)
+        raw_pkg_text = re.sub(r'\b' + re.escape(alias) + r'\b', target_pkg, raw_pkg_text, flags=re.IGNORECASE)
 
     # Normalize multiplier spaces
     raw_pkg_text = re.sub(r'\s*([*xX×])\s*', r'\1', raw_pkg_text)
@@ -332,22 +360,28 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             n1 = int(gd["num1"])
             n2 = int(gd["num2"])
 
-            if str(n2) in price_db:
-                pkg = str(n2)
+            n1_norm = normalize_package_alias(str(n1), aliases)
+            n2_norm = normalize_package_alias(str(n2), aliases)
+
+            if n2_norm in price_db:
+                pkg = n2_norm
                 qty = n1
-            elif str(n1) in price_db:
-                pkg = str(n1)
+            elif n1_norm in price_db:
+                pkg = n1_norm
                 qty = n2
             else:
                 if n1 >= n2:
-                    pkg = str(n1)
+                    pkg = n1_norm
                     qty = n2
                 else:
-                    pkg = str(n2)
+                    pkg = n2_norm
                     qty = n1
 
         if not pkg:
             continue
+
+        # Always normalize pkg to its canonical package name
+        pkg = normalize_package_alias(pkg, aliases)
 
         pkg_int = int(pkg)
         has_cp = bool(re.search(r'cp', seg, re.IGNORECASE))

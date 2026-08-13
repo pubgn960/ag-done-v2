@@ -706,7 +706,7 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
             "800",          # Must NOT match 80
             "400",          # Must NOT match 2400
             "1800",         # Must NOT match 80
-            "5000 CP",      # Unsupported package
+            "5500 CP",      # Unsupported package
             "1000",
             "abc@gmail.com",
             None,
@@ -2784,8 +2784,8 @@ class TestProductionOrderParserV2RealCustomerSamples(unittest.TestCase):
         self.assertEqual(p["login_method"], "Activision")
         self.assertEqual(p["email"], "braudyscalderon@gmail.com")
         pkgs = [item["package"] for item in p["packages"]]
-        self.assertIn("5000", pkgs)
-        self.assertIn("2400", pkgs)
+        self.assertEqual(pkgs, ["5040", "2400"])
+        self.assertEqual(p["unknown_packages"], [])
 
     def test_sample_11(self):
         from order_parser import parse_order_v2
@@ -2793,8 +2793,8 @@ class TestProductionOrderParserV2RealCustomerSamples(unittest.TestCase):
         p = parse_order_v2(sample)
         self.assertTrue(p["order_detected"])
         self.assertEqual(p["email"], "nestor_torrique99@hotmail.com")
-        self.assertEqual(p["packages"][0]["package"], "5000")
-        self.assertIn("5000", p["unknown_packages"])
+        self.assertEqual(p["packages"][0]["package"], "5040")
+        self.assertEqual(p["unknown_packages"], [])
 
     def test_sample_12(self):
         from order_parser import parse_order_v2
@@ -2855,6 +2855,116 @@ class TestProductionOrderParserV2RealCustomerSamples(unittest.TestCase):
         self.assertTrue(p["order_detected"])
         self.assertEqual(p["email"], "mcallistercastrillon@icloud.com")
         self.assertEqual(p["packages"][0]["package"], "5040")
+
+
+class TestCanonicalPackageAliasNormalizationFix(unittest.IsolatedAsyncioTestCase):
+    """Regression test suite for Production Package Alias Normalization Fix."""
+
+    async def asyncSetUp(self):
+        from database import init_db, AsyncSessionLocal
+        from models import DeliveryLedger, RunningTotalLedger, Order
+        from sqlalchemy import delete
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(DeliveryLedger))
+            await session.execute(delete(RunningTotalLedger))
+            await session.execute(delete(Order))
+            await session.commit()
+
+    def test_canonical_alias_resolutions(self):
+        from order_parser import normalize_package_alias, parse_order_v2
+
+        self.assertEqual(normalize_package_alias("5k"), "5040")
+        self.assertEqual(normalize_package_alias("5K"), "5040")
+        self.assertEqual(normalize_package_alias("5000"), "5040")
+        self.assertEqual(normalize_package_alias("5040"), "5040")
+
+        # 5k, 5000, 5040 price equality
+        p_5k = parse_order_v2("Email: a@g.com\n5k")
+        p_5000 = parse_order_v2("Email: a@g.com\n5000")
+        p_5040 = parse_order_v2("Email: a@g.com\n5040")
+
+        self.assertEqual(p_5k["packages"][0]["package"], "5040")
+        self.assertEqual(p_5000["packages"][0]["package"], "5040")
+        self.assertEqual(p_5040["packages"][0]["package"], "5040")
+
+        self.assertEqual(p_5k["packages"][0]["unit_price"], 33.0)
+        self.assertEqual(p_5000["packages"][0]["unit_price"], 33.0)
+        self.assertEqual(p_5040["packages"][0]["unit_price"], 33.0)
+
+    def test_multi_package_canonical_normalization(self):
+        from utils import parse_test_order_packages
+
+        # 5000+2400 -> 5040 + 2400
+        p1 = parse_test_order_packages("5000+2400")
+        pkgs1 = [it["package"] for it in p1["packages"]]
+        self.assertEqual(pkgs1, ["5040", "2400"])
+        self.assertFalse(p1["has_unknown"])
+        self.assertEqual(p1["total_price"], 49.5)
+
+        # 5k+2400 -> 5040 + 2400
+        p2 = parse_test_order_packages("5k+2400")
+        pkgs2 = [it["package"] for it in p2["packages"]]
+        self.assertEqual(pkgs2, ["5040", "2400"])
+        self.assertFalse(p2["has_unknown"])
+        self.assertEqual(p2["total_price"], 49.5)
+
+        # 5040+2400 -> 5040 + 2400
+        p3 = parse_test_order_packages("5040+2400")
+        pkgs3 = [it["package"] for it in p3["packages"]]
+        self.assertEqual(pkgs3, ["5040", "2400"])
+        self.assertFalse(p3["has_unknown"])
+        self.assertEqual(p3["total_price"], 49.5)
+
+    def test_multiplier_canonical_normalization(self):
+        from utils import parse_test_order_packages
+
+        # 5000*2 -> 5040, 5040
+        p1 = parse_test_order_packages("5000*2")
+        pkgs1 = [it["package"] for it in p1["packages"]]
+        self.assertEqual(pkgs1, ["5040", "5040"])
+        self.assertEqual(p1["total_price"], 66.0)
+
+        # 5k*2 -> 5040, 5040
+        p2 = parse_test_order_packages("5k*2")
+        pkgs2 = [it["package"] for it in p2["packages"]]
+        self.assertEqual(pkgs2, ["5040", "5040"])
+        self.assertEqual(p2["total_price"], 66.0)
+
+        # 5040*2 -> 5040, 5040
+        p3 = parse_test_order_packages("5040*2")
+        pkgs3 = [it["package"] for it in p3["packages"]]
+        self.assertEqual(pkgs3, ["5040", "5040"])
+        self.assertEqual(p3["total_price"], 66.0)
+
+    async def test_loader_display_ledger_and_running_total_canonical_prices(self):
+        from utils import parse_test_order_packages, build_loader_package_keyboard, mark_selected_packages_delivered, calculate_delivered_packages_value
+        from database import record_delivery_ledger_entry, get_running_total_current
+
+        parsed = parse_test_order_packages("5000+2400")
+        items = parsed["packages"]
+
+        # Loader UI receives canonical packages (☐ 5040 CP / ⬜ 5040)
+        kb = build_loader_package_keyboard(101, items)
+        self.assertIsNotNone(kb)
+        btn_texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        self.assertIn("5040", btn_texts[0])
+
+        # Partial delivery & Ledger
+        updated, is_completed, del_cnt = mark_selected_packages_delivered(items, loader_id=5, selected_items=[items[0]])
+        self.assertEqual(del_cnt, 1)
+
+        pkg_str = items[0]["package"]
+        self.assertEqual(pkg_str, "5040")
+
+        val, ok = calculate_delivered_packages_value(pkg_str)
+        self.assertTrue(ok)
+        self.assertEqual(val, 33.0)
+
+        entry, ok_l = await record_delivery_ledger_entry(order_id=10, package=pkg_str, now_value=val)
+        self.assertTrue(ok_l)
+        self.assertEqual(entry.now_value, 33.0)
+        self.assertEqual(await get_running_total_current(), 33.0)
 
 
 if __name__ == "__main__":
