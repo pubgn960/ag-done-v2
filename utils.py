@@ -1089,7 +1089,7 @@ def format_order_details_block(raw_text: Optional[str], fallback_email: Optional
     OTHER_SECTION_HEADERS = (
         "email:", "mail:", "correo:", "correo electrónico:", "correo electronico:",
         "correo o número:", "correo o numero:", "correo o número fb:", "correo o numero fb:",
-        "password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:",
+        "old password:", "new password:", "password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:",
         "contraseña de fb:", "contrasena de fb:",
         "recovery:", "recovery code:", "recovery codes:", "backup codes:",
         "código:", "códigos:", "codigo:", "codigos:", "2fa:", "authenticator:",
@@ -1131,9 +1131,16 @@ def format_order_details_block(raw_text: Optional[str], fallback_email: Optional
         elif any(line_lower.startswith(h) for h in ("email:", "mail:", "correo:", "correo electrónico:", "correo electronico:", "correo o número:", "correo o numero:", "correo o número fb:", "correo o numero fb:")):
             e_val = line_strip.split(":", 1)[-1].strip()
             details_lines.append(f"📧 Email:\n{e_val}" if e_val else "📧 Email:")
-        elif any(line_lower.startswith(h) for h in ("password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:", "contraseña de fb:", "contrasena de fb:")):
-            p_val = line_strip.split(":", 1)[-1].strip()
-            details_lines.append(f"🔑 Password:\n{p_val}" if p_val else "🔑 Password:")
+        elif any(line_lower.startswith(h) for h in ("old password:", "new password:", "password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:", "contraseña de fb:", "contrasena de fb:")):
+            if line_lower.startswith("old password:"):
+                p_val = line_strip.split(":", 1)[-1].strip()
+                details_lines.append(f"🔑 Old Password:\n{p_val}" if p_val else "🔑 Old Password:")
+            elif line_lower.startswith("new password:"):
+                p_val = line_strip.split(":", 1)[-1].strip()
+                details_lines.append(f"🔑 New Password:\n{p_val}" if p_val else "🔑 New Password:")
+            else:
+                p_val = line_strip.split(":", 1)[-1].strip()
+                details_lines.append(f"🔑 Password:\n{p_val}" if p_val else "🔑 Password:")
         else:
             details_lines.append(line_strip)
 
@@ -1142,6 +1149,68 @@ def format_order_details_block(raw_text: Optional[str], fallback_email: Optional
         res_text = f"📧 Email:\n{fallback_email}\n\n" + res_text
 
     return res_text
+
+
+def extract_password_from_text(text: str) -> Optional[str]:
+    """Extracts password value from raw text or input message."""
+    if not text:
+        return None
+
+    match_new = re.search(r'(?:new\s*password|nueva\s*contraseña|nueva\s*contrasena)\s*[:=\-]\s*([^\n]+)', text, re.IGNORECASE)
+    if match_new:
+        return match_new.group(1).strip()
+
+    match_std = re.search(r'(?:password|pass|pwd|contraseña|contrasena|clave)\s*[:=\-]\s*([^\n]+)', text, re.IGNORECASE)
+    if match_std:
+        return match_std.group(1).strip()
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) == 1 and not re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', lines[0]):
+        if lines[0].lower() not in ("facebook", "fb", "activision", "order", "package"):
+            return lines[0]
+
+    return None
+
+
+def build_updated_raw_text_with_passwords(old_raw_text: str, new_input_text: str) -> str:
+    """
+    Updates raw_text with Old Password and New Password formatting.
+    If old_raw_text had 'Password: A' and new_input_text is 'B', becomes:
+      Old Password: A
+      New Password: B
+    If old_raw_text had 'Old Password: A \n New Password: B' and new_input is 'C', becomes:
+      Old Password: B
+      New Password: C
+    """
+    old_pass = extract_password_from_text(old_raw_text) or "N/A"
+    new_pass = extract_password_from_text(new_input_text) or new_input_text.strip()
+
+    if not old_raw_text:
+        return f"Old Password: {old_pass}\nNew Password: {new_pass}"
+
+    lines = old_raw_text.splitlines()
+    new_lines = []
+    inserted = False
+
+    pass_pattern = re.compile(
+        r'^\s*(?:old\s*password|new\s*password|password|pass|pwd|contraseña|contrasena|clave)(?:\s*de\s*fb)?\s*[:=\-]',
+        re.IGNORECASE
+    )
+
+    for line in lines:
+        if pass_pattern.match(line):
+            if not inserted:
+                new_lines.append(f"Old Password: {old_pass}")
+                new_lines.append(f"New Password: {new_pass}")
+                inserted = True
+            continue
+        new_lines.append(line)
+
+    if not inserted:
+        new_lines.append(f"Old Password: {old_pass}")
+        new_lines.append(f"New Password: {new_pass}")
+
+    return "\n".join(new_lines)
 
 
 def format_package_status_block(progress_data: Any, total_price: Optional[float] = None) -> str:

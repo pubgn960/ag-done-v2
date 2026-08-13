@@ -3379,6 +3379,115 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         matching_entries = [e for e in entries if e.order_id == order_id]
         self.assertEqual(len(matching_entries), 0)
 
+    async def test_multiple_password_updates_and_cancellation_reaction(self):
+        from utils import build_updated_raw_text_with_passwords
+        from database import (
+            create_order,
+            set_order_loader_message_id,
+            get_order_by_id,
+            update_order_issue_state,
+            update_order_status,
+            update_order_raw_text,
+            get_latest_ledger_entries
+        )
+        from handlers import customer_confirmation_callback_handler
+
+        # 1. Create original order
+        orig_raw = "Login: Facebook\nEmail: ex@gmail.com\nPassword: A\n2400 CP"
+        order = await create_order(
+            email="ex@gmail.com",
+            client_chat_id=-100111,
+            original_message_id=500,
+            package="2400",
+            raw_text=orig_raw
+        )
+        await set_order_loader_message_id(order.id, 76, -100999)
+        order = await get_order_by_id(order.id)
+        order_id = order.id
+        self.assertEqual(order.loader_message_id, 76)
+        self.assertEqual(order.loader_group_id, -100999)
+
+        # 2. Password Update #1: A -> B
+        raw1 = build_updated_raw_text_with_passwords(order.raw_text, "B")
+        self.assertIn("Old Password: A", raw1)
+        self.assertIn("New Password: B", raw1)
+        upd1 = await update_order_raw_text(order_id, raw1, "ex@gmail.com")
+        self.assertEqual(upd1.id, order_id)
+        self.assertEqual(upd1.loader_message_id, 76)
+
+        # 3. Password Update #2: B -> C
+        raw2 = build_updated_raw_text_with_passwords(upd1.raw_text, "C")
+        self.assertIn("Old Password: B", raw2)
+        self.assertIn("New Password: C", raw2)
+        upd2 = await update_order_raw_text(order_id, raw2, "ex@gmail.com")
+        self.assertEqual(upd2.id, order_id)
+        self.assertEqual(upd2.loader_message_id, 76)
+
+        # 4. Password Update #3: C -> D
+        raw3 = build_updated_raw_text_with_passwords(upd2.raw_text, "D")
+        self.assertIn("Old Password: C", raw3)
+        self.assertIn("New Password: D", raw3)
+        upd3 = await update_order_raw_text(order_id, raw3, "ex@gmail.com")
+        self.assertEqual(upd3.id, order_id)
+        self.assertEqual(upd3.loader_message_id, 76)
+
+        # 5. Customer clicks ❌ Cancel Order after 3 password updates
+        sent_messages = []
+        sent_reactions = []
+
+        class MockQuery:
+            data = f"cust_confirm:pw_cancel:{order_id}:wrong_password"
+            message = type("Msg", (), {"caption": None})()
+
+            async def edit_message_text(self, text, parse_mode=None):
+                pass
+
+            async def edit_message_caption(self, caption, parse_mode=None):
+                pass
+
+            async def answer(self, text=None, show_alert=False):
+                pass
+
+        class MockBot:
+            async def send_message(self, chat_id, text, reply_to_message_id=None, parse_mode=None):
+                sent_messages.append({
+                    "chat_id": chat_id,
+                    "text": text,
+                    "reply_to_message_id": reply_to_message_id
+                })
+
+            async def set_message_reaction(self, chat_id, message_id, reaction=None, is_big=None):
+                sent_reactions.append({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reaction": reaction
+                })
+
+        mock_update = type("Update", (), {"callback_query": MockQuery()})()
+        mock_context = type("Context", (), {"bot": MockBot()})()
+
+        await customer_confirmation_callback_handler(mock_update, mock_context)
+
+        # ✓ Cancel Order marks same order Cancelled
+        can_order = await get_order_by_id(order_id)
+        self.assertEqual(can_order.status, "CANCELLED")
+
+        # ✓ ❌ reaction added to loader_message_id (76) in loader_group_id (-100999)
+        self.assertEqual(len(sent_reactions), 1)
+        self.assertEqual(sent_reactions[0]["chat_id"], -100999)
+        self.assertEqual(sent_reactions[0]["message_id"], 76)
+
+        # ✓ Cancellation notification sent replying to loader_message_id (76)
+        self.assertEqual(len(sent_messages), 1)
+        self.assertEqual(sent_messages[0]["chat_id"], -100999)
+        self.assertEqual(sent_messages[0]["reply_to_message_id"], 76)
+        self.assertIn("has been cancelled by the customer.", sent_messages[0]["text"])
+
+        # ✓ Cancelled order cannot be delivered
+        from delivery import deliver_order_by_id
+        success = await deliver_order_by_id(MockBot(), order_id)
+        self.assertFalse(success)
+
 
 if __name__ == "__main__":
     unittest.main()

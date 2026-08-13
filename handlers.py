@@ -108,6 +108,7 @@ from utils import (
     ISSUE_WORKFLOW_CONFIG,
     detect_loader_issue,
     build_customer_issue_keyboard,
+    build_updated_raw_text_with_passwords,
     has_valid_account_update_fields,
     validate_customer_update_for_issue,
     parse_bulk_prices_input,
@@ -218,8 +219,14 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info(f"[CUSTOMER_UPDATED]\nCustomer submitted updated account details for Order #{waiting_order.id}.")
             logger.info(f"[DELIVERY_RESUMED]\nDelivery resumed for Order #{waiting_order.id}.")
 
+            clean_issue = (active_issue_type.value if hasattr(active_issue_type, 'value') else str(active_issue_type or "")).lower()
+            if clean_issue in ("wrong_password", LoaderIssueType.WRONG_PASSWORD.value):
+                new_raw_text = build_updated_raw_text_with_passwords(waiting_order.raw_text or "", text_content)
+            else:
+                new_raw_text = text_content
+
             new_email = extract_email(text_content) or waiting_order.email
-            updated_order = await update_order_raw_text(waiting_order.id, text_content, new_email)
+            updated_order = await update_order_raw_text(waiting_order.id, new_raw_text, new_email)
 
             restored_status = "Pending"
             if waiting_order.package_progress:
@@ -827,19 +834,25 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
     # 2. Reply directly to ORIGINAL loader message in Loader Group & set reaction
     if loader_chat_id and target_loader_msg_id:
         try:
-            await context.bot.send_message(
-                chat_id=loader_chat_id,
-                text=loader_notify_text,
-                reply_to_message_id=target_loader_msg_id,
-                parse_mode="HTML"
-            )
-            await safe_set_message_reaction(
+            success = await safe_set_message_reaction(
                 bot=context.bot,
                 chat_id=loader_chat_id,
                 message_id=target_loader_msg_id,
                 emoji=reaction_emoji,
                 fallback_emoji=None,
-                log_tag="[REACTION]"
+                log_tag=f"[ORDER #{order.id}]"
+            )
+            if not success:
+                logger.warning(f"[ORDER #{order.id}] Failed to react to loader message.")
+        except Exception:
+            logger.warning(f"[ORDER #{order.id}] Failed to react to loader message.")
+
+        try:
+            await context.bot.send_message(
+                chat_id=loader_chat_id,
+                text=loader_notify_text,
+                reply_to_message_id=target_loader_msg_id,
+                parse_mode="HTML"
             )
             logger.info(f"[CUSTOMER_CONFIRM] Sent confirmation reply to Loader Group {loader_chat_id} (Loader Msg ID {target_loader_msg_id}) for Order #{order.id}.")
         except Exception as e:
