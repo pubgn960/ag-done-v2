@@ -59,13 +59,14 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "customer_title": "⚠️ Password Verification Required",
         "customer_message": "The loader reported that the password appears to be incorrect.",
         "customer_text": "⚠️ <b>Password Verification Required</b>\n\nThe loader reported that the password appears to be incorrect.",
-        "customer_update_prompt": "❌ <b>Order Paused</b>\n\nPlease send your NEW password.\n\nExamples\n\nPassword:\nPakistan123\n\nor simply\n\nPakistan123",
-        "approve_label": "✅ Correct Password",
-        "reject_label": "❌ Update Password",
-        "loader_success_msg": "✅ Customer confirmed that the password is correct.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
-        "loader_failure_msg": "❌ Order Cancelled\n\nCustomer confirmed the password is incorrect.\n\nPlease stop this delivery and wait for updated password.",
-        "loader_yes_text": "✅ Customer confirmed that the password is correct.\n\nYou may continue the delivery now.\n\nReply with delivery screenshots when finished.",
-        "loader_no_text": "❌ Order Cancelled\n\nCustomer confirmed the password is incorrect.\n\nPlease stop this delivery and wait for updated password.",
+        "customer_update_prompt": "The customer is sending you an updated password.\n\nPlease wait for the updated password.",
+        "approve_label": "✅ Password is Correct",
+        "reject_label": "🔄 Updating Password",
+        "loader_success_msg": "✅ Customer confirmed the password is correct.\n\nYou may continue delivery.",
+        "loader_failure_msg": "❌ Order Cancelled\n\nOrder has been cancelled by the customer.\n\nPlease stop this delivery.",
+        "loader_updating_msg": "🔄 Customer is updating the password.\n\nThe customer is sending you an updated password.\n\nPlease wait for the updated password.",
+        "loader_yes_text": "✅ Customer confirmed the password is correct.\n\nYou may continue delivery.",
+        "loader_no_text": "❌ Order Cancelled\n\nOrder has been cancelled by the customer.\n\nPlease stop this delivery.",
         "log_tag": "[WRONG_PASSWORD]"
     },
     LoaderIssueType.GOOGLE_LINKED: {
@@ -181,6 +182,35 @@ def detect_loader_issue(caption_text: str) -> Optional[Tuple[Dict[str, Any], str
                 return cfg, issue_id_str
 
     return None
+
+
+def build_customer_issue_keyboard(order_id: int, issue_type: Union[str, LoaderIssueType]) -> InlineKeyboardMarkup:
+    """
+    Builds customer issue response inline keyboard.
+    For WRONG_PASSWORD, returns 3 buttons:
+      [✅ Password is Correct]
+      [🔄 Updating Password]
+      [❌ Cancel Order]
+    For other issue types, returns 2 buttons (Approve / Reject).
+    """
+    issue_type_str = issue_type.value if hasattr(issue_type, 'value') else str(issue_type or "")
+    if issue_type_str in (LoaderIssueType.WRONG_PASSWORD.value, "wrong_password", "wrongpassword"):
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Password is Correct", callback_data=f"cust_confirm:pw_correct:{order_id}:wrong_password")],
+            [InlineKeyboardButton("🔄 Updating Password", callback_data=f"cust_confirm:pw_updating:{order_id}:wrong_password")],
+            [InlineKeyboardButton("❌ Cancel Order", callback_data=f"cust_confirm:pw_cancel:{order_id}:wrong_password")]
+        ])
+
+    issue_cfg = ISSUE_WORKFLOW_CONFIG.get(issue_type_str, ISSUE_WORKFLOW_CONFIG.get(LoaderIssueType.WRONG_NAME))
+    approve_lbl = issue_cfg.get("approve_label", "✅ Approve") if issue_cfg else "✅ Approve"
+    reject_lbl = issue_cfg.get("reject_label", "❌ Update Account") if issue_cfg else "❌ Update Account"
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(approve_lbl, callback_data=f"cust_confirm:yes:{order_id}:{issue_type_str}"),
+            InlineKeyboardButton(reject_lbl, callback_data=f"cust_confirm:no:{order_id}:{issue_type_str}")
+        ]
+    ])
 
 
 def validate_customer_update_for_issue(text: str, issue_type: Optional[str] = None) -> bool:

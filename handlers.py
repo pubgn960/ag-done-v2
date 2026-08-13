@@ -107,6 +107,7 @@ from utils import (
     LOADER_ISSUE_CONFIG,
     ISSUE_WORKFLOW_CONFIG,
     detect_loader_issue,
+    build_customer_issue_keyboard,
     has_valid_account_update_fields,
     validate_customer_update_for_issue,
     parse_bulk_prices_input,
@@ -693,15 +694,14 @@ async def loader_issue_callback_handler(update: Update, context: ContextTypes.DE
         return
 
     # Update Order issue state in DB
-    await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_type_str)
+    if issue_type_str == "wrong_password" or issue_type_str == LoaderIssueType.WRONG_PASSWORD:
+        await update_order_issue_state(order.id, "WAITING_FOR_CUSTOMER_PASSWORD", "wrong_password")
+        await update_order_status(order.id, "WAITING_FOR_CUSTOMER_PASSWORD")
+    else:
+        await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_type_str)
 
     # Prepare customer buttons in Client Group linked to unique Order ID
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Yes, Correct", callback_data=f"cust_confirm:yes:{order.id}:{issue_type_str}"),
-            InlineKeyboardButton("❌ No, Wrong", callback_data=f"cust_confirm:no:{order.id}:{issue_type_str}")
-        ]
-    ])
+    keyboard = build_customer_issue_keyboard(order.id, issue_type_str)
 
     try:
         await context.bot.send_message(
@@ -723,8 +723,8 @@ async def loader_issue_callback_handler(update: Update, context: ContextTypes.DE
 
 async def customer_confirmation_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles Customer confirmation response (Approve / Reject) in Client Group.
-    Callback data format: cust_confirm:<yes/no>:<order_id>:<issue_id>
+    Handles Customer confirmation response (Approve / Reject / Password update & cancel) in Client Group.
+    Callback data format: cust_confirm:<action>:<order_id>:<issue_id>
     Updates Order issue_state, replies to original loader order message, and handles reactions & delivery session status.
     """
     query = update.callback_query
@@ -747,31 +747,76 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             pass
         return
 
-    issue_cfg = ISSUE_WORKFLOW_CONFIG.get(issue_id, ISSUE_WORKFLOW_CONFIG[LoaderIssueType.WRONG_NAME])
-
     loader_chat_id = order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
     target_loader_msg_id = order.loader_message_id
 
-    if action == "yes":
-        logger.info(f"[CUSTOMER_APPROVED]\nCustomer approved issue '{issue_id}' for Order #{order.id}.")
-        logger.info(f"[DELIVERY_RESUMED]\nDelivery resumed for Order #{order.id}.")
+    # Wrong Password Workflow (3 buttons: pw_correct, pw_updating, pw_cancel)
+    if issue_id == "wrong_password" or issue_id == LoaderIssueType.WRONG_PASSWORD:
+        if action in ("pw_correct", "yes"):
+            logger.info(f"[ORDER #{order.id}] Customer confirmed password is correct.")
+            await update_order_issue_state(order.id, "Resolved", "wrong_password")
+            await update_order_status(order.id, "READY_FOR_DELIVERY")
 
-        await update_order_issue_state(order.id, "Confirmed", issue_id)
-        cust_ack = "✅ <b>Confirmation Recorded</b>\n\nThank you! Your confirmation has been sent to the loader."
-        loader_notify_text = issue_cfg.get("loader_success_msg", "✅ Customer confirmed details. Please continue delivery.")
-        reaction_emoji = "✅"
+            cust_ack = "✅ <b>Password Confirmed</b>\n\nThank you! You confirmed that the password is correct."
+            loader_notify_text = (
+                "✅ Customer confirmed the password is correct.\n\n"
+                "You may continue delivery."
+            )
+            reaction_emoji = "✅"
+
+        elif action in ("pw_updating", "no"):
+            logger.info(f"[ORDER #{order.id}] Customer selected password update.")
+            await update_order_issue_state(order.id, "PASSWORD_UPDATE_IN_PROGRESS", "wrong_password")
+            await update_order_status(order.id, "PASSWORD_UPDATE_IN_PROGRESS")
+
+            cust_ack = (
+                "The customer is sending you an updated password.\n\n"
+                "Please wait for the updated password."
+            )
+            loader_notify_text = (
+                "🔄 Customer is updating the password.\n\n"
+                "The customer is sending you an updated password.\n\n"
+                "Please wait for the updated password."
+            )
+            reaction_emoji = "🔄"
+
+        elif action == "pw_cancel":
+            logger.info(f"[ORDER #{order.id}] Customer cancelled order.")
+            await update_order_status(order.id, "CANCELLED")
+            await update_order_issue_state(order.id, "CANCELLED", "wrong_password")
+
+            cust_ack = (
+                "❌ <b>Order Cancelled</b>\n\n"
+                "Your order has been cancelled successfully."
+            )
+            loader_notify_text = (
+                "❌ Order Cancelled\n\n"
+                f"Order #{order.id} has been cancelled by the customer.\n\n"
+                "Please stop this delivery."
+            )
+            reaction_emoji = "❌"
+        else:
+            return
+
+    # Legacy 2-button workflows for other issue types
     else:
-        logger.info(f"[CUSTOMER_REJECTED]\nCustomer rejected issue '{issue_id}' for Order #{order.id}.")
-
-        await update_order_status(order.id, "Waiting Customer Update")
-        await update_order_issue_state(order.id, "Waiting_Customer_Update", issue_id)
-
-        cust_ack = issue_cfg.get(
-            "customer_update_prompt",
-            "❌ <b>Order Paused</b>\n\nPlease reply with your updated account details below."
-        )
-        loader_notify_text = issue_cfg.get("loader_failure_msg", "❌ Customer stated details are incorrect. Please wait for updated account info.")
-        reaction_emoji = "❌"
+        issue_cfg = ISSUE_WORKFLOW_CONFIG.get(issue_id, ISSUE_WORKFLOW_CONFIG[LoaderIssueType.WRONG_NAME])
+        if action == "yes":
+            logger.info(f"[CUSTOMER_APPROVED]\nCustomer approved issue '{issue_id}' for Order #{order.id}.")
+            await update_order_issue_state(order.id, "Confirmed", issue_id)
+            cust_ack = "✅ <b>Confirmation Recorded</b>\n\nThank you! Your confirmation has been sent to the loader."
+            loader_notify_text = issue_cfg.get("loader_success_msg", "✅ Customer confirmed details. Please continue delivery.")
+            reaction_emoji = "✅"
+        else:
+            logger.info(f"[CUSTOMER_REJECTED]\nCustomer rejected issue '{issue_id}' for Order #{order.id}.")
+            await update_order_status(order.id, "Waiting Customer Update")
+            await update_order_issue_state(order.id, "Waiting_Customer_Update", issue_id)
+            cust_ack = issue_cfg.get(
+                "customer_update_prompt",
+                "❌ <b>Order Paused</b>\n\nPlease reply with your updated account details below."
+            )
+            loader_notify_text = issue_cfg.get("loader_failure_msg", "❌ Customer stated details are incorrect. Please wait for updated account info.")
+            reaction_emoji = "❌"
 
     # 1. Edit customer prompt message in Client Group (caption if photo/doc, text otherwise)
     try:
@@ -1113,6 +1158,13 @@ async def loader_pkg_toggle_callback_handler(update: Update, context: ContextTyp
             pass
         return
 
+    if order.status and order.status.lower() == "cancelled":
+        try:
+            await query.answer(f"❌ Order #{order.id} has been cancelled.", show_alert=True)
+        except Exception:
+            pass
+        return
+
     updated_items, status_code = toggle_package_selection(order.package_progress, item_idx, user.id)
 
     if status_code == "Delivered":
@@ -1174,6 +1226,13 @@ async def loader_pkg_confirm_callback_handler(update: Update, context: ContextTy
     if not order:
         try:
             await query.answer("❌ Order not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if order.status and order.status.lower() == "cancelled":
+        try:
+            await query.answer(f"❌ Order #{order.id} has been cancelled.", show_alert=True)
         except Exception:
             pass
         return
@@ -2462,15 +2521,17 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
 
         # Update order issue state in DB
-        await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_id)
+        if issue_id == "wrong_password" or issue_id == LoaderIssueType.WRONG_PASSWORD:
+            await update_order_issue_state(order.id, "WAITING_FOR_CUSTOMER_PASSWORD", "wrong_password")
+            await update_order_status(order.id, "WAITING_FOR_CUSTOMER_PASSWORD")
+        else:
+            await update_order_issue_state(order.id, "Waiting_Customer_Confirmation", issue_id)
 
         # 4. Contact Customer in Client Group (copy screenshot if present, else send text-only)
         client_chat_id = order.client_chat_id or BOT_SETTINGS["source_group_id"]
         if client_chat_id and order.original_message_id:
             cust_title = issue_cfg.get("customer_title", "⚠️ Verification Required")
             cust_msg = issue_cfg.get("customer_message", "Please check your account.")
-            approve_lbl = issue_cfg.get("approve_label", "✅ Approve")
-            reject_lbl = issue_cfg.get("reject_label", "❌ Update Account")
 
             details_lines = []
             if getattr(order, "platform", None):
@@ -2486,12 +2547,7 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
 
             body_text = f"<b>{cust_title}</b>\n\n{cust_msg}\n\nPlease verify your account.{details_block}"
 
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(approve_lbl, callback_data=f"cust_confirm:yes:{order.id}:{issue_id}"),
-                    InlineKeyboardButton(reject_lbl, callback_data=f"cust_confirm:no:{order.id}:{issue_id}")
-                ]
-            ])
+            keyboard = build_customer_issue_keyboard(order.id, issue_id)
 
             try:
                 if is_media and message.photo:

@@ -152,7 +152,7 @@ async def deliver_order_by_id(
                 pass
         return False
 
-    if order.status == "Cancelled":
+    if order.status and order.status.lower() == "cancelled":
         logger.info(f"[DELIVERY] Cancelled Order | Delivery attempted for cancelled Order #{order_id}. Ignored.")
         if loader_chat_id and loader_reply_msg_id:
             try:

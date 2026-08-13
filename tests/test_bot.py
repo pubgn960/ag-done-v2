@@ -1234,7 +1234,8 @@ class TestDeliverySessionRouting(unittest.TestCase):
         # 7. Check issue-specific customer prompts
         for issue_type, cfg in ISSUE_WORKFLOW_CONFIG.items():
             self.assertIn("customer_update_prompt", cfg)
-            self.assertIn("❌ <b>Order Paused</b>", cfg["customer_update_prompt"])
+            if issue_type != LoaderIssueType.WRONG_PASSWORD:
+                self.assertIn("❌ <b>Order Paused</b>", cfg["customer_update_prompt"])
 
     def test_single_numeric_price_validation_for_unknown_packages(self):
         from handlers import is_valid_price_string
@@ -3243,6 +3244,82 @@ class TestUpsertBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(kb_unk)
         btn_texts = [b.text for r in kb_unk.inline_keyboard for b in r]
         self.assertIn("✏️ Add Price 888777", btn_texts)
+
+
+class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
+    """Test suite for Updated Wrong Password Customer Flow."""
+
+    async def test_wrong_password_customer_buttons_and_callbacks(self):
+        from utils import build_customer_issue_keyboard, LoaderIssueType
+        from database import (
+            create_order,
+            set_order_loader_message_id,
+            get_order_by_id,
+            update_order_issue_state,
+            update_order_status,
+            get_latest_ledger_entries
+        )
+
+        # 1. Create test order
+        order = await create_order(
+            email="test@gmail.com",
+            client_chat_id=-1001234,
+            original_message_id=999,
+            package="10800",
+            raw_text="Email: test@gmail.com\nPass: Secret123\n10800"
+        )
+        await set_order_loader_message_id(order.id, 888, -1005678)
+        self.assertIsNotNone(order)
+        order_id = order.id
+
+        # 2. Loader reports wrong password -> Verify 3 buttons generated
+        kb = build_customer_issue_keyboard(order_id, LoaderIssueType.WRONG_PASSWORD)
+        btn_texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        self.assertEqual(len(btn_texts), 3)
+        self.assertEqual(btn_texts[0], "✅ Password is Correct")
+        self.assertEqual(btn_texts[1], "🔄 Updating Password")
+        self.assertEqual(btn_texts[2], "❌ Cancel Order")
+
+        cb_datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+        self.assertIn(f"cust_confirm:pw_correct:{order_id}:wrong_password", cb_datas)
+        self.assertIn(f"cust_confirm:pw_updating:{order_id}:wrong_password", cb_datas)
+        self.assertIn(f"cust_confirm:pw_cancel:{order_id}:wrong_password", cb_datas)
+
+        # 3. Simulate "✅ Password is Correct" button click -> delivery resumes
+        await update_order_issue_state(order_id, "Resolved", "wrong_password")
+        await update_order_status(order_id, "READY_FOR_DELIVERY")
+
+        res_order = await get_order_by_id(order_id)
+        self.assertEqual(res_order.status, "READY_FOR_DELIVERY")
+        self.assertEqual(res_order.issue_state, "Resolved")
+
+        # 4. Simulate "🔄 Updating Password" button click -> order paused
+        await update_order_issue_state(order_id, "PASSWORD_UPDATE_IN_PROGRESS", "wrong_password")
+        await update_order_status(order_id, "PASSWORD_UPDATE_IN_PROGRESS")
+
+        upd_order = await get_order_by_id(order_id)
+        self.assertEqual(upd_order.status, "PASSWORD_UPDATE_IN_PROGRESS")
+        self.assertEqual(upd_order.issue_state, "PASSWORD_UPDATE_IN_PROGRESS")
+
+        # 5. Simulate "❌ Cancel Order" button click -> marked Cancelled
+        await update_order_status(order_id, "CANCELLED")
+        await update_order_issue_state(order_id, "CANCELLED", "wrong_password")
+
+        can_order = await get_order_by_id(order_id)
+        self.assertEqual(can_order.status, "CANCELLED")
+
+        # 6. Delivery execution on cancelled order is rejected
+        from delivery import deliver_order_by_id
+        class MockBot:
+            async def send_message(self, *args, **kwargs):
+                pass
+        success = await deliver_order_by_id(MockBot(), order_id)
+        self.assertFalse(success)
+
+        # 7. Verify no duplicate order or ledger entry
+        entries = await get_latest_ledger_entries(limit=10)
+        matching_entries = [e for e in entries if e.order_id == order_id]
+        self.assertEqual(len(matching_entries), 0)
 
 
 if __name__ == "__main__":

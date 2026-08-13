@@ -1172,7 +1172,18 @@ async def has_active_pending_issue(order_id: int) -> bool:
         order = res.scalar_one_or_none()
         if not order:
             return False
-        return order.issue_state in ("Waiting_Customer_Confirmation", "Waiting_Customer_Update") or order.status == "Waiting Customer Update"
+        return (
+            order.issue_state in (
+                "Waiting_Customer_Confirmation",
+                "Waiting_Customer_Update",
+                "WAITING_FOR_CUSTOMER_PASSWORD",
+                "PASSWORD_UPDATE_IN_PROGRESS"
+            ) or order.status in (
+                "Waiting Customer Update",
+                "WAITING_FOR_CUSTOMER_PASSWORD",
+                "PASSWORD_UPDATE_IN_PROGRESS"
+            )
+        )
 
 
 async def update_order_raw_text(order_id: int, new_raw_text: str, email: Optional[str] = None) -> Optional[Order]:
@@ -1207,8 +1218,8 @@ async def get_order_waiting_for_customer_update(client_chat_id: int) -> Optional
             .where(
                 Order.client_chat_id == client_chat_id,
                 or_(
-                    Order.issue_state == "Waiting_Customer_Update",
-                    Order.status == "Waiting Customer Update"
+                    Order.issue_state.in_(["Waiting_Customer_Update", "WAITING_FOR_CUSTOMER_PASSWORD", "PASSWORD_UPDATE_IN_PROGRESS"]),
+                    Order.status.in_(["Waiting Customer Update", "WAITING_FOR_CUSTOMER_PASSWORD", "PASSWORD_UPDATE_IN_PROGRESS"])
                 )
             )
             .order_by(Order.id.desc())
