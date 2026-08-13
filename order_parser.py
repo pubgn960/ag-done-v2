@@ -86,18 +86,25 @@ RECOVERY_CODE_PATTERN = re.compile(
 
 
 def get_dynamic_package_prices() -> Dict[str, float]:
-    """Dynamically loads package prices from utils.PACKAGE_PRICES."""
+    """Dynamically loads package prices from utils.PACKAGE_PRICES with fallback."""
+    fallback = {
+        "108000": 563.0, "96000": 503.0, "72000": 375.0, "55200": 291.0,
+        "48000": 254.0, "43200": 229.0, "38400": 211.0, "24000": 132.0,
+        "21600": 119.0, "19200": 109.0, "16800": 95.0, "14400": 82.0,
+        "12000": 69.0, "10800": 64.0, "9600": 55.0, "7200": 42.0,
+        "5040": 33.0, "4800": 29.0, "2400": 16.5, "880": 8.0,
+        "420": 4.5, "80": 1.0
+    }
     try:
-        from utils import PACKAGE_PRICES
-        return dict(PACKAGE_PRICES)
+        from utils import PACKAGE_PRICES, TEST_PACKAGE_PRICES
+        prices = dict(PACKAGE_PRICES)
+        if not prices:
+            prices = dict(TEST_PACKAGE_PRICES)
+        if not prices:
+            prices = fallback
+        return prices
     except Exception:
-        return {
-            "108000": 600.0, "96000": 530.0, "72000": 400.0, "48000": 270.0,
-            "43200": 240.0, "38400": 215.0, "24000": 135.0, "21600": 120.0,
-            "19200": 110.0, "16800": 95.0, "14400": 80.0, "12000": 70.0,
-            "10800": 64.0, "9600": 57.0, "7200": 45.0, "5040": 33.0,
-            "4800": 29.0, "2400": 16.5, "880": 8.0, "420": 4.5, "80": 1.0
-        }
+        return fallback
 
 
 def normalize_package_alias(pkg_name: Optional[str], alias_map: Optional[Dict[str, str]] = None) -> str:

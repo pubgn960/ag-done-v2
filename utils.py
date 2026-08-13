@@ -491,7 +491,10 @@ def reload_package_prices_cache(new_prices: Dict[str, float]) -> None:
     """Reloads in-memory package price cache immediately without restarting."""
     global PACKAGE_PRICES
     PACKAGE_PRICES.clear()
-    PACKAGE_PRICES.update(new_prices)
+    if new_prices:
+        PACKAGE_PRICES.update(new_prices)
+    else:
+        PACKAGE_PRICES.update(TEST_PACKAGE_PRICES)
 
 
 def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
@@ -843,6 +846,44 @@ def format_package_summary_and_price(parsed_data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_missing_packages_summary(progress_data: Any) -> str:
+    """
+    Formats missing package list display:
+    ❌ Missing Packages
+
+    108000
+    96000
+    """
+    import json
+    from order_parser import normalize_package_alias, get_dynamic_package_prices
+
+    if isinstance(progress_data, str):
+        try:
+            items = json.loads(progress_data)
+        except Exception:
+            items = []
+    elif isinstance(progress_data, list):
+        items = progress_data
+    else:
+        items = []
+
+    price_db = get_dynamic_package_prices()
+    missing_pkgs = []
+
+    for item in items:
+        raw_pkg = str(item.get("package", "")).strip()
+        canonical_pkg = normalize_package_alias(raw_pkg)
+        u_p = item.get("unit_price")
+        if u_p is None and canonical_pkg not in price_db and canonical_pkg not in missing_pkgs:
+            missing_pkgs.append(canonical_pkg)
+        elif (item.get("status") == "Unpriced" or u_p is None) and canonical_pkg not in missing_pkgs:
+            missing_pkgs.append(canonical_pkg)
+
+    if missing_pkgs:
+        return "❌ Missing Packages\n\n" + "\n".join(missing_pkgs)
+    return ""
+
+
 def format_package_progress_summary(progress_data: Any, total_price: Optional[float] = None) -> str:
     """
     Formats package progress tracking checkboxes, unknown package statuses, and total price calculation.
@@ -910,9 +951,12 @@ def format_package_progress_summary(progress_data: Any, total_price: Optional[fl
 
 def get_unknown_package_keyboard(order_id: int, progress_data: Any) -> Optional[InlineKeyboardMarkup]:
     """
-    Returns an inline keyboard with '📝 Add Unknown Package Price' button if any unpriced package exists.
+    Returns an inline keyboard with '✏️ Add Price {pkg_name}' button for EACH unpriced package.
+    Uses canonical package alias normalization.
     """
     import json
+    from order_parser import normalize_package_alias, get_dynamic_package_prices
+
     if isinstance(progress_data, str):
         try:
             items = json.loads(progress_data)
@@ -923,21 +967,40 @@ def get_unknown_package_keyboard(order_id: int, progress_data: Any) -> Optional[
     else:
         items = []
 
+    price_db = get_dynamic_package_prices()
+    buttons = []
+    seen = set()
+
     for item in items:
-        if item.get("status") == "Unpriced" or item.get("unit_price") is None:
-            pkg_name = item.get("package", "")
-            return InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"📝 Add Price for {pkg_name}", callback_data=f"add_unk_price:{order_id}:{pkg_name}")]
+        raw_pkg = str(item.get("package", "")).strip()
+        canonical_pkg = normalize_package_alias(raw_pkg)
+
+        unit_price = item.get("unit_price") or price_db.get(canonical_pkg)
+        is_unpriced = (item.get("status") == "Unpriced" or unit_price is None)
+
+        if is_unpriced and canonical_pkg and canonical_pkg not in seen:
+            seen.add(canonical_pkg)
+            buttons.append([
+                InlineKeyboardButton(
+                    f"✏️ Add Price {canonical_pkg}",
+                    callback_data=f"add_unk_price:{order_id}:{canonical_pkg}"
+                )
             ])
+
+    if buttons:
+        return InlineKeyboardMarkup(buttons)
     return None
 
 
 def update_unknown_package_price(progress_data: Any, target_pkg: str, price_val: float) -> Tuple[List[Dict[str, Any]], float, bool]:
     """
     Updates the price for a specific unknown package item in progress_data.
+    Applies canonical package alias normalization.
     Returns (updated_items, new_total_price, has_remaining_unpriced).
     """
     import json
+    from order_parser import normalize_package_alias
+
     if isinstance(progress_data, str):
         try:
             items = json.loads(progress_data)
@@ -948,12 +1011,16 @@ def update_unknown_package_price(progress_data: Any, target_pkg: str, price_val:
     else:
         items = []
 
+    target_canonical = normalize_package_alias(target_pkg)
+
     for item in items:
-        if str(item.get("package")) == str(target_pkg) and (item.get("status") == "Unpriced" or item.get("unit_price") is None):
+        pkg_name = str(item.get("package", "")).strip()
+        pkg_canonical = normalize_package_alias(pkg_name)
+        if (pkg_canonical == target_canonical or pkg_name == target_pkg) and (item.get("status") == "Unpriced" or item.get("unit_price") is None):
+            item["package"] = pkg_canonical
             item["unit_price"] = price_val
             item["total"] = price_val * item.get("qty", 1)
             item["status"] = "Pending"
-            break
 
     # Calculate new total
     new_total = 0.0

@@ -594,6 +594,10 @@ class TestTwoGroupDatabaseWorkflow(unittest.IsolatedAsyncioTestCase):
 class TestPOCOrderPriceDetection(unittest.TestCase):
     """Tests for POC automatic price detection & calculator helper calculate_test_price()."""
 
+    def setUp(self):
+        from utils import reload_package_prices_cache, TEST_PACKAGE_PRICES
+        reload_package_prices_cache(TEST_PACKAGE_PRICES)
+
     def test_single_packages(self):
         from utils import calculate_test_price
 
@@ -753,6 +757,7 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         from utils import (
             parse_test_order_packages,
             format_package_progress_summary,
+            format_missing_packages_summary,
             get_unknown_package_keyboard,
             update_unknown_package_price
         )
@@ -771,6 +776,10 @@ class TestPOCOrderPriceDetection(unittest.TestCase):
         s0 = format_package_progress_summary(items, p["known_total"])
         self.assertIn("❓ 15000 CP", s0)
         self.assertIn("💰 Known Total: 24.5$", s0)
+
+        missing_text = format_missing_packages_summary(items)
+        self.assertIn("❌ Missing Packages", missing_text)
+        self.assertIn("15000", missing_text)
 
         # 3. Check unknown package keyboard
         kb = get_unknown_package_keyboard(101, items)
@@ -3062,6 +3071,89 @@ class TestCPPackAndRecoveryCodeSeparation(unittest.TestCase):
         from order_parser import parse_order_v2
         p = parse_order_v2("CP PACK : 9.600")
         self.assertEqual(p["packages"][0]["package"], "9600")
+
+
+class TestMissingPackageWorkflowFix(unittest.IsolatedAsyncioTestCase):
+    """Test suite for Missing Package Workflow Fix."""
+
+    async def asyncSetUp(self):
+        from database import DEFAULT_PACKAGE_PRICES
+        self._orig_prices = dict(DEFAULT_PACKAGE_PRICES)
+
+    async def asyncTearDown(self):
+        from database import AsyncSessionLocal, PackagePrice, DEFAULT_PACKAGE_PRICES
+        from sqlalchemy import delete
+        from utils import reload_package_prices_cache
+        async with AsyncSessionLocal() as s:
+            await s.execute(delete(PackagePrice))
+            for k, v in DEFAULT_PACKAGE_PRICES.items():
+                s.add(PackagePrice(package=k, price=v))
+            await s.commit()
+        reload_package_prices_cache(DEFAULT_PACKAGE_PRICES)
+
+    async def test_single_and_multiple_missing_packages(self):
+        from utils import get_unknown_package_keyboard, format_missing_packages_summary, format_package_progress_summary, update_unknown_package_price
+        from database import update_single_package_price_in_db, get_all_package_prices_from_db
+
+        items = [
+            {"package": "999000", "qty": 1, "status": "Unpriced", "unit_price": None},
+            {"package": "888000", "qty": 1, "status": "Unpriced", "unit_price": None}
+        ]
+
+        # 1. Summary displays Missing Packages list
+        summary = format_missing_packages_summary(items)
+        self.assertIn("❌ Missing Packages", summary)
+        self.assertIn("999000", summary)
+        self.assertIn("888000", summary)
+
+        # 2. Keyboard displays button for EACH missing package
+        kb = get_unknown_package_keyboard(101, items)
+        self.assertIsNotNone(kb)
+        btn_texts = [btn.text for row in kb.inline_keyboard for btn in row]
+        self.assertEqual(len(btn_texts), 2)
+        self.assertIn("✏️ Add Price 999000", btn_texts)
+        self.assertIn("✏️ Add Price 888000", btn_texts)
+
+        # 3. Add price to first package (999000 -> 67$)
+        await update_single_package_price_in_db("999000", 67.0)
+
+        # Verify saved in DB
+        db_prices = await get_all_package_prices_from_db()
+        self.assertEqual(db_prices.get("999000"), 67.0)
+
+        # Update order items
+        updated_items, new_total, has_unpriced = update_unknown_package_price(items, "999000", 67.0)
+        self.assertTrue(has_unpriced)
+
+        # 4. Remaining missing package (888000 -> 58$)
+        kb2 = get_unknown_package_keyboard(101, updated_items)
+        self.assertIsNotNone(kb2)
+        btn_texts2 = [btn.text for row in kb2.inline_keyboard for btn in row]
+        self.assertEqual(len(btn_texts2), 1)
+        self.assertIn("✏️ Add Price 888000", btn_texts2)
+
+        # Add price for 888000 -> 58$
+        await update_single_package_price_in_db("888000", 58.0)
+        updated_items2, final_total, has_unpriced2 = update_unknown_package_price(updated_items, "888000", 58.0)
+        self.assertFalse(has_unpriced2)
+        self.assertEqual(final_total, 125.0)
+
+        # 5. After all missing prices added, keyboard returns None & display converts to standard package format
+        self.assertIsNone(get_unknown_package_keyboard(101, updated_items2))
+        final_summary = format_package_progress_summary(updated_items2, final_total)
+        self.assertIn("📦 Packages", final_summary)
+        self.assertIn("999000 CP", final_summary)
+        self.assertIn("888000 CP", final_summary)
+        self.assertIn("125$", final_summary)
+
+    def test_alias_5000_5k_5040_behavior_unchanged(self):
+        from utils import get_unknown_package_keyboard
+        items = [
+            {"package": "5000", "qty": 1, "status": "Pending", "unit_price": 33.0},
+            {"package": "5k", "qty": 1, "status": "Pending", "unit_price": 33.0}
+        ]
+        kb = get_unknown_package_keyboard(102, items)
+        self.assertIsNone(kb)
 
 
 if __name__ == "__main__":

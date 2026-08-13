@@ -1372,6 +1372,26 @@ async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_
             raise e
 
 
+async def update_single_package_price_in_db(pkg: str, price_val: float, updated_by_id: Optional[int] = None) -> bool:
+    """
+    Updates price for a single package in DB and reloads in-memory cache.
+    Canonical package alias normalization is applied.
+    """
+    from order_parser import normalize_package_alias
+    canonical_pkg = normalize_package_alias(pkg)
+
+    all_prices = await get_all_package_prices_from_db()
+    if not all_prices:
+        from utils import PACKAGE_PRICES
+        all_prices = dict(PACKAGE_PRICES)
+    all_prices[canonical_pkg] = price_val
+
+    success = await bulk_update_package_prices_in_db(all_prices, updated_by_id=updated_by_id)
+    from utils import PACKAGE_PRICES
+    PACKAGE_PRICES[canonical_pkg] = price_val
+    return success
+
+
 # ==========================================
 # Production Delivery Ledger Operations
 # ==========================================

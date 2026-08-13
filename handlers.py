@@ -94,6 +94,7 @@ from utils import (
     calculate_test_price,
     parse_test_order_packages,
     format_package_progress_summary,
+    format_missing_packages_summary,
     format_loader_card_summary,
     format_full_loader_order_card,
     build_loader_package_keyboard,
@@ -423,7 +424,7 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     try:
                         summary_msg = await context.bot.send_message(
                             chat_id=chat.id,
-                            text=format_package_progress_summary(parsed_init_pkg["packages"], known_total if known_total > 0 else None),
+                            text=format_missing_packages_summary(parsed_init_pkg["packages"]),
                             reply_to_message_id=message.message_id,
                             reply_markup=unk_kb
                         )
@@ -1342,13 +1343,20 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
     if session.get("is_unknown") and session.get("unknown_pkg"):
         price_val = float(text)
         pkg_name = session["unknown_pkg"]
+        canonical_pkg = normalize_package_alias(pkg_name)
+
+        # 1. Save package price to Price Database and reload memory cache
+        await update_single_package_price_in_db(canonical_pkg, price_val, updated_by_id=user.id if user else None)
+
+        # 2. Update order package progress & total price
         updated_items, new_total, has_unpriced = update_unknown_package_price(order.package_progress, pkg_name, price_val)
         updated_json = json.dumps(updated_items)
 
         await update_order_package_progress(order.id, updated_json)
         await update_order_price(order.id, f"{new_total:g}")
 
-        new_summary_block = format_package_progress_summary(updated_items, new_total)
+        # 3. Format refreshed admin summary & missing package keyboard
+        new_summary_block = format_missing_packages_summary(updated_items) if has_unpriced else format_package_progress_summary(updated_items, new_total)
         new_kb = get_unknown_package_keyboard(order.id, updated_items)
 
         target_msg_id = session.get("button_msg_id") or order.price_msg_id
@@ -1360,11 +1368,25 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
                     text=new_summary_block,
                     reply_markup=new_kb
                 )
-                logger.info(f"[UNKNOWN_PKG] Updated package '{pkg_name}' price to {price_val}$ on Order #{order.id}. New Total: {new_total}$.")
+                logger.info(f"[UNKNOWN_PKG] Updated package '{canonical_pkg}' price to {price_val}$ on Order #{order.id}. New Total: {new_total}$.")
             except Exception as e:
                 logger.warning(f"[UNKNOWN_PKG] Could not edit price message #{target_msg_id}: {e}")
 
-        # Delete prompt message
+        # 4. If all missing package prices have been added, refresh Loader Group keyboard automatically!
+        if not has_unpriced:
+            if order.loader_message_id and order.loader_group_id:
+                try:
+                    loader_kb = build_loader_package_keyboard(order.id, updated_items)
+                    await context.bot.edit_message_reply_markup(
+                        chat_id=order.loader_group_id,
+                        message_id=order.loader_message_id,
+                        reply_markup=loader_kb
+                    )
+                    logger.info(f"[UNKNOWN_PKG] Refreshed loader keyboard for Order #{order.id} after all missing package prices added.")
+                except Exception as e_lkb:
+                    logger.warning(f"[UNKNOWN_PKG] Could not update loader keyboard for Order #{order.id}: {e_lkb}")
+
+        # 5. Clean up prompt message and admin input message
         prompt_msg_id = session.get("prompt_msg_id")
         if prompt_msg_id:
             try:
