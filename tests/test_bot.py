@@ -3488,6 +3488,96 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         success = await deliver_order_by_id(MockBot(), order_id)
         self.assertFalse(success)
 
+    async def test_multi_order_explicit_cancellation_isolation(self):
+        """
+        Tests Section 8 requirement:
+        Create Order #236 and Order #277.
+        Trigger Wrong Password & Cancel on Order #277.
+        Verify Order #277 cancelled, Order #236 unchanged, ❌ reaction on Order #277 loader msg.
+        """
+        from database import (
+            create_order,
+            set_order_loader_message_id,
+            get_order_by_id
+        )
+        from handlers import customer_confirmation_callback_handler
+
+        # 1. Create Order #236
+        order_236 = await create_order(
+            email="cust236@gmail.com",
+            client_chat_id=-1001,
+            original_message_id=10,
+            package="10800",
+            raw_text="Email: cust236@gmail.com\n10800"
+        )
+        await set_order_loader_message_id(order_236.id, 2360, -10099)
+        order_236 = await get_order_by_id(order_236.id)
+
+        # 2. Create Order #277
+        order_277 = await create_order(
+            email="cust277@gmail.com",
+            client_chat_id=-1002,
+            original_message_id=20,
+            package="21600",
+            raw_text="Activision\nEmail: cust277@gmail.com\nPassword: P277\n21600"
+        )
+        await set_order_loader_message_id(order_277.id, 2770, -10099)
+        order_277 = await get_order_by_id(order_277.id)
+
+        # 3. Customer clicks ❌ Cancel Order on Order #277
+        sent_messages = []
+        sent_reactions = []
+
+        class MockQuery:
+            data = f"cust_confirm:pw_cancel:{order_277.id}:wrong_password"
+            message = type("Msg", (), {"caption": None})()
+
+            async def edit_message_text(self, text, parse_mode=None):
+                pass
+
+            async def edit_message_caption(self, caption, parse_mode=None):
+                pass
+
+            async def answer(self, text=None, show_alert=False):
+                pass
+
+        class MockBot:
+            async def send_message(self, chat_id, text, reply_to_message_id=None, parse_mode=None):
+                sent_messages.append({
+                    "chat_id": chat_id,
+                    "text": text,
+                    "reply_to_message_id": reply_to_message_id
+                })
+
+            async def set_message_reaction(self, chat_id, message_id, reaction=None, is_big=None):
+                sent_reactions.append({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reaction": reaction
+                })
+
+        mock_update = type("Update", (), {"callback_query": MockQuery()})()
+        mock_context = type("Context", (), {"bot": MockBot()})()
+
+        await customer_confirmation_callback_handler(mock_update, mock_context)
+
+        # 4. Verify Order #277 is CANCELLED and Order #236 is UNCHANGED
+        res_277 = await get_order_by_id(order_277.id)
+        res_236 = await get_order_by_id(order_236.id)
+
+        self.assertEqual(res_277.status, "CANCELLED")
+        self.assertEqual(res_236.status, "Pending")
+
+        # 5. Verify ❌ reaction on Order #277's loader message (2770) and NOT #236 (2360)
+        self.assertEqual(len(sent_reactions), 1)
+        self.assertEqual(sent_reactions[0]["message_id"], 2770)
+        self.assertNotEqual(sent_reactions[0]["message_id"], 2360)
+
+        # 6. Verify notification text explicitly mentions Order #277 and NOT #236
+        self.assertEqual(len(sent_messages), 1)
+        self.assertIn(f"Order #{order_277.id} has been cancelled by the customer.", sent_messages[0]["text"])
+        self.assertNotIn(f"#{order_236.id}", sent_messages[0]["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

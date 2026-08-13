@@ -784,7 +784,11 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             reaction_emoji = "🔄"
 
         elif action == "pw_cancel":
-            logger.info(f"[ORDER #{order.id}] Customer cancelled order.")
+            logger.info(f"[CANCEL] Customer requested cancellation for Order #{order.id}")
+            logger.info(f"[CANCEL] Loaded Order #{order.id}")
+            logger.info(f"[CANCEL] Loader Group: {loader_chat_id}")
+            logger.info(f"[CANCEL] Loader Message: {target_loader_msg_id}")
+
             await update_order_status(order.id, "CANCELLED")
             await update_order_issue_state(order.id, "CANCELLED", "wrong_password")
 
@@ -842,7 +846,9 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
                 fallback_emoji=None,
                 log_tag=f"[ORDER #{order.id}]"
             )
-            if not success:
+            if success and action == "pw_cancel":
+                logger.info(f"[CANCEL] ❌ reaction applied to Order #{order.id} loader message")
+            elif not success:
                 logger.warning(f"[ORDER #{order.id}] Failed to react to loader message.")
         except Exception:
             logger.warning(f"[ORDER #{order.id}] Failed to react to loader message.")
