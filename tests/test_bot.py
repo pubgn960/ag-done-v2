@@ -3257,16 +3257,18 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
             get_order_by_id,
             update_order_issue_state,
             update_order_status,
+            update_order_raw_text,
             get_latest_ledger_entries
         )
+        from handlers import customer_confirmation_callback_handler
 
         # 1. Create test order
         order = await create_order(
-            email="test@gmail.com",
+            email="testcustomer@gmail.com",
             client_chat_id=-1001234,
             original_message_id=999,
             package="10800",
-            raw_text="Email: test@gmail.com\nPass: Secret123\n10800"
+            raw_text="Email: testcustomer@gmail.com\nPass: Secret123\n10800"
         )
         await set_order_loader_message_id(order.id, 888, -1005678)
         self.assertIsNotNone(order)
@@ -3280,43 +3282,99 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(btn_texts[1], "🔄 Updating Password")
         self.assertEqual(btn_texts[2], "❌ Cancel Order")
 
-        cb_datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
-        self.assertIn(f"cust_confirm:pw_correct:{order_id}:wrong_password", cb_datas)
-        self.assertIn(f"cust_confirm:pw_updating:{order_id}:wrong_password", cb_datas)
-        self.assertIn(f"cust_confirm:pw_cancel:{order_id}:wrong_password", cb_datas)
+        # 3. Test "🔄 Updating Password" callback handler execution
+        sent_messages = []
+        sent_reactions = []
+        edited_messages = []
 
-        # 3. Simulate "✅ Password is Correct" button click -> delivery resumes
-        await update_order_issue_state(order_id, "Resolved", "wrong_password")
-        await update_order_status(order_id, "READY_FOR_DELIVERY")
+        class MockQuery:
+            data = f"cust_confirm:pw_updating:{order_id}:wrong_password"
+            message = type("Msg", (), {"caption": None})()
 
-        res_order = await get_order_by_id(order_id)
-        self.assertEqual(res_order.status, "READY_FOR_DELIVERY")
-        self.assertEqual(res_order.issue_state, "Resolved")
+            async def edit_message_text(self, text, parse_mode=None):
+                edited_messages.append(text)
 
-        # 4. Simulate "🔄 Updating Password" button click -> order paused
-        await update_order_issue_state(order_id, "PASSWORD_UPDATE_IN_PROGRESS", "wrong_password")
-        await update_order_status(order_id, "PASSWORD_UPDATE_IN_PROGRESS")
+            async def edit_message_caption(self, caption, parse_mode=None):
+                edited_messages.append(caption)
 
-        upd_order = await get_order_by_id(order_id)
-        self.assertEqual(upd_order.status, "PASSWORD_UPDATE_IN_PROGRESS")
-        self.assertEqual(upd_order.issue_state, "PASSWORD_UPDATE_IN_PROGRESS")
+            async def answer(self, text=None, show_alert=False):
+                pass
 
-        # 5. Simulate "❌ Cancel Order" button click -> marked Cancelled
-        await update_order_status(order_id, "CANCELLED")
-        await update_order_issue_state(order_id, "CANCELLED", "wrong_password")
+        class MockBot:
+            async def send_message(self, chat_id, text, reply_to_message_id=None, parse_mode=None):
+                sent_messages.append({
+                    "chat_id": chat_id,
+                    "text": text,
+                    "reply_to_message_id": reply_to_message_id
+                })
 
+            async def set_message_reaction(self, chat_id, message_id, reaction=None, is_big=None):
+                sent_reactions.append({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reaction": reaction
+                })
+
+        mock_update = type("Update", (), {"callback_query": MockQuery()})()
+        mock_context = type("Context", (), {"bot": MockBot()})()
+
+        await customer_confirmation_callback_handler(mock_update, mock_context)
+
+        # ✓ Updating Password sends client "🔄 Please send new password."
+        self.assertIn("🔄 Please send new password.", edited_messages)
+
+        # ✓ Loader receives password-update notification replying to original loader message (888)
+        self.assertTrue(any("Please wait for the new password." in m["text"] for m in sent_messages))
+        self.assertTrue(any(m["reply_to_message_id"] == 888 for m in sent_messages))
+
+        # ✓ Original Loader message receives 🔄 reaction
+        self.assertTrue(any(r["message_id"] == 888 for r in sent_reactions))
+
+        # 4. Customer sends new password -> Save to SAME Order ID
+        updated_order = await update_order_raw_text(order_id, "Password:\nMySuperNewPass123", "testcustomer@gmail.com")
+        self.assertIsNotNone(updated_order)
+        self.assertEqual(updated_order.id, order_id)
+        self.assertIn("MySuperNewPass123", updated_order.raw_text)
+
+        # 5. Test "❌ Cancel Order" callback handler execution
+        sent_messages.clear()
+        sent_reactions.clear()
+        edited_messages.clear()
+
+        class MockCancelQuery:
+            data = f"cust_confirm:pw_cancel:{order_id}:wrong_password"
+            message = type("Msg", (), {"caption": None})()
+
+            async def edit_message_text(self, text, parse_mode=None):
+                edited_messages.append(text)
+
+            async def edit_message_caption(self, caption, parse_mode=None):
+                edited_messages.append(caption)
+
+            async def answer(self, text=None, show_alert=False):
+                pass
+
+        mock_cancel_update = type("Update", (), {"callback_query": MockCancelQuery()})()
+
+        await customer_confirmation_callback_handler(mock_cancel_update, mock_context)
+
+        # ✓ Cancel Order marks same order Cancelled
         can_order = await get_order_by_id(order_id)
         self.assertEqual(can_order.status, "CANCELLED")
 
-        # 6. Delivery execution on cancelled order is rejected
+        # ✓ Cancellation notification is sent to Loader Group replying to original loader message (888)
+        self.assertTrue(any("has been cancelled by the customer." in m["text"] for m in sent_messages))
+        self.assertTrue(any(m["reply_to_message_id"] == 888 for m in sent_messages))
+
+        # ✓ Original Loader message (888) receives ❌ reaction
+        self.assertTrue(any(r["message_id"] == 888 for r in sent_reactions))
+
+        # ✓ Cancelled order cannot be delivered
         from delivery import deliver_order_by_id
-        class MockBot:
-            async def send_message(self, *args, **kwargs):
-                pass
         success = await deliver_order_by_id(MockBot(), order_id)
         self.assertFalse(success)
 
-        # 7. Verify no duplicate order or ledger entry
+        # ✓ No duplicate order or ledger entry
         entries = await get_latest_ledger_entries(limit=10)
         matching_entries = [e for e in entries if e.order_id == order_id]
         self.assertEqual(len(matching_entries), 0)

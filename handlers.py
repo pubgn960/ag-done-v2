@@ -769,14 +769,10 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             await update_order_issue_state(order.id, "PASSWORD_UPDATE_IN_PROGRESS", "wrong_password")
             await update_order_status(order.id, "PASSWORD_UPDATE_IN_PROGRESS")
 
-            cust_ack = (
-                "The customer is sending you an updated password.\n\n"
-                "Please wait for the updated password."
-            )
+            cust_ack = "🔄 Please send new password."
             loader_notify_text = (
                 "🔄 Customer is updating the password.\n\n"
-                "The customer is sending you an updated password.\n\n"
-                "Please wait for the updated password."
+                "Please wait for the new password."
             )
             reaction_emoji = "🔄"
 
