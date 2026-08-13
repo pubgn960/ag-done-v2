@@ -2695,5 +2695,167 @@ class TestPackageMultiplierExpansionEngine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await get_running_total_current(), 192.0)
 
 
+class TestProductionOrderParserV2RealCustomerSamples(unittest.TestCase):
+    """Test suite for Production Order Parser v2 using 18 real customer production samples."""
+
+    def test_sample_1(self):
+        from order_parser import parse_order_v2
+        sample = "991#\n***facebook*\n\nNick: Apodo en el juego:Jktxx03\n+584249290951\nContraseña: migordito0324\n\nCódigos\n46137364\n62673214\n74047761\n2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["customer_ref_id"], "991")
+        self.assertEqual(p["login_method"], "Facebook")
+        self.assertEqual(p["phone"], "+584249290951")
+        self.assertEqual(p["packages"][0]["package"], "2400")
+        self.assertEqual(len(p["recovery_codes"]), 3)
+
+    def test_sample_2(self):
+        from order_parser import parse_order_v2
+        sample = "992#\n\nFor@§ter0\nneiraalex19@gmail.com\n1995Karolyn\n\n10800"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["customer_ref_id"], "992")
+        self.assertEqual(p["email"], "neiraalex19@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "10800")
+
+    def test_sample_3(self):
+        from order_parser import parse_order_v2
+        sample = "993#\n\nWilveralexanderramos37@gmail.com\nRUTH97wrm\nKinataWINGIS\n5k"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "wilveralexanderramos37@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "5040")
+
+    def test_sample_4(self):
+        from order_parser import parse_order_v2
+        sample = "994#\n*Activision*\n\nNick: Apodo en el juego\nCorreo: jotapyp@gmail.com\nContraseña: Jordanelmejor23$\n\n5k"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["login_method"], "Activision")
+        self.assertEqual(p["email"], "jotapyp@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "5040")
+
+    def test_sample_5(self):
+        from order_parser import parse_order_v2
+        sample = "995#\n\nApodo : ^jefemaestro\nCorreo: arismendideivis130@gmail.com\n\nContraseña : ConorAris3223\n2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "arismendideivis130@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "2400")
+
+    def test_sample_6(self):
+        from order_parser import parse_order_v2
+        sample = "996#\n\nActivación\nN@R@(U\nqui15142023@gmail.com\nquintero12\n2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["login_method"], "Activision")
+        self.assertEqual(p["email"], "qui15142023@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "2400")
+
+    def test_sample_7(self):
+        from order_parser import parse_order_v2
+        sample = "997#\n\nNick LYCAN2303\n\nguaicargomez.14@hotmail.com\nClave: 04163346905\n2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "guaicargomez.14@hotmail.com")
+        self.assertEqual(p["packages"][0]["package"], "2400")
+
+    def test_sample_8(self):
+        from order_parser import parse_order_v2
+        sample = "998#\n\npalmaadalbert.31@gmail.com\nadal2425\nKinggato\n5k"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "palmaadalbert.31@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "5040")
+
+    def test_sample_9(self):
+        from order_parser import parse_order_v2
+        sample = "999#\n\nNick:Goat.Ʀaӄan\nstrangehuman922@gmail.com\nContraseña:e30165529\n2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "strangehuman922@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "2400")
+
+    def test_sample_10(self):
+        from order_parser import parse_order_v2
+        sample = "1000#\n*Activision*\n\nNick: G®££/\/G()°\nCorreo: braudyscalderon@gmail.com\nContraseña: calderon23*31\n5000+2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["login_method"], "Activision")
+        self.assertEqual(p["email"], "braudyscalderon@gmail.com")
+        pkgs = [item["package"] for item in p["packages"]]
+        self.assertIn("5000", pkgs)
+        self.assertIn("2400", pkgs)
+
+    def test_sample_11(self):
+        from order_parser import parse_order_v2
+        sample = "1#\n\nnestor_torrique99@hotmail.com\n\nManicuare2004\n\nBk Platinium\n5000"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "nestor_torrique99@hotmail.com")
+        self.assertEqual(p["packages"][0]["package"], "5000")
+        self.assertIn("5000", p["unknown_packages"])
+
+    def test_sample_12(self):
+        from order_parser import parse_order_v2
+        sample = "2#\n*Activision*\n\nNick: SASUKE\nCorreo: raidanarias17@gmail.com\nContraseña: 26745481ra.\n\n10800"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["login_method"], "Activision")
+        self.assertEqual(p["email"], "raidanarias17@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "10800")
+
+    def test_sample_13(self):
+        from order_parser import parse_order_v2
+        sample = "3#\n\nNick:\nGØW_Ҝєиîgth\n\nCorreo:\nkenigth10gaming@gmail.com\n\nContraseña:\nkeni.2811\n\n2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "kenigth10gaming@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "2400")
+
+    def test_sample_14(self):
+        from order_parser import parse_order_v2
+        sample = "4#\n\nCorreo\ndamianalejandro2020@outlook.es\n\nContraseña: manuelvivasgod\n\nNick:NS.Bigvivas20\n\nCódigos\n05597299\n09396956\n29985590\n\n2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "damianalejandro2020@outlook.es")
+        self.assertEqual(p["packages"][0]["package"], "2400")
+        self.assertEqual(len(p["recovery_codes"]), 3)
+
+    def test_sample_15(self):
+        from order_parser import parse_order_v2
+        sample = "5#\n\ngabrielcorcega40@gmail.com\ngato..28721\nApodo: GATO\n10800"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "gabrielcorcega40@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "10800")
+
+    def test_sample_16(self):
+        from order_parser import parse_order_v2
+        sample = "75#\n*facebook*\n\nNick:HG KENNY\nCorreo o número fb: kennyalexanderpay@gmail.com\nContraseña de fb:kenny00\n\nCódigos\n2534 6603\n3075 1980\n3568 0949\n\n5k"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["login_method"], "Facebook")
+        self.assertEqual(p["email"], "kennyalexanderpay@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "5040")
+        self.assertEqual(len(p["recovery_codes"]), 3)
+
+    def test_sample_17(self):
+        from order_parser import parse_order_v2
+        sample = "76#\n\nApodo: joker².²\nCorreo: ladeuxpalaciojosedavid@gmail.com\nContraseña: josedavid04\n2400"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "ladeuxpalaciojosedavid@gmail.com")
+        self.assertEqual(p["packages"][0]["package"], "2400")
+
+    def test_sample_18(self):
+        from order_parser import parse_order_v2
+        sample = "77#\n\nNick name F7/ Adsolutex.\n\nCorreo. mcallistercastrillon@icloud.com\n\nContraseña. Torrealba174.\n5k"
+        p = parse_order_v2(sample)
+        self.assertTrue(p["order_detected"])
+        self.assertEqual(p["email"], "mcallistercastrillon@icloud.com")
+        self.assertEqual(p["packages"][0]["package"], "5040")
+
+
 if __name__ == "__main__":
     unittest.main()

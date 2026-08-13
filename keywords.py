@@ -102,12 +102,8 @@ PHONE_REGEX = re.compile(
 
 def contains_order_keyword(text: Optional[str]) -> Tuple[bool, Optional[str]]:
     """
-    Multilingual Order Detection logic:
-    Requires ALL 4 conditions to be satisfied:
-    1. Platform Detection (Facebook, FB, Meta, Activision, etc.)
-    2. Email / Login Information (Email address, domain, or email field header like Correo)
-    3. Password / Credentials / Details (Password, Contraseña, Clave, Recovery, Códigos, Nick, etc.)
-    4. Package Detection (Catalog package, alias like 5k/10k/2.4k, multiplication like 10800*3, or package desc)
+    Production Order Detection logic v2:
+    Delegates to order_parser.parse_order_v2 for comprehensive detection.
 
     Returns:
         Tuple[bool, Optional[str]]: (is_valid, matched_platform_keyword)
@@ -115,39 +111,11 @@ def contains_order_keyword(text: Optional[str]) -> Tuple[bool, Optional[str]]:
     if not text:
         return False, None
 
-    from utils import parse_test_order_packages
+    from order_parser import parse_order_v2
+    parsed = parse_order_v2(text)
 
-    text_lower = text.lower()
-
-    # 1. Platform Detection
-    matched_platform = None
-    for p in SUPPORTED_PLATFORMS:
-        if re.search(r'\b' + re.escape(p) + r'\b', text_lower) or p in text_lower:
-            matched_platform = p
-            break
-
-    # 2. Login Information (Email address, domain, or email header keyword)
-    has_email = (
-        bool(EMAIL_REGEX.search(text))
-        or any(d in text_lower for d in SUPPORTED_EMAIL_DOMAINS)
-        or any(kw in text_lower for kw in EMAIL_KEYWORDS)
-    )
-
-    # 3. Password / Login Details
-    has_pwd = any(
-        kw in text_lower for kw in PASSWORD_KEYWORDS
-    )
-
-    # 4. Package Detection
-    parsed_pkg = parse_test_order_packages(text)
-    has_pkg = parsed_pkg is not None and len(parsed_pkg.get("packages", [])) > 0
-
-    # Primary Rule: Strict 4-condition match (Platform + Email + Pwd + Package)
-    if matched_platform and has_email and has_pwd and has_pkg:
-        return True, matched_platform
-
-    # Additional Fallback Rule: Valid Email + Valid Package (Even if platform or password keywords are missing)
-    if has_email and has_pkg:
-        return True, matched_platform or "facebook"
+    if parsed.get("order_detected"):
+        platform = parsed.get("login_method") or "facebook"
+        return True, platform.lower()
 
     return False, None

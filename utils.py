@@ -788,152 +788,28 @@ def calculate_delivered_packages_value(packages_str: str) -> Tuple[Optional[floa
 
 def parse_test_order_packages(order_text: Optional[str]) -> Optional[Dict[str, Any]]:
     """
-    Parses complete order text to detect BOTH known and unknown packages and quantities.
-    Normalizes all supported separators (+, comma, &, /, newline, spaces) into '+' before matching.
-    Preserves exact order of appearance in original text.
-
-    Returns:
-        Optional[Dict[str, Any]]: Structured dictionary with 'packages' list, 'known_total' float,
-        'has_unknown' bool, and 'total_price' float (if all priced), or None if no supported package is found.
+    Parses complete order text using Production Order Parser v2.
     """
     if not order_text:
         return None
 
-    # Isolate Order section first to prevent scanning entire message body (Recovery Codes, Passwords, etc.)
-    target_section = extract_order_section(order_text)
-    if target_section:
-        raw_text = target_section.lower().strip()
-    else:
-        email_and_pwd_headers = (
-            "email:", "mail:", "correo:", "correo electrónico:", "correo electronico:", "correo o número:", "correo o numero:", "correo o número fb:", "correo o numero fb:",
-            "password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:", "contraseña de fb:", "contrasena de fb:",
-            "recovery codes:", "recovery:", "códigos:", "codigos:", "uid:", "phone:"
-        )
-        if not any(k in order_text.lower() for k in email_and_pwd_headers):
-            raw_text = order_text.lower().strip()
-        else:
-            return None
+    from order_parser import parse_order_v2
+    parsed = parse_order_v2(order_text)
 
-    # 1. Normalize package aliases (e.g. 5k -> 5040, 10k -> 10800, 2.4k -> 2400, 2,4k -> 2400)
-    aliases_map = {
-        "5k": "5040",
-        "10k": "10800",
-        "2.4k": "2400",
-        "2,4k": "2400",
-        "10.8k": "10800",
-        "10,8k": "10800",
-        "5.04k": "5040",
-        "5,04k": "5040",
+    pkgs = parsed.get("packages", [])
+    if not pkgs:
+        return None
+
+    has_unknown = len(parsed.get("unknown_packages", [])) > 0
+    total = parsed.get("total_price")
+    known_total = total or sum((p.get("unit_price") or 0.0) for p in pkgs if p.get("known"))
+
+    return {
+        "packages": pkgs,
+        "known_total": round(known_total, 2),
+        "has_unknown": has_unknown,
+        "total_price": round(total, 2) if (total is not None and not has_unknown) else None
     }
-    for alias, target_pkg in sorted(aliases_map.items(), key=lambda x: -len(x[0])):
-        raw_text = re.sub(r'\b' + re.escape(alias) + r'\b', target_pkg, raw_text)
-
-    # 2. Normalize shorthand notation and thousands formatting (by descending package length/value)
-    for pkg_val in sorted(PACKAGE_PRICES.keys(), key=lambda x: (-len(x), -int(x))):
-        val_int = int(pkg_val)
-        fmt_comma = f"{val_int:,}"
-        raw_text = re.sub(r'\b' + re.escape(fmt_comma) + r'\b', pkg_val, raw_text)
-
-        if val_int >= 1000:
-            k_val = val_int / 1000.0
-            k_str = f"{k_val:g}k"
-            raw_text = re.sub(r'\b' + re.escape(k_str) + r'\b', pkg_val, raw_text)
-
-    # 3. Normalize spaces around quantity multipliers (e.g. '2400 x 2' -> '2400x2', '5k * 2' -> '5040*2', '10800*3' -> '10800*3')
-    raw_text = re.sub(r'\s*([*xX×])\s*', r'\1', raw_text)
-
-    # 4. Normalize ALL supported package separators (+, ,, &, /, newline, remaining whitespace) into '+'
-    raw_text = re.sub(r'[,&/\n\r+|]+', '+', raw_text)
-    raw_text = re.sub(r'\s+', '+', raw_text)
-
-    segments = [s.strip() for s in raw_text.split('+') if s.strip()]
-
-    detected = []
-    known_total = 0.0
-    has_unknown = False
-
-    segment_regex = re.compile(
-        r'^(?:'
-        r'(?P<num1>\d+)(?:cp)?[*xX×](?P<num2>\d+)(?:cp)?'
-        r'|'
-        r'(?P<pkg_standalone>\d+)(?:cp)?'
-        r')$',
-        re.IGNORECASE
-    )
-
-    for seg in segments:
-        match = segment_regex.match(seg)
-        if not match:
-            continue
-
-        gd = match.groupdict()
-        qty = 1
-        pkg = None
-
-        if gd.get("pkg_standalone"):
-            pkg = gd["pkg_standalone"]
-            qty = 1
-        elif gd.get("num1") and gd.get("num2"):
-            n1 = int(gd["num1"])
-            n2 = int(gd["num2"])
-
-            if str(n2) in TEST_PACKAGE_PRICES:
-                pkg = str(n2)
-                qty = n1
-            elif str(n1) in TEST_PACKAGE_PRICES:
-                pkg = str(n1)
-                qty = n2
-            else:
-                if n1 >= n2:
-                    pkg = str(n1)
-                    qty = n2
-                else:
-                    pkg = str(n2)
-                    qty = n1
-
-        if not pkg:
-            continue
-
-        unit_price = TEST_PACKAGE_PRICES.get(pkg)
-        is_known = (unit_price is not None)
-
-        if is_known:
-            for _ in range(qty):
-                known_total += unit_price
-                detected.append({
-                    "package": pkg,
-                    "qty": 1,
-                    "known": True,
-                    "unit_price": unit_price,
-                    "total": unit_price,
-                    "status": "Pending"
-                })
-        else:
-            has_cp = bool(re.search(r'cp', seg, re.IGNORECASE))
-            pkg_int = int(pkg)
-            if not has_cp and pkg_int < 400:
-                continue
-
-            has_unknown = True
-            for _ in range(qty):
-                detected.append({
-                    "package": pkg,
-                    "qty": 1,
-                    "known": False,
-                    "unit_price": None,
-                    "total": None,
-                    "status": "Unpriced"
-                })
-
-    if detected:
-        return {
-            "packages": detected,
-            "known_total": round(known_total, 2),
-            "has_unknown": has_unknown,
-            "total_price": round(known_total, 2) if not has_unknown else None
-        }
-
-    return None
 
 
 def calculate_test_price(order_text: Optional[str]) -> Optional[float]:
