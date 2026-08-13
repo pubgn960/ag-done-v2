@@ -3579,5 +3579,75 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(f"#{order_236.id}", sent_messages[0]["text"])
 
 
+class TestLoaderBotNotificationFilter(unittest.IsolatedAsyncioTestCase):
+    async def test_is_bot_system_notification_text_helper(self):
+        from utils import is_bot_system_notification_text
+
+        # Bot system notifications -> must return True
+        self.assertTrue(is_bot_system_notification_text("❌ Order Cancelled\n\nOrder #267 has been cancelled by the customer."))
+        self.assertTrue(is_bot_system_notification_text("🔄 Password Updated\n\nOrder #267\nOld Password: A\nNew Password: B"))
+        self.assertTrue(is_bot_system_notification_text("🔄 Customer is updating the password.\n\nPlease wait for the new password."))
+        self.assertTrue(is_bot_system_notification_text("📦 Delivered Package\n\n10800 CP delivered for Order #267."))
+        self.assertTrue(is_bot_system_notification_text("📊 Delivery Ledger\n\nBefore 64$\nNow 15.5$\nTotal 79.5$"))
+        self.assertTrue(is_bot_system_notification_text("⏳ Waiting for customer confirmation..."))
+        self.assertTrue(is_bot_system_notification_text("✅ Customer confirmed password"))
+
+        # Real loader inputs -> must return False
+        self.assertFalse(is_bot_system_notification_text("64"))
+        self.assertFalse(is_bot_system_notification_text("+10"))
+        self.assertFalse(is_bot_system_notification_text("-10"))
+        self.assertFalse(is_bot_system_notification_text("wrong password"))
+        self.assertFalse(is_bot_system_notification_text("wrong name"))
+        self.assertFalse(is_bot_system_notification_text("2fa"))
+
+    async def test_bot_cancellation_and_system_notifications_ignored(self):
+        from handlers import delivery_group_handler, price_input_text_handler
+
+        replied_text = []
+
+        class MockUser:
+            id = 999000
+            is_bot = True
+
+        class MockChat:
+            id = -100999
+            title = "Loader Group"
+
+        class MockReplyTo:
+            message_id = 555
+            text = "Order details"
+            caption = None
+
+        class MockMessage:
+            message_id = 556
+            from_user = MockUser()
+            chat = MockChat()
+            text = "❌ Order Cancelled\n\nOrder #267 has been cancelled by the customer.\n\nPlease stop this delivery."
+            caption = None
+            photo = None
+            document = None
+            reply_to_message = MockReplyTo()
+
+            async def reply_text(self, text, parse_mode=None, reply_to_message_id=None, reply_markup=None):
+                replied_text.append(text)
+
+        class MockBot:
+            id = 999000
+
+        mock_update = type("Update", (), {
+            "effective_user": MockUser(),
+            "effective_chat": MockChat(),
+            "effective_message": MockMessage()
+        })()
+        mock_context = type("Context", (), {"bot": MockBot()})()
+
+        # Run both handlers on bot notification message
+        await delivery_group_handler(mock_update, mock_context)
+        await price_input_text_handler(mock_update, mock_context)
+
+        # ✓ Verify NO reply text was sent (never triggers "❌ Invalid price")
+        self.assertEqual(len(replied_text), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

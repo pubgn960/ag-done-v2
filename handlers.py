@@ -109,6 +109,8 @@ from utils import (
     detect_loader_issue,
     build_customer_issue_keyboard,
     build_updated_raw_text_with_passwords,
+    is_bot_system_notification_text,
+    is_bot_user,
     has_valid_account_update_fields,
     validate_customer_update_for_issue,
     parse_bulk_prices_input,
@@ -183,7 +185,10 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     chat = update.effective_chat
     user = update.effective_user
 
-    if not message or not chat:
+    if not message or not chat or not user:
+        return
+
+    if is_bot_user(user, context):
         return
 
     user_id = user.id if user else None
@@ -1341,9 +1346,24 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
     message = update.effective_message
     chat = update.effective_chat
 
+    if not user or not message or not chat:
+        return
+
+    # CRITICAL SYSTEM RULE: Ignore ALL messages sent by the bot itself or any bot
+    if is_bot_user(user, context):
+        return
+
+    text = (message.text or "").strip()
+    if is_bot_system_notification_text(text):
+        return
+
     reply_to = message.reply_to_message
+    if not reply_to:
+        return
     reply_msg_id = reply_to.message_id
     rep_text = reply_to.text or reply_to.caption or ""
+    if is_bot_system_notification_text(rep_text):
+        return
 
     # 1. Match reply_to.message_id against active price prompt message ID
     target_order_id = None
@@ -2426,7 +2446,16 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
     chat = update.effective_chat
     user = update.effective_user
 
-    if not message or not chat:
+    if not message or not chat or not user:
+        return
+
+    # CRITICAL SYSTEM RULE: Ignore ALL messages sent by the bot itself or any bot
+    if is_bot_user(user, context):
+        return
+
+    text_content = message.text or message.caption or ""
+    if is_bot_system_notification_text(text_content):
+        logger.info(f"[LOADER] Ignored bot system notification message in Loader Group {chat.id}.")
         return
 
     user_id = user.id if user else None

@@ -1213,6 +1213,66 @@ def build_updated_raw_text_with_passwords(old_raw_text: str, new_input_text: str
     return "\n".join(new_lines)
 
 
+def is_bot_user(user: Any, context: Any = None) -> bool:
+    """
+    Safely checks if a user is a bot or matches the current application bot ID.
+    Compatible with unittest MagicMock instances and context=None.
+    """
+    if not user:
+        return False
+
+    is_bot_attr = getattr(user, "is_bot", False)
+    if is_bot_attr is True:
+        return True
+
+    if context:
+        bot = getattr(context, "bot", None)
+        if bot:
+            bot_id = getattr(bot, "id", None)
+            user_id = getattr(user, "id", None)
+            if isinstance(bot_id, int) and isinstance(user_id, int) and bot_id == user_id:
+                return True
+
+    return False
+
+
+def is_bot_system_notification_text(text: Any) -> bool:
+    """
+    Checks if a message text is a bot-generated system/status notification.
+    These notifications should never be processed as human loader inputs/replies.
+    """
+    if not isinstance(text, str):
+        return False
+
+    t_trimmed = text.strip()
+    t_lower = t_trimmed.lower()
+
+    notification_headers = [
+        "❌ order cancelled",
+        "❌ order record not found",
+        "🔄 password updated",
+        "🔄 customer is updating the password",
+        "🔄 customer updated the account details",
+        "⏳ waiting for customer",
+        "✅ customer confirmed",
+        "📦 delivered package",
+        "📊 delivery ledger",
+        "💰 price",
+        "⚠️ no active delivery session",
+        "⚠️ password verification required",
+        "⚠️ this order was already delivered"
+    ]
+
+    for header in notification_headers:
+        if header in t_lower:
+            return True
+
+    if t_trimmed.startswith(("❌ Order", "🔄 Customer", "🔄 Password", "⏳ Waiting", "✅ Customer", "📦 Delivered", "📊 Delivery")):
+        return True
+
+    return False
+
+
 def format_package_status_block(progress_data: Any, total_price: Optional[float] = None) -> str:
     """
     Formats the PACKAGE STATUS section of the Loader Order Card showing:
