@@ -489,26 +489,35 @@ TEST_PACKAGE_PRICES = PACKAGE_PRICES
 
 def reload_package_prices_cache(new_prices: Dict[str, float]) -> None:
     """Reloads in-memory package price cache immediately without restarting."""
-    global PACKAGE_PRICES
+    global PACKAGE_PRICES, SUPPORTED_PACKAGES
     PACKAGE_PRICES.clear()
     if new_prices:
         PACKAGE_PRICES.update(new_prices)
     else:
         PACKAGE_PRICES.update(TEST_PACKAGE_PRICES)
+    SUPPORTED_PACKAGES.clear()
+    SUPPORTED_PACKAGES.update(PACKAGE_PRICES.keys())
 
 
 def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
     """
     Parses and validates a bulk price update text block.
+    Performs UPSERT parsing (accepting existing and new packages).
     Supports formats:
       10800 64
+      108.000 563
+      96,000 503
       10800 = 64
       10800 : 64
       10800 -> 64
       10800 => 64
+      5k -> 34
+      5000 -> 34
     Strips noise tokens (CP, cp, $, ⚡, 🎉, etc.).
     Returns (price_map, None) on success, or (None, error_msg) on failure.
     """
+    from order_parser import normalize_package_alias
+
     if not text or not text.strip():
         return None, "❌ Empty input text."
 
@@ -532,16 +541,15 @@ def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Opti
 
         raw_pkg, raw_price = parts[0].strip(), parts[1].strip()
 
-        if not raw_pkg.isdigit():
+        # Remove thousands separators (. or ,) from package number e.g. 108.000 -> 108000, 96,000 -> 96000
+        pkg_clean = raw_pkg.replace('.', '').replace(',', '')
+        canonical_pkg = normalize_package_alias(pkg_clean)
+
+        if not canonical_pkg.isdigit():
             return None, f"❌ Unknown Package\n\n{raw_pkg}"
 
-        pkg_str = str(int(raw_pkg))
-
-        if pkg_str not in SUPPORTED_PACKAGES:
-            return None, f"❌ Unknown Package\n\n{pkg_str}"
-
-        if pkg_str in seen_packages:
-            return None, f"❌ Duplicate Package\n\n{pkg_str}"
+        if canonical_pkg in seen_packages:
+            return None, f"❌ Duplicate Package\n\n{canonical_pkg}"
 
         try:
             price_val = float(raw_price)
@@ -550,14 +558,11 @@ def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Opti
         except ValueError:
             return None, f"❌ Invalid Price\n\n{line}"
 
-        parsed_map[pkg_str] = price_val
-        seen_packages.add(pkg_str)
+        parsed_map[canonical_pkg] = price_val
+        seen_packages.add(canonical_pkg)
 
-    missing_packages = SUPPORTED_PACKAGES - seen_packages
-    if missing_packages:
-        sorted_missing = sorted(list(missing_packages), key=lambda x: int(x), reverse=True)
-        missing_text = "\n\n".join(sorted_missing)
-        return None, f"❌ Missing Packages\n\n{missing_text}"
+    if not parsed_map:
+        return None, "❌ No valid package prices found."
 
     return parsed_map, None
 
@@ -565,21 +570,23 @@ def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Opti
 def format_export_prices(price_map: Dict[str, float]) -> str:
     """
     Formats prices for export in standard format matching requirements:
-    Standard Packs first, blank line, Special Packs second.
+    Standard Packs first, blank line, Special Packs and any newly added packages second.
     """
     standard_order = ["10800", "5040", "2400", "880", "420", "80"]
-    special_order = [
-        "108000", "96000", "72000", "55200", "48000", "43200", "38400",
-        "24000", "21600", "19200", "16800", "14400", "12000", "9600", "7200", "4800"
-    ]
 
     def _fmt_price(val: float) -> str:
         return f"{int(val)}" if val.is_integer() else f"{val:g}"
 
-    std_lines = [f"{pkg} {_fmt_price(price_map.get(pkg, 0))}" for pkg in standard_order if pkg in price_map]
-    spc_lines = [f"{pkg} {_fmt_price(price_map.get(pkg, 0))}" for pkg in special_order if pkg in price_map]
+    std_lines = [f"{pkg} {_fmt_price(price_map[pkg])}" for pkg in standard_order if pkg in price_map]
 
-    return "\n".join(std_lines) + "\n\n" + "\n".join(spc_lines)
+    other_pkgs = [p for p in price_map.keys() if p not in standard_order]
+    other_pkgs_sorted = sorted(other_pkgs, key=lambda x: int(x) if x.isdigit() else 0, reverse=True)
+
+    spc_lines = [f"{pkg} {_fmt_price(price_map[pkg])}" for pkg in other_pkgs_sorted]
+
+    if std_lines and spc_lines:
+        return "\n".join(std_lines) + "\n\n" + "\n".join(spc_lines)
+    return "\n".join(std_lines or spc_lines)
 
 
 def _fmt_price_val(val: float) -> str:

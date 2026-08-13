@@ -1331,11 +1331,13 @@ async def get_all_package_prices_from_db() -> Dict[str, float]:
 
 async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_by_id: Optional[int] = None) -> bool:
     """
-    Atomically updates all package prices in the database in a single transaction.
-    Reloads in-memory cache upon success.
-    Rolls back completely if any database error occurs.
+    Atomically performs UPSERT for package prices in the database in a single transaction.
+    - If package exists: UPDATE price.
+    - If package does NOT exist: INSERT new PackagePrice record.
+    Reloads complete in-memory cache directly from the database upon success.
     """
     from utils import reload_package_prices_cache
+    from order_parser import normalize_package_alias
 
     async with AsyncSessionLocal() as session:
         try:
@@ -1344,9 +1346,10 @@ async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_
 
             now = datetime.now(timezone.utc)
 
-            for pkg, new_price in price_map.items():
-                old_p = old_prices.get(pkg)
-                stmt = select(PackagePrice).where(PackagePrice.package == pkg)
+            for raw_pkg, new_price in price_map.items():
+                canonical_pkg = normalize_package_alias(str(raw_pkg))
+                old_p = old_prices.get(canonical_pkg)
+                stmt = select(PackagePrice).where(PackagePrice.package == canonical_pkg)
                 existing = (await session.execute(stmt)).scalar_one_or_none()
                 if existing:
                     existing.price = new_price
@@ -1354,17 +1357,21 @@ async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_
                     existing.updated_at = now
                 else:
                     session.add(PackagePrice(
-                        package=pkg,
+                        package=canonical_pkg,
                         price=new_price,
                         updated_by=updated_by_id,
                         updated_at=now
                     ))
 
-                logger.info(f"[PRICE_UPDATE] Package {pkg}: Old Price {old_p} -> New Price {new_price} | Updated By #{updated_by_id} at {now.isoformat()}")
+                logger.info(f"[PRICE_UPDATE] Package {canonical_pkg}: Old Price {old_p} -> New Price {new_price} | Updated By #{updated_by_id}")
 
             await session.commit()
-            reload_package_prices_cache(price_map)
-            logger.info(f"[PRICE_UPDATE] Successfully updated {len(price_map)} package prices in database.")
+
+            # Reload complete DB price map into cache
+            res_all = await session.execute(select(PackagePrice))
+            all_db_prices = {p.package: p.price for p in res_all.scalars().all()}
+            reload_package_prices_cache(all_db_prices)
+            logger.info(f"[PRICE_UPDATE] Successfully upserted {len(price_map)} package prices in database. Total in DB: {len(all_db_prices)}.")
             return True
         except Exception as e:
             await session.rollback()
@@ -1374,21 +1381,13 @@ async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_
 
 async def update_single_package_price_in_db(pkg: str, price_val: float, updated_by_id: Optional[int] = None) -> bool:
     """
-    Updates price for a single package in DB and reloads in-memory cache.
+    Updates price for a single package in DB via UPSERT and reloads in-memory cache.
     Canonical package alias normalization is applied.
     """
     from order_parser import normalize_package_alias
     canonical_pkg = normalize_package_alias(pkg)
 
-    all_prices = await get_all_package_prices_from_db()
-    if not all_prices:
-        from utils import PACKAGE_PRICES
-        all_prices = dict(PACKAGE_PRICES)
-    all_prices[canonical_pkg] = price_val
-
-    success = await bulk_update_package_prices_in_db(all_prices, updated_by_id=updated_by_id)
-    from utils import PACKAGE_PRICES
-    PACKAGE_PRICES[canonical_pkg] = price_val
+    success = await bulk_update_package_prices_in_db({canonical_pkg: price_val}, updated_by_id=updated_by_id)
     return success
 
 

@@ -1566,9 +1566,11 @@ async def bulk_price_update_text_handler(update: Update, context: ContextTypes.D
         if success:
             user_ref = f"@{user.username}" if user.username else f"User #{user.id}"
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            cnt = len(price_map)
+            cnt_str = f"{cnt} Package{'s' if cnt != 1 else ''} Updated"
             success_msg = (
                 "✅ <b>Price List Updated Successfully</b>\n\n"
-                "<b>22 Packages Updated</b>\n\n"
+                f"<b>{cnt_str}</b>\n\n"
                 f"<b>Updated By:</b>\n{user_ref}\n\n"
                 f"<b>Updated At:</b>\n{now_str}"
             )

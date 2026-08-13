@@ -1630,11 +1630,11 @@ class TestBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
 
         initial_prices = await get_all_package_prices_from_db()
 
-        # 1. Unknown Package
-        _, err1 = parse_bulk_prices_input("9999 100")
+        # 1. Non-numeric Package
+        _, err1 = parse_bulk_prices_input("abc 100")
         self.assertIsNotNone(err1)
         self.assertIn("❌ Unknown Package", err1)
-        self.assertIn("9999", err1)
+        self.assertIn("abc", err1)
 
         # 2. Invalid Price
         _, err2 = parse_bulk_prices_input("10800 abc")
@@ -1647,14 +1647,14 @@ class TestBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(err3)
         self.assertIn("❌ Duplicate Package", err3)
 
-        # 4. Missing Packages
+        # 4. Partial UPSERT valid input (accepted as valid partial price map)
         partial_text = "10800 64\n5040 33"
-        _, err4 = parse_bulk_prices_input(partial_text)
-        self.assertIsNotNone(err4)
-        self.assertIn("❌ Missing Packages", err4)
-        self.assertIn("2400", err4)
+        price_map, err4 = parse_bulk_prices_input(partial_text)
+        self.assertIsNone(err4)
+        self.assertEqual(len(price_map), 2)
+        self.assertEqual(price_map["10800"], 64.0)
 
-        # Verify DB remained untouched
+        # Verify DB remained untouched before execution
         after_prices = await get_all_package_prices_from_db()
         self.assertEqual(initial_prices, after_prices)
 
@@ -3154,6 +3154,95 @@ class TestMissingPackageWorkflowFix(unittest.IsolatedAsyncioTestCase):
         ]
         kb = get_unknown_package_keyboard(102, items)
         self.assertIsNone(kb)
+
+
+class TestUpsertBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
+    """Regression test suite for Fix /updateprices - UPSERT & New Package Prices."""
+
+    async def asyncSetUp(self):
+        from database import DEFAULT_PACKAGE_PRICES
+        self._orig_prices = dict(DEFAULT_PACKAGE_PRICES)
+
+    async def asyncTearDown(self):
+        from database import AsyncSessionLocal, PackagePrice, DEFAULT_PACKAGE_PRICES
+        from sqlalchemy import delete
+        from utils import reload_package_prices_cache
+        async with AsyncSessionLocal() as s:
+            await s.execute(delete(PackagePrice))
+            for k, v in DEFAULT_PACKAGE_PRICES.items():
+                s.add(PackagePrice(package=k, price=v))
+            await s.commit()
+        reload_package_prices_cache(DEFAULT_PACKAGE_PRICES)
+
+    async def test_upsert_bulk_update_complete_flow(self):
+        from utils import parse_bulk_prices_input, parse_test_order_packages, get_unknown_package_keyboard
+        from database import bulk_update_package_prices_in_db, get_all_package_prices_from_db
+
+        # 1. Update existing package price + Insert new package price in same /updateprices
+        update_text = """
+        10800 67
+        5040 34
+        2400 16.5
+        108000 563
+        96,000 503
+        72.000 375
+        55200 300
+        48000 31
+        38400 250
+        999000 750
+        """
+        price_map, err = parse_bulk_prices_input(update_text)
+        self.assertIsNone(err)
+        self.assertIsNotNone(price_map)
+
+        # Verify thousands separator normalization
+        self.assertEqual(price_map.get("96000"), 503.0)
+        self.assertEqual(price_map.get("72000"), 375.0)
+        self.assertEqual(price_map.get("108000"), 563.0)
+        self.assertEqual(price_map.get("999000"), 750.0)
+        self.assertEqual(price_map.get("10800"), 67.0)
+
+        # Save to DB & Cache
+        success = await bulk_update_package_prices_in_db(price_map, updated_by_id=12345)
+        self.assertTrue(success)
+
+        # 2. Cache refresh after /updateprices (immediate recognition without restart)
+        db_prices = await get_all_package_prices_from_db()
+        self.assertEqual(db_prices.get("108000"), 563.0)
+        self.assertEqual(db_prices.get("96000"), 503.0)
+        self.assertEqual(db_prices.get("72000"), 375.0)
+        self.assertEqual(db_prices.get("999000"), 750.0)
+
+        # 3. New order containing 108000, 96000, 72000 recognized immediately
+        order_msg = (
+            "Facebook\n\n"
+            "Email:\ntestcustomer@gmail.com\n\n"
+            "Password:\nPass1234\n\n"
+            "Order:\n108.000+96.000+72,000"
+        )
+        p = parse_test_order_packages(order_msg)
+        self.assertIsNotNone(p)
+        self.assertFalse(p["has_unknown"])
+        self.assertEqual(p["total_price"], 1441.0)
+
+        # New package no longer triggers Add Price
+        kb = get_unknown_package_keyboard(99, p["packages"])
+        self.assertIsNone(kb)
+
+        # 4. Alias 5000 / 5k / 5040 behavior unchanged
+        p_alias = parse_test_order_packages("Email: u@gmail.com\nPass: p\n5k+5000")
+        self.assertIsNotNone(p_alias)
+        self.assertFalse(p_alias["has_unknown"])
+        self.assertEqual(p_alias["total_price"], 68.0)
+
+        # 5. Genuinely unknown package still triggers Missing Package flow
+        p_unk = parse_test_order_packages("Email: u@gmail.com\nPass: p\n888777")
+        self.assertIsNotNone(p_unk)
+        self.assertTrue(p_unk["has_unknown"])
+        kb_unk = get_unknown_package_keyboard(99, p_unk["packages"])
+        self.assertIsNotNone(kb_unk)
+        btn_texts = [b.text for r in kb_unk.inline_keyboard for b in r]
+        self.assertIn("✏️ Add Price 888777", btn_texts)
 
 
 if __name__ == "__main__":
