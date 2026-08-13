@@ -586,32 +586,17 @@ def _fmt_price_val(val: float) -> str:
 
 def format_ledger_entry_message(before: float, now: float, total: float) -> str:
     """
-    Formats standard Delivery Ledger notice:
-    ━━━━━━━━━━━━━━━━━━
+    Formats standard Delivery Ledger notice in exact 3-line format:
+    Before 64$
+    Now 15.5$
+    Total 79.5$
 
-    📊 Delivery Ledger
-
-    Before
-    16$
-
-    Now
-    64$
-
-    Total
-    80$
-
-    ━━━━━━━━━━━━━━━━━━
+    No heading, no emojis, no extra blank lines, no extra text.
     """
     return (
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "📊 <b>Delivery Ledger</b>\n\n"
-        "Before\n"
-        f"{_fmt_price_val(before)}$\n\n"
-        "Now\n"
-        f"{_fmt_price_val(now)}$\n\n"
-        "Total\n"
-        f"{_fmt_price_val(total)}$\n\n"
-        "━━━━━━━━━━━━━━━━━━"
+        f"Before {_fmt_price_val(before)}$\n"
+        f"Now {_fmt_price_val(now)}$\n"
+        f"Total {_fmt_price_val(total)}$"
     )
 
 

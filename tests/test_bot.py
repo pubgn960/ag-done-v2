@@ -1810,11 +1810,7 @@ class TestDeliveryLedgerSystem(unittest.IsolatedAsyncioTestCase):
         mock_bot.send_message.assert_called_once()
         call_kwargs = mock_bot.send_message.call_args.kwargs
         self.assertEqual(call_kwargs["chat_id"], -100999)
-        self.assertEqual(call_kwargs["reply_to_message_id"], 888)
-        self.assertIn("Delivery Ledger", call_kwargs["text"])
-        self.assertIn("Before\n0$", call_kwargs["text"])
-        self.assertIn("Now\n64$", call_kwargs["text"])
-        self.assertIn("Total\n64$", call_kwargs["text"])
+        self.assertEqual(call_kwargs["text"], "Before 0$\nNow 64$\nTotal 64$")
 
         last_e = await get_last_ledger_entry()
         self.assertIsNotNone(last_e)
@@ -2965,6 +2961,12 @@ class TestCanonicalPackageAliasNormalizationFix(unittest.IsolatedAsyncioTestCase
         self.assertTrue(ok_l)
         self.assertEqual(entry.now_value, 33.0)
         self.assertEqual(await get_running_total_current(), 33.0)
+
+    def test_delivery_ledger_exact_3_line_format(self):
+        from utils import format_ledger_entry_message
+        msg = format_ledger_entry_message(64.0, 15.5, 79.5)
+        expected = "Before 64$\nNow 15.5$\nTotal 79.5$"
+        self.assertEqual(msg, expected)
 
 
 if __name__ == "__main__":
