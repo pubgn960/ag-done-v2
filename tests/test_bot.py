@@ -3789,5 +3789,82 @@ class TestFlexibleOrderDetection(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(r2["order_detected"])
 
 
+class TestClientReactionAndMessageEditFilter(unittest.IsolatedAsyncioTestCase):
+    async def test_reaction_updates_ignored_by_edited_message_handler(self):
+        from handlers import edited_message_handler, BOT_SETTINGS
+        from unittest.mock import AsyncMock
+
+        replied_messages = []
+
+        class MockUser:
+            id = 1573531032  # Super Admin ID
+
+        class MockChat:
+            id = -100123456
+
+        class MockEffectiveMessage:
+            message_id = 1475
+
+        class MockUpdate:
+            edited_message = None
+            message_reaction = type("Reaction", (), {})()
+            message_reaction_count = None
+            effective_message = MockEffectiveMessage()
+            effective_chat = MockChat()
+            effective_user = MockUser()
+
+        BOT_SETTINGS["source_group_id"] = -100123456
+
+        mock_update = MockUpdate()
+        mock_context = type("Context", (), {"bot": type("Bot", (), {"id": 999000})()})()
+
+        # Run handler on reaction update
+        await edited_message_handler(mock_update, mock_context)
+
+        # ✓ Verify no reply notice was sent
+        self.assertEqual(len(replied_messages), 0)
+
+    async def test_genuine_customer_edited_message_triggers_manual_placement_notice(self):
+        from handlers import edited_message_handler, BOT_SETTINGS
+
+        replied_messages = []
+
+        class MockUser:
+            id = 999888777  # Normal Customer ID (not admin/delivery)
+
+        class MockChat:
+            id = -100123456
+
+        class MockEditedMessage:
+            message_id = 1475
+            text = "10800"
+
+            async def reply_text(self, text, reply_to_message_id=None):
+                replied_messages.append({
+                    "text": text,
+                    "reply_to_message_id": reply_to_message_id
+                })
+
+        class MockUpdate:
+            edited_message = MockEditedMessage()
+            message_reaction = None
+            message_reaction_count = None
+            effective_message = MockEditedMessage()
+            effective_chat = MockChat()
+            effective_user = MockUser()
+
+        BOT_SETTINGS["source_group_id"] = -100123456
+
+        mock_update = MockUpdate()
+        mock_context = type("Context", (), {"bot": type("Bot", (), {"id": 999000})()})()
+
+        await edited_message_handler(mock_update, mock_context)
+
+        # ✓ Verify manual placement notice was sent for genuine customer message edit
+        self.assertEqual(len(replied_messages), 1)
+        self.assertIn("This order will be placed again manually wait for team", replied_messages[0]["text"])
+        self.assertEqual(replied_messages[0]["reply_to_message_id"], 1475)
+
+
 if __name__ == "__main__":
     unittest.main()

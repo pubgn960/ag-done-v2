@@ -482,14 +482,33 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def edited_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Monitors edited messages in Group 1 (Client Group).
-    When a normal customer edits their order message, informs the customer that the order will be placed manually.
-    Ignores edits from Super Admins and Delivery Users.
+    When a normal customer edits their order message content, informs the customer that the order will be placed manually.
+    Ignores reaction updates (❤️, 👍, ❌, 🔥, etc.) and edits from Super Admins, Delivery Users, or Bots.
     """
-    message = update.edited_message or update.effective_message
+    if not update:
+        return
+
+    # CRITICAL RULE: Reaction updates (message_reaction / message_reaction_count) MUST be ignored!
+    if getattr(update, "message_reaction", None) is not None or getattr(update, "message_reaction_count", None) is not None:
+        msg_id = update.effective_message.message_id if update.effective_message else "Unknown"
+        logger.info(f"[CLIENT] Reaction update ignored for message #{msg_id}.")
+        return
+
+    # Must be a genuine edited_message update from Telegram
+    if not getattr(update, "edited_message", None):
+        if update.effective_message:
+            logger.info(f"[CLIENT] Reaction update ignored for message #{update.effective_message.message_id}.")
+        return
+
+    message = update.edited_message
     chat = update.effective_chat
     user = update.effective_user
 
-    if not message or not chat:
+    if not message or not chat or not user:
+        return
+
+    # Ignore Bot, Super Admin, and Delivery User reactions/edits
+    if is_bot_user(user, context):
         return
 
     user_id = user.id if user else None
@@ -500,16 +519,15 @@ async def edited_message_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not is_client_group:
         return
 
-    user_id = user.id if user else None
     if user_id and (is_super_admin(user_id) or is_delivery_user(user_id)):
         return
 
-    logger.info(f"[CLIENT] Customer edited message {message.message_id} in Client Group {chat.id}.")
+    logger.info(f"[CLIENT] Customer edited message #{message.message_id}.")
 
     reply_text = "This order will be placed again manually wait for team"
     try:
         await message.reply_text(reply_text, reply_to_message_id=message.message_id)
-        logger.info(f"[CLIENT] Sent manual placement notice to customer for edited message {message.message_id}.")
+        logger.info(f"[CLIENT] Sent manual placement notice to customer for edited message #{message.message_id}.")
     except Exception as e:
         logger.exception(f"[CLIENT] Failed to send manual placement notice for edited message: {e}")
 
