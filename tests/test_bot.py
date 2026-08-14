@@ -3649,5 +3649,75 @@ class TestLoaderBotNotificationFilter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(replied_text), 0)
 
 
+class TestDynamicDeliveryPricingAfterUpdatePrices(unittest.IsolatedAsyncioTestCase):
+    async def test_updateprices_updates_delivery_caption_and_ledger(self):
+        from database import bulk_update_package_prices_in_db, DEFAULT_PACKAGE_PRICES
+        from utils import (
+            format_delivered_packages_caption,
+            calculate_delivered_packages_value,
+            PACKAGE_PRICES,
+            reload_package_prices_cache
+        )
+
+        # 1. Update price for 2400 CP from 16 to 15.5
+        success = await bulk_update_package_prices_in_db({"2400": 15.5}, updated_by_id=1573531032)
+        self.assertTrue(success)
+        self.assertEqual(PACKAGE_PRICES["2400"], 15.5)
+
+        # 2. Verify Delivered Package caption uses current price 15.5$ even if item has stale unit_price 16.0
+        items_with_stale_price = [{"package": "2400", "qty": 1, "unit_price": 16.0, "status": "Pending"}]
+        caption = format_delivered_packages_caption(items_with_stale_price)
+        self.assertIn("📦 Delivered Package", caption)
+        self.assertIn("✅ 2400 CP", caption)
+        self.assertIn("💰 Price: 15.5$", caption)
+        self.assertNotIn("💰 Price: 16$", caption)
+
+        # 3. Verify Delivery Ledger calculation uses current price 15.5
+        ledger_val, is_known = calculate_delivered_packages_value("2400")
+        self.assertTrue(is_known)
+        self.assertEqual(ledger_val, 15.5)
+
+        # Cleanup: Restore default package prices
+        await bulk_update_package_prices_in_db(DEFAULT_PACKAGE_PRICES, updated_by_id=1573531032)
+
+    async def test_multi_package_and_partial_delivery_pricing_after_update(self):
+        from database import bulk_update_package_prices_in_db, DEFAULT_PACKAGE_PRICES
+        from utils import (
+            format_delivered_packages_caption,
+            calculate_delivered_packages_value,
+            PACKAGE_PRICES
+        )
+
+        # Update 10800 = 67.0 and 2400 = 15.5
+        await bulk_update_package_prices_in_db({"10800": 67.0, "2400": 15.5}, updated_by_id=1573531032)
+        self.assertEqual(PACKAGE_PRICES["10800"], 67.0)
+        self.assertEqual(PACKAGE_PRICES["2400"], 15.5)
+
+        # Multi-package delivery caption (10800 + 2400 -> 67 + 15.5 = 82.5$)
+        multi_items = [
+            {"package": "10800", "qty": 1, "status": "Pending"},
+            {"package": "2400", "qty": 1, "status": "Pending"}
+        ]
+        caption = format_delivered_packages_caption(multi_items)
+        self.assertIn("📦 Delivered Package(s)", caption)
+        self.assertIn("✅ 10800 CP", caption)
+        self.assertIn("✅ 2400 CP", caption)
+        self.assertIn("💰 Price: 82.5$", caption)
+
+        # Multi-package delivery ledger value
+        ledger_val, is_known = calculate_delivered_packages_value("10800+2400")
+        self.assertTrue(is_known)
+        self.assertEqual(ledger_val, 82.5)
+
+        # Partial delivery caption (2400 only -> 15.5$)
+        partial_items = [{"package": "2400", "qty": 1, "status": "Pending"}]
+        p_caption = format_delivered_packages_caption(partial_items)
+        self.assertIn("📦 Delivered Package", p_caption)
+        self.assertIn("💰 Price: 15.5$", p_caption)
+
+        # Cleanup: Restore default package prices
+        await bulk_update_package_prices_in_db(DEFAULT_PACKAGE_PRICES, updated_by_id=1573531032)
+
+
 if __name__ == "__main__":
     unittest.main()

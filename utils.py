@@ -793,11 +793,20 @@ def calculate_delivered_packages_value(packages_str: str) -> Tuple[Optional[floa
     total_val = 0.0
     all_known = True
 
+    from order_parser import normalize_package_alias
+
     for p in parsed["packages"]:
         pkg_name = p.get("package")
         qty = p.get("qty", 1)
-        if p.get("known") and pkg_name in PACKAGE_PRICES:
-            unit_price = PACKAGE_PRICES[pkg_name]
+        canonical_pkg = normalize_package_alias(str(pkg_name))
+
+        unit_price = PACKAGE_PRICES.get(canonical_pkg)
+        if unit_price is None:
+            unit_price = PACKAGE_PRICES.get(str(pkg_name))
+        if unit_price is None:
+            unit_price = p.get("unit_price")
+
+        if unit_price is not None:
             total_val += unit_price * qty
         else:
             all_known = False
@@ -1406,12 +1415,20 @@ def format_delivered_packages_caption(items: Any) -> str:
     has_unpriced = False
 
     for item in item_list:
-        pkg_name = item.get("package", "")
+        pkg_name = str(item.get("package", "")).strip()
         qty = item.get("qty", 1)
-        unit_price = item.get("unit_price")
 
+        # Dynamic price resolution: Always look up the CURRENT price from PACKAGE_PRICES first!
+        from order_parser import normalize_package_alias
+        canonical_pkg = normalize_package_alias(pkg_name)
+
+        unit_price = PACKAGE_PRICES.get(canonical_pkg)
         if unit_price is None:
-            unit_price = get_test_price(str(pkg_name))
+            unit_price = PACKAGE_PRICES.get(pkg_name)
+        if unit_price is None:
+            unit_price = item.get("unit_price")
+        if unit_price is None:
+            unit_price = get_test_price(pkg_name)
 
         if unit_price is not None:
             session_price += unit_price * qty
