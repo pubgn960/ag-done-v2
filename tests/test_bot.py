@@ -3719,5 +3719,75 @@ class TestDynamicDeliveryPricingAfterUpdatePrices(unittest.IsolatedAsyncioTestCa
         await bulk_update_package_prices_in_db(DEFAULT_PACKAGE_PRICES, updated_by_id=1573531032)
 
 
+class TestFlexibleOrderDetection(unittest.IsolatedAsyncioTestCase):
+    async def test_exact_customer_yandex_order_sample(self):
+        from order_parser import parse_order_v2
+
+        sample_msg = (
+            "Login\n\n"
+            "Raphiniels@yandex.ru\n\n"
+            "Password\n\n"
+            "powered124\n\n"
+            "Nickname\n\n"
+            "Raphaskill\n\n"
+            "7200cp"
+        )
+
+        parsed = parse_order_v2(sample_msg)
+
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["email"].lower(), "raphiniels@yandex.ru")
+        self.assertEqual(parsed["password"], "powered124")
+        self.assertEqual(parsed["username"], "Raphaskill")
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "7200")
+
+    async def test_label_and_cp_format_variations(self):
+        from order_parser import parse_order_v2
+
+        # 1. Colon-separated format with 7200 CP
+        v1 = parse_order_v2("Login: email@gmail.com\nPassword: abc123\nNickname: Player\n7200 CP")
+        self.assertTrue(v1["order_detected"])
+        self.assertEqual(v1["email"], "email@gmail.com")
+        self.assertEqual(v1["password"], "abc123")
+        self.assertEqual(v1["username"], "Player")
+        self.assertEqual(v1["packages"][0]["package"], "7200")
+
+        # 2. Spanish format with CP: 7200 and @outlook.es
+        v2 = parse_order_v2("Correo\nusuario@outlook.es\nContraseña\nmiClave123\nApodo\nMiApodo\nCP: 7200")
+        self.assertTrue(v2["order_detected"])
+        self.assertEqual(v2["email"], "usuario@outlook.es")
+        self.assertEqual(v2["password"], "miClave123")
+        self.assertEqual(v2["username"], "MiApodo")
+        self.assertEqual(v2["packages"][0]["package"], "7200")
+
+        # 3. Thousands separator (7.200) with @icloud.com
+        v3 = parse_order_v2("Login\nuser@icloud.com\nPass\npass123\nIGN\nPlayer1\n7.200")
+        self.assertTrue(v3["order_detected"])
+        self.assertEqual(v3["email"], "user@icloud.com")
+        self.assertEqual(v3["password"], "pass123")
+        self.assertEqual(v3["username"], "Player1")
+        self.assertEqual(v3["packages"][0]["package"], "7200")
+
+        # 4. Comma thousands separator (7,200) with @proton.me
+        v4 = parse_order_v2("E-mail\nuser@proton.me\nClave\npass456\nNombre\nPlayer2\n7,200cp.")
+        self.assertTrue(v4["order_detected"])
+        self.assertEqual(v4["email"], "user@proton.me")
+        self.assertEqual(v4["password"], "pass456")
+        self.assertEqual(v4["username"], "Player2")
+        self.assertEqual(v4["packages"][0]["package"], "7200")
+
+    async def test_false_positive_prevention(self):
+        from order_parser import parse_order_v2
+
+        # Random chat message with email only -> must not detect as order
+        r1 = parse_order_v2("Contact us at info@example.com for support")
+        self.assertFalse(r1["order_detected"])
+
+        # Random message with number only -> must not detect as order
+        r2 = parse_order_v2("The score was 7200 points in the game")
+        self.assertFalse(r2["order_detected"])
+
+
 if __name__ == "__main__":
     unittest.main()

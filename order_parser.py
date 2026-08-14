@@ -284,10 +284,12 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
         if EMAIL_REGEX.search(l_strip):
             ignored_lines.add(idx)
             continue
-        if re.match(r'^(?:correo\s*o\s*número\s*fb|correo\s*o\s*numero\s*fb|correo\s*o\s*número|correo\s*o\s*numero|correo\s*electrónico|correo\s*electronico|correo|email|e-mail|mail)\s*[:=\.\-]?$', l_lower):
+        if re.match(r'^(?:login|email|e-mail|mail|correo\s*o\s*número\s*fb|correo\s*o\s*numero\s*fb|correo\s*o\s*número|correo\s*o\s*numero|correo\s*electrónico|correo\s*electronico|correo)\s*[:=\.\-]?$', l_lower) or any(l_lower.startswith(h) for h in ("login:", "email:", "e-mail:", "correo:", "mail:")):
             ignored_lines.add(idx)
             val = line.split(":", 1)[-1].strip() if ":" in line else ""
-            if not val:
+            if val and EMAIL_REGEX.search(val):
+                email = EMAIL_REGEX.search(val).group(0).lower().rstrip(".,;!")
+            elif not val or val.lower() in ("login", "email", "e-mail", "mail", "correo"):
                 next_line_is_email = True
             continue
 
@@ -305,14 +307,22 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             continue
 
         # Username Headers
-        if re.match(r'^(?:nick\s*name|nick|apodo\s*en\s*el\s*juego|apodo|usuario|ign|nombre|ign\s*"nick")\s*[:=\.\-]?$', l_lower) or "ign" in l_lower or l_lower.startswith("nick"):
+        if re.match(r'^(?:nickname|nick\s*name|nick|apodo\s*en\s*el\s*juego|apodo|username|user\s*name|usuario|ign|nombre|ign\s*"nick")\s*[:=\.\-]?$', l_lower) or "ign" in l_lower or any(l_lower.startswith(h) for h in ("nickname:", "nick:", "nick name:", "ign:", "username:", "apodo:", "nombre:", "usuario:", "nickname ", "nick ")):
             ignored_lines.add(idx)
             val = line.split(":", 1)[-1].strip() if ":" in line else line
             if "ign" in l_lower and ":" in line:
                 val = line.split(":", 1)[-1].strip()
             elif l_lower.startswith("nick ") and ":" not in line:
                 val = line[5:].strip()
-            if val and val.lower() not in ("nick", "apodo", "apodo en el juego", "nick name", "nick:", "ign"):
+            elif l_lower.startswith("nickname ") and ":" not in line:
+                val = line[9:].strip()
+
+            header_kw = (
+                "nickname", "nick", "nick name", "apodo", "apodo en el juego", "username", "user name",
+                "usuario", "ign", "nombre", "ign \"nick\"", "nickname:", "nick:", "apodo:", "username:", "ign:"
+            )
+
+            if val and val.lower() not in header_kw:
                 if "apodo en el juego:" in val.lower():
                     val = val.split(":", 1)[-1].strip()
                 if val:
@@ -322,22 +332,43 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             continue
 
         # Password Headers
-        if re.match(r'^(?:password|pass|pwd|contraseña\s*de\s*fb|contrasena\s*de\s*fb|contraseña|contrasena|clave)\s*[:=\.\-]?$', l_lower):
+        if re.match(r'^(?:password|pass|pwd|contraseña\s*de\s*fb|contrasena\s*de\s*fb|contraseña|contrasena|clave)\s*[:=\.\-]?$', l_lower) or any(l_lower.startswith(h) for h in ("password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:")):
             ignored_lines.add(idx)
             val = line.split(":", 1)[-1].strip() if ":" in line else line
-            if val and val.lower() not in ("password", "pass", "pwd", "contraseña", "contrasena", "clave", "contraseña:", "contrasena:", "clave:"):
+            header_pass_kw = (
+                "password", "pass", "pwd", "contraseña", "contrasena", "clave",
+                "password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:",
+                "contraseña de fb", "contrasena de fb"
+            )
+            if val and val.lower() not in header_pass_kw:
                 password = val
             else:
                 next_line_is_password = True
             continue
 
         # Check if line is a package candidate line
-        has_pkg_token = (
-            any(re.search(r'\b' + re.escape(k) + r'\b', l_lower) for k in price_db.keys())
-            or any(re.search(r'\b' + re.escape(alias) + r'\b', l_lower) for alias in aliases.keys())
-            or re.search(r'\b\d+(?:cp)?[*xX×]\d+', l_lower)
-            or re.search(r'^\d+\s*[\+\,\&\/]\s*\d+', l_lower)
-        )
+        has_pkg_token = False
+
+        if re.search(r'\bcp\s*[:=\-]?\s*\d+', l_lower, re.IGNORECASE):
+            has_pkg_token = True
+        elif re.search(r'\b\d+(?:[.,]\d{3})*\s*(?:cp)?\b', l_lower, re.IGNORECASE):
+            nums = re.findall(r'\b(?:\d{1,3}(?:[.,]\d{3})+|\d+)\b', l_lower)
+            for n in nums:
+                n_clean = re.sub(r'[.,]', '', n)
+                n_norm = normalize_package_alias(n_clean, aliases)
+                if n_norm in price_db or n_clean in price_db or (n_clean.isdigit() and int(n_clean) >= 400):
+                    has_pkg_token = True
+                    break
+
+        if not has_pkg_token:
+            for alias in aliases.keys():
+                if re.search(r'\b' + re.escape(alias) + r'\b', l_lower, re.IGNORECASE):
+                    has_pkg_token = True
+                    break
+
+        if not has_pkg_token:
+            if re.search(r'\b\d+(?:cp)?[*xX×]\d+', l_lower) or re.search(r'^\d+\s*[\+\,\&\/]\s*\d+', l_lower):
+                has_pkg_token = True
 
         if has_pkg_token:
             package_candidate_lines.append(l_strip)
@@ -360,7 +391,11 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
 
     raw_pkg_text = "\n".join(package_candidate_lines)
 
-    # Normalize thousands separators (12.000 -> 12000, 4.800 -> 4800, 24.000 -> 24000, 9.600 -> 9600)
+    # Clean CP prefixes and suffixes e.g. "CP: 7200" -> "7200", "7200cp." -> "7200"
+    raw_pkg_text = re.sub(r'\bcp\s*[:=\-]?\s*', '', raw_pkg_text, flags=re.IGNORECASE)
+    raw_pkg_text = re.sub(r'(\d+)\s*cp\.?\b', r'\1', raw_pkg_text, flags=re.IGNORECASE)
+
+    # Normalize thousands separators (12.000 -> 12000, 4.800 -> 4800, 7.200 -> 7200, 7,200 -> 7200)
     raw_pkg_text = re.sub(r'\b(\d{1,3})[.,](\d{3})\b', r'\1\2', raw_pkg_text)
 
     # Normalize aliases first in pkg text (case-insensitive)
@@ -379,7 +414,7 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
         r'^(?:'
         r'(?P<num1>\d+)(?:cp)?[*xX×](?P<num2>\d+)(?:cp)?'
         r'|'
-        r'(?P<pkg_standalone>\d+)(?:cp)?'
+        r'(?P<pkg_standalone>\d+)(?:cp)?[\.]?'
         r')$',
         re.IGNORECASE
     )
