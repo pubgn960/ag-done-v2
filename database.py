@@ -83,42 +83,63 @@ def compute_fingerprint(email: str, package_text: Optional[str], file_ids: List[
 def _migrate_orders_schema(sync_conn: Any) -> None:
     """
     Synchronous schema inspector & migration callback.
-    Inspects existing columns in 'orders' table and idempotently adds missing columns
-    ('raw_text', 'issue_state', 'last_issue_type') across both PostgreSQL and SQLite.
+    Inspects existing columns in 'orders', 'delivery_ledger', and 'running_total_ledger' tables
+    and idempotently adds missing columns (e.g. 'chat_id') across both PostgreSQL and SQLite.
     Prevents PostgreSQL transaction aborts caused by failed ALTER TABLE statements.
     """
     from sqlalchemy import inspect, text
 
     inspector = inspect(sync_conn)
     tables = inspector.get_table_names()
-
-    if "orders" not in tables:
-        return
-
-    existing_columns = {col["name"].lower() for col in inspector.get_columns("orders")}
-
-    columns_to_add = [
-        ("raw_text", "TEXT"),
-        ("issue_state", "VARCHAR(50)"),
-        ("issue_type", "VARCHAR(50)"),
-        ("last_issue_type", "VARCHAR(50)"),
-        ("package_progress", "TEXT")
-    ]
-
     is_postgres = "postgres" in str(sync_conn.engine.url).lower()
+    bigint_type = "BIGINT" if is_postgres else "INTEGER"
 
-    for col_name, col_type in columns_to_add:
-        if col_name.lower() not in existing_columns:
-            logger.info(f"Adding missing column {col_name}...")
+    if "orders" in tables:
+        existing_columns = {col["name"].lower() for col in inspector.get_columns("orders")}
+        columns_to_add = [
+            ("raw_text", "TEXT"),
+            ("issue_state", "VARCHAR(50)"),
+            ("issue_type", "VARCHAR(50)"),
+            ("last_issue_type", "VARCHAR(50)"),
+            ("package_progress", "TEXT")
+        ]
+        for col_name, col_type in columns_to_add:
+            if col_name.lower() not in existing_columns:
+                logger.info(f"Adding missing column {col_name} to orders...")
+                try:
+                    if is_postgres:
+                        sync_conn.execute(text(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
+                    else:
+                        sync_conn.execute(text(f"ALTER TABLE orders ADD COLUMN {col_name} {col_type};"))
+                    logger.info(f"Successfully added column {col_name}.")
+                except Exception as e:
+                    logger.error(f"Failed to add column {col_name} to orders: {e}")
+
+    if "delivery_ledger" in tables:
+        existing_columns = {col["name"].lower() for col in inspector.get_columns("delivery_ledger")}
+        if "chat_id" not in existing_columns:
+            logger.info("Adding missing column chat_id to delivery_ledger...")
             try:
                 if is_postgres:
-                    sync_conn.execute(text(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
+                    sync_conn.execute(text(f"ALTER TABLE delivery_ledger ADD COLUMN IF NOT EXISTS chat_id {bigint_type};"))
                 else:
-                    sync_conn.execute(text(f"ALTER TABLE orders ADD COLUMN {col_name} {col_type};"))
-                logger.info(f"Successfully added column {col_name}.")
+                    sync_conn.execute(text(f"ALTER TABLE delivery_ledger ADD COLUMN chat_id {bigint_type};"))
+                logger.info("Successfully added column chat_id to delivery_ledger.")
             except Exception as e:
-                logger.error(f"Failed to add column {col_name}: {e}")
-                raise e
+                logger.error(f"Failed to add column chat_id to delivery_ledger: {e}")
+
+    if "running_total_ledger" in tables:
+        existing_columns = {col["name"].lower() for col in inspector.get_columns("running_total_ledger")}
+        if "chat_id" not in existing_columns:
+            logger.info("Adding missing column chat_id to running_total_ledger...")
+            try:
+                if is_postgres:
+                    sync_conn.execute(text(f"ALTER TABLE running_total_ledger ADD COLUMN IF NOT EXISTS chat_id {bigint_type};"))
+                else:
+                    sync_conn.execute(text(f"ALTER TABLE running_total_ledger ADD COLUMN chat_id {bigint_type};"))
+                logger.info("Successfully added column chat_id to running_total_ledger.")
+            except Exception as e:
+                logger.error(f"Failed to add column chat_id to running_total_ledger: {e}")
 
 
 async def init_db() -> None:
@@ -1406,16 +1427,12 @@ async def update_single_package_price_in_db(pkg: str, price_val: float, updated_
 # Production Delivery Ledger Operations
 # ==========================================
 
-async def get_current_running_total() -> float:
+async def get_current_running_total(chat_id: Optional[int] = None) -> float:
     """
-    Returns the latest running total from the delivery_ledger table.
+    Returns the latest running total for the given chat_id from running_total_ledger / delivery_ledger.
     Defaults to 0.0 if empty.
     """
-    async with AsyncSessionLocal() as session:
-        stmt = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
-        res = await session.execute(stmt)
-        latest = res.scalar_one_or_none()
-        return latest.running_total if latest else 0.0
+    return await get_running_total_current(chat_id=chat_id)
 
 
 async def record_delivery_ledger_entry(
@@ -1425,10 +1442,11 @@ async def record_delivery_ledger_entry(
     loader_name: Optional[str] = None,
     dedup_hash: Optional[str] = None,
     reason: Optional[str] = None,
-    is_manual: bool = False
+    is_manual: bool = False,
+    chat_id: Optional[int] = None
 ) -> Tuple[Optional[DeliveryLedger], bool]:
     """
-    Records an independent delivery ledger entry and updates the running total.
+    Records an independent delivery ledger entry and updates the running total for a specific chat_id.
     Prevents duplicates via dedup_hash (logs [DUPLICATE_LEDGER_BLOCKED]).
     Returns (entry, True) on success, or (None, False) if duplicate.
     """
@@ -1445,21 +1463,23 @@ async def record_delivery_ledger_entry(
                     )
                     return None, False
 
-            # Get current active running total from RunningTotalLedger
-            stmt_rt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
-            latest_rt = (await session.execute(stmt_rt)).scalar_one_or_none()
+            # Infer chat_id from order_id if not provided
+            if chat_id is None and order_id is not None:
+                stmt_ord = select(Order).where(Order.id == order_id)
+                ord_obj = (await session.execute(stmt_ord)).scalar_one_or_none()
+                if ord_obj:
+                    chat_id = ord_obj.client_chat_id
 
-            if latest_rt is not None:
-                before_total = latest_rt.after_total
-            else:
-                stmt_del = select(DeliveryLedger).order_by(DeliveryLedger.id.desc()).limit(1)
-                latest_del = (await session.execute(stmt_del)).scalar_one_or_none()
-                before_total = latest_del.running_total if latest_del else 0.0
+            if chat_id is None:
+                chat_id = BOT_SETTINGS.get("source_group_id")
 
+            # Get current active running total for this chat_id
+            before_total = await get_running_total_current(chat_id=chat_id)
             new_running_total = before_total + now_value
 
             now_dt = datetime.now(timezone.utc)
             entry = DeliveryLedger(
+                chat_id=chat_id,
                 order_id=order_id,
                 package=package,
                 price=now_value,
@@ -1474,9 +1494,10 @@ async def record_delivery_ledger_entry(
             )
             session.add(entry)
 
-            # Sync RunningTotalLedger table
+            # Sync RunningTotalLedger table for this chat_id
             action_type = "MANUAL_PLUS" if (is_manual and now_value >= 0) else ("MANUAL_MINUS" if is_manual else "AUTO_DELIVERY")
             rt_entry = RunningTotalLedger(
+                chat_id=chat_id,
                 action_type=action_type,
                 amount=now_value,
                 before_total=before_total,
@@ -1493,6 +1514,7 @@ async def record_delivery_ledger_entry(
             log_tag = "[LEDGER_MANUAL]" if is_manual else "[LEDGER_ADD]"
             logger.info(
                 f"{log_tag}\n"
+                f"Chat ID: {chat_id}\n"
                 f"Order #{order_id}\n"
                 f"Package: {package}\n"
                 f"Before: {before_total}$\n"
@@ -1624,19 +1646,23 @@ async def get_ledger_period_stats() -> Dict[str, Any]:
         }
 
 
-async def reset_delivery_ledger(admin_id: int) -> bool:
+async def reset_delivery_ledger(admin_id: int, chat_id: Optional[int] = None) -> bool:
     """
     Resets the running total of the delivery ledger to 0.0 by recording a reset entry.
     Orders remain 100% untouched.
     """
+    if chat_id is not None and not isinstance(chat_id, int):
+        chat_id = None
+
     async with AsyncSessionLocal() as session:
         try:
-            curr_total = await get_current_running_total()
+            curr_total = await get_running_total_current(chat_id=chat_id)
             if curr_total == 0.0:
                 return True
 
             now_dt = datetime.now(timezone.utc)
             reset_entry = DeliveryLedger(
+                chat_id=chat_id,
                 order_id=None,
                 package="RESET",
                 price=-curr_total,
@@ -1650,13 +1676,26 @@ async def reset_delivery_ledger(admin_id: int) -> bool:
                 timestamp=now_dt
             )
             session.add(reset_entry)
+
+            rt_entry = RunningTotalLedger(
+                chat_id=chat_id,
+                action_type="PAY",
+                amount=curr_total,
+                before_total=curr_total,
+                after_total=0.0,
+                order_id=None,
+                admin_id=admin_id,
+                timestamp=now_dt
+            )
+            session.add(rt_entry)
+
             await session.commit()
 
             logger.info(
                 f"[LEDGER_RESET]\n"
+                f"Group Chat ID: {chat_id}\n"
                 f"Admin: #{admin_id}\n"
                 f"Previous Total: {curr_total}$\n"
-                f"New Running Total: 0.0$\n"
                 f"Timestamp: {now_dt.isoformat()}"
             )
             return True
@@ -1775,13 +1814,28 @@ async def undo_last_calculator_entry(admin_id: Optional[int] = None) -> Optional
 # Production Simple Running Total Operations
 # ==========================================
 
-async def get_running_total_current() -> float:
+async def get_running_total_current(chat_id: Optional[int] = None) -> float:
     """
-    Returns the latest running total from the running_total_ledger table.
+    Returns the latest running total from the running_total_ledger table for the given chat_id.
     Falls back to delivery_ledger running_total if running_total_ledger is empty.
     Defaults to 0.0 if empty.
     """
+    if chat_id is not None and not isinstance(chat_id, int):
+        chat_id = None
+
     async with AsyncSessionLocal() as session:
+        if chat_id is not None:
+            stmt_rt = select(RunningTotalLedger).where(RunningTotalLedger.chat_id == chat_id).order_by(RunningTotalLedger.id.desc()).limit(1)
+            res_rt = await session.execute(stmt_rt)
+            latest_rt = res_rt.scalar_one_or_none()
+            if latest_rt is not None:
+                return latest_rt.after_total
+
+            stmt_del = select(DeliveryLedger).where(DeliveryLedger.chat_id == chat_id).order_by(DeliveryLedger.id.desc()).limit(1)
+            res_del = await session.execute(stmt_del)
+            latest_del = res_del.scalar_one_or_none()
+            return latest_del.running_total if latest_del else 0.0
+
         stmt_rt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
         res_rt = await session.execute(stmt_rt)
         latest_rt = res_rt.scalar_one_or_none()
@@ -1800,15 +1854,20 @@ async def record_running_total_entry(
     before_total: float,
     after_total: float,
     order_id: Optional[int] = None,
-    admin_id: Optional[int] = None
+    admin_id: Optional[int] = None,
+    chat_id: Optional[int] = None
 ) -> RunningTotalLedger:
     """
     Inserts a RunningTotalLedger record inside a DB transaction and logs details.
     """
+    if chat_id is not None and not isinstance(chat_id, int):
+        chat_id = None
+
     async with AsyncSessionLocal() as session:
         try:
             now_dt = datetime.now(timezone.utc)
             entry = RunningTotalLedger(
+                chat_id=chat_id,
                 action_type=action_type,
                 amount=amount,
                 before_total=before_total,
@@ -1824,6 +1883,7 @@ async def record_running_total_entry(
             if action_type == "PAY":
                 logger.info(
                     f"[PAY]\n"
+                    f"Group Chat ID: {chat_id}\n"
                     f"Running Total Before: {before_total}$\n"
                     f"Paid: {amount}$\n"
                     f"Running Total After: {after_total}$\n"
@@ -1834,6 +1894,7 @@ async def record_running_total_entry(
                 log_tag = f"[{action_type}]"
                 logger.info(
                     f"{log_tag}\n"
+                    f"Group Chat ID: {chat_id}\n"
                     f"Before: {before_total}$\n"
                     f"Amount: {amount}$\n"
                     f"After: {after_total}$\n"
@@ -1848,11 +1909,21 @@ async def record_running_total_entry(
             raise e
 
 
-async def execute_auto_delivery_total(order_id: int, now_val: float) -> Tuple[RunningTotalLedger, float, float, float]:
+async def execute_auto_delivery_total(order_id: int, now_val: float, chat_id: Optional[int] = None) -> Tuple[RunningTotalLedger, float, float, float]:
     """
-    Records an AUTO_DELIVERY entry adding delivered package price to the Running Total.
+    Records an AUTO_DELIVERY entry adding delivered package price to the Running Total for chat_id.
     """
-    before_val = await get_running_total_current()
+    if chat_id is not None and not isinstance(chat_id, int):
+        chat_id = None
+
+    if chat_id is None and order_id:
+        async with AsyncSessionLocal() as session:
+            stmt_ord = select(Order).where(Order.id == order_id)
+            ord_obj = (await session.execute(stmt_ord)).scalar_one_or_none()
+            if ord_obj:
+                chat_id = ord_obj.client_chat_id
+
+    before_val = await get_running_total_current(chat_id=chat_id)
     after_val = before_val + now_val
     entry = await record_running_total_entry(
         action_type="AUTO_DELIVERY",
@@ -1860,17 +1931,21 @@ async def execute_auto_delivery_total(order_id: int, now_val: float) -> Tuple[Ru
         before_total=before_val,
         after_total=after_val,
         order_id=order_id,
-        admin_id=None
+        admin_id=None,
+        chat_id=chat_id
     )
     return entry, before_val, now_val, after_val
 
 
-async def execute_pay_reset(admin_id: int) -> Tuple[Optional[RunningTotalLedger], float, float, float]:
+async def execute_pay_reset(admin_id: int, chat_id: Optional[int] = None) -> Tuple[Optional[RunningTotalLedger], float, float, float]:
     """
-    Records a PAY entry setting the current Running Total to 0$.
-    Always uses the full accumulated Running Total as the paid amount.
+    Records a PAY entry setting the current Running Total for chat_id to 0$.
+    Always uses the full accumulated Running Total for that group as the paid amount.
     """
-    before_val = await get_running_total_current()
+    if chat_id is not None and not isinstance(chat_id, int):
+        chat_id = None
+
+    before_val = await get_running_total_current(chat_id=chat_id)
     if before_val == 0.0:
         return None, 0.0, 0.0, 0.0
 
@@ -1880,17 +1955,21 @@ async def execute_pay_reset(admin_id: int) -> Tuple[Optional[RunningTotalLedger]
         before_total=before_val,
         after_total=0.0,
         order_id=None,
-        admin_id=admin_id
+        admin_id=admin_id,
+        chat_id=chat_id
     )
     return entry, before_val, before_val, 0.0
 
 
-async def execute_manual_adjustment(amount: float, admin_id: int) -> Tuple[RunningTotalLedger, float, float, float, str]:
+async def execute_manual_adjustment(amount: float, admin_id: int, chat_id: Optional[int] = None) -> Tuple[RunningTotalLedger, float, float, float, str]:
     """
-    Records a MANUAL_PLUS or MANUAL_MINUS entry.
+    Records a MANUAL_PLUS or MANUAL_MINUS entry for chat_id.
     """
+    if chat_id is not None and not isinstance(chat_id, int):
+        chat_id = None
+
     action_type = "MANUAL_PLUS" if amount >= 0 else "MANUAL_MINUS"
-    before_val = await get_running_total_current()
+    before_val = await get_running_total_current(chat_id=chat_id)
     after_val = before_val + amount
 
     entry = await record_running_total_entry(
@@ -1899,41 +1978,60 @@ async def execute_manual_adjustment(amount: float, admin_id: int) -> Tuple[Runni
         before_total=before_val,
         after_total=after_val,
         order_id=None,
-        admin_id=admin_id
+        admin_id=admin_id,
+        chat_id=chat_id
     )
     return entry, before_val, amount, after_val, action_type
 
 
-async def get_last_running_total_entry() -> Optional[RunningTotalLedger]:
+async def get_last_running_total_entry(chat_id: Optional[int] = None) -> Optional[RunningTotalLedger]:
     """
-    Retrieves the most recent running total ledger entry.
+    Retrieves the most recent running total ledger entry for chat_id.
     """
+    if chat_id is not None and not isinstance(chat_id, int):
+        chat_id = None
+
     async with AsyncSessionLocal() as session:
-        stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
+        if chat_id is not None:
+            stmt = select(RunningTotalLedger).where(RunningTotalLedger.chat_id == chat_id).order_by(RunningTotalLedger.id.desc()).limit(1)
+        else:
+            stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
         res = await session.execute(stmt)
         return res.scalar_one_or_none()
 
 
-async def undo_last_running_total_action(admin_id: int) -> Optional[RunningTotalLedger]:
+async def undo_last_running_total_action(admin_id: int, chat_id: Optional[int] = None) -> Optional[RunningTotalLedger]:
     """
-    Undoes the last action in running_total_ledger and recalculates running total.
+    Undoes the last action in running_total_ledger for chat_id and recalculates running total.
     Logs [UNDO].
     """
+    if chat_id is not None and not isinstance(chat_id, int):
+        chat_id = None
+
     async with AsyncSessionLocal() as session:
         try:
-            stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
+            if chat_id is not None:
+                stmt = select(RunningTotalLedger).where(RunningTotalLedger.chat_id == chat_id).order_by(RunningTotalLedger.id.desc()).limit(1)
+            else:
+                stmt = select(RunningTotalLedger).order_by(RunningTotalLedger.id.desc()).limit(1)
+
             target = (await session.execute(stmt)).scalar_one_or_none()
             if not target:
                 return None
 
             undone_action = target.action_type
             undone_amount = target.amount
+            target_chat_id = target.chat_id or chat_id
 
             await session.delete(target)
             await session.commit()
 
-            # Recalculate remaining running totals in chronological order
-            stmt_all = select(RunningTotalLedger).order_by(RunningTotalLedger.id.asc())
+            # Recalculate remaining running totals for target_chat_id in chronological order
+            if target_chat_id is not None:
+                stmt_all = select(RunningTotalLedger).where(RunningTotalLedger.chat_id == target_chat_id).order_by(RunningTotalLedger.id.asc())
+            else:
+                stmt_all = select(RunningTotalLedger).order_by(RunningTotalLedger.id.asc())
+
             all_entries = (await session.execute(stmt_all)).scalars().all()
 
             running = 0.0
@@ -1949,6 +2047,7 @@ async def undo_last_running_total_action(admin_id: int) -> Optional[RunningTotal
 
             now_dt = datetime.now(timezone.utc)
             undo_record = RunningTotalLedger(
+                chat_id=target_chat_id,
                 action_type="UNDO",
                 amount=-undone_amount,
                 before_total=target.after_total,
@@ -1962,6 +2061,7 @@ async def undo_last_running_total_action(admin_id: int) -> Optional[RunningTotal
 
             logger.info(
                 f"[UNDO]\n"
+                f"Group Chat ID: {target_chat_id}\n"
                 f"Action Undone: {undone_action}\n"
                 f"Amount: {undone_amount}$\n"
                 f"Restored Total: {running}$\n"

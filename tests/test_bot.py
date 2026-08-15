@@ -3866,5 +3866,72 @@ class TestClientReactionAndMessageEditFilter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replied_messages[0]["reply_to_message_id"], 1475)
 
 
+class TestCategoryAGroupLedgerIsolation(unittest.IsolatedAsyncioTestCase):
+    async def test_category_a_multi_group_ledger_isolation(self):
+        from database import (
+            init_db,
+            record_delivery_ledger_entry,
+            get_running_total_current,
+            execute_pay_reset,
+            execute_manual_adjustment,
+            get_last_running_total_entry
+        )
+
+        await init_db()
+
+        chat_a1 = -1001111111111
+        chat_a2 = -1002222222222
+        chat_a3 = -1003333333333
+
+        # 1. Set initial balances: A-1 = $800, A-2 = $20, A-3 = $150
+        await record_delivery_ledger_entry(order_id=None, package="INIT", now_value=800.0, chat_id=chat_a1)
+        await record_delivery_ledger_entry(order_id=None, package="INIT", now_value=20.0, chat_id=chat_a2)
+        await record_delivery_ledger_entry(order_id=None, package="INIT", now_value=150.0, chat_id=chat_a3)
+
+        self.assertEqual(await get_running_total_current(chat_id=chat_a1), 800.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a2), 20.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a3), 150.0)
+
+        # 2. Delivery in A-1 ($50) -> Increases ONLY A-1 ($850). A-2 and A-3 remain unchanged.
+        e1, _ = await record_delivery_ledger_entry(order_id=901, package="10800", now_value=50.0, chat_id=chat_a1)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a1), 850.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a2), 20.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a3), 150.0)
+
+        # 3. Delivery in A-2 ($10) -> Increases ONLY A-2 ($30). A-1 and A-3 remain unchanged.
+        e2, _ = await record_delivery_ledger_entry(order_id=902, package="2400", now_value=10.0, chat_id=chat_a2)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a1), 850.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a2), 30.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a3), 150.0)
+
+        # 4. /pay in A-1 -> Resets ONLY A-1 ($0). A-2 stays $30, A-3 stays $150.
+        entry_pay_a1, before_p1, paid_p1, cur_p1 = await execute_pay_reset(admin_id=1573531032, chat_id=chat_a1)
+        self.assertEqual(before_p1, 850.0)
+        self.assertEqual(cur_p1, 0.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a1), 0.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a2), 30.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a3), 150.0)
+
+        # 5. +10 in A-1 -> Affects ONLY A-1 ($10). A-2 stays $30.
+        e_plus, b_plus, n_plus, a_plus, _ = await execute_manual_adjustment(10.0, admin_id=1573531032, chat_id=chat_a1)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a1), 10.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a2), 30.0)
+
+        # 6. -10 in A-2 -> Affects ONLY A-2 ($20). A-1 stays $10.
+        e_minus, b_minus, n_minus, a_minus, _ = await execute_manual_adjustment(-10.0, admin_id=1573531032, chat_id=chat_a2)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a2), 20.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a1), 10.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a3), 150.0)
+
+        # 7. /pay in A-2 -> Resets ONLY A-2 ($0).
+        entry_pay_a2, _, _, _ = await execute_pay_reset(admin_id=1573531032, chat_id=chat_a2)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a2), 0.0)
+
+        # 8. Restart recovery verification -> DB persistent totals
+        self.assertEqual(await get_running_total_current(chat_id=chat_a1), 10.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a2), 0.0)
+        self.assertEqual(await get_running_total_current(chat_id=chat_a3), 150.0)
+
+
 if __name__ == "__main__":
     unittest.main()

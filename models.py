@@ -243,11 +243,13 @@ class DeliveryLedger(Base):
     """
     Stores individual delivery ledger entries and running totals for accounting.
     Includes deduplication protection via dedup_hash, audit reasons, and manual flags.
+    Scoped per Client Group via chat_id.
     """
 
     __tablename__ = "delivery_ledger"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
     package: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -266,7 +268,7 @@ class DeliveryLedger(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<DeliveryLedger(id={self.id}, order_id={self.order_id}, now={self.now_value}, total={self.running_total}, manual={self.is_manual})>"
+        return f"<DeliveryLedger(id={self.id}, chat_id={self.chat_id}, order_id={self.order_id}, now={self.now_value}, total={self.running_total}, manual={self.is_manual})>"
 
 
 class CalculatorLedger(Base):
@@ -296,12 +298,14 @@ class CalculatorLedger(Base):
 class RunningTotalLedger(Base):
     """
     Stores individual entries and running totals for the Production Simple Running Total System.
+    Scoped per Client Group via chat_id.
     Action types: AUTO_DELIVERY, MANUAL_PLUS, MANUAL_MINUS, PAY, UNDO.
     """
 
     __tablename__ = "running_total_ledger"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
     action_type: Mapped[str] = mapped_column(String(50), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     before_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -316,4 +320,4 @@ class RunningTotalLedger(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<RunningTotalLedger(id={self.id}, action='{self.action_type}', amount={self.amount}, before={self.before_total}, after={self.after_total})>"
+        return f"<RunningTotalLedger(id={self.id}, chat_id={self.chat_id}, action='{self.action_type}', amount={self.amount}, before={self.before_total}, after={self.after_total})>"

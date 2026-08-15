@@ -1738,7 +1738,8 @@ async def process_delivery_ledger_event(
         now_value=now_val,
         loader_name=loader_name or "Loader",
         dedup_hash=dedup_hash,
-        is_manual=False
+        is_manual=False,
+        chat_id=chat_id
     )
 
     if not is_new or not entry:
@@ -2142,7 +2143,7 @@ async def calc_undo_callback_handler(update: Update, context: ContextTypes.DEFAU
 async def running_total_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Super Admin command /total.
-    Displays the current running total of all delivered orders.
+    Displays the current running total of all delivered orders for the current chat group.
     Everyone else is ignored.
     """
     user = update.effective_user
@@ -2150,7 +2151,8 @@ async def running_total_command_handler(update: Update, context: ContextTypes.DE
         logger.warning(f"[TOTAL] Unauthorized /total attempt ignored for user #{user.id if user else 'Unknown'}.")
         return
 
-    curr_tot = await get_running_total_current()
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    curr_tot = await get_running_total_current(chat_id=chat_id)
     msg = format_running_total_current_message(curr_tot)
     await update.effective_message.reply_text(msg, parse_mode="HTML")
 
@@ -2158,7 +2160,7 @@ async def running_total_command_handler(update: Update, context: ContextTypes.DE
 async def pay_running_total_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Super Admin command /pay.
-    Considers the entire current Running Total as paid and resets total to 0$.
+    Considers the entire current Running Total for the current group as paid and resets total to 0$.
     Everyone else is ignored.
     """
     user = update.effective_user
@@ -2166,7 +2168,8 @@ async def pay_running_total_command_handler(update: Update, context: ContextType
         logger.warning(f"[PAY] Unauthorized /pay attempt ignored for user #{user.id if user else 'Unknown'}.")
         return
 
-    entry, before_val, paid_val, current_val = await execute_pay_reset(admin_id=user.id)
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    entry, before_val, paid_val, current_val = await execute_pay_reset(admin_id=user.id, chat_id=chat_id)
     msg = format_pay_record_message(before_val, paid_val, current_val)
     await update.effective_message.reply_text(msg, parse_mode="HTML")
 
@@ -2174,7 +2177,7 @@ async def pay_running_total_command_handler(update: Update, context: ContextType
 async def manual_running_total_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handles plain numeric messages starting with '+' or '-' (e.g. +10, -10, +16.5, -4.5).
-    Super Admin only. Everyone else must be ignored.
+    Super Admin only. Scoped to the current chat group. Everyone else must be ignored.
     """
     user = update.effective_user
     if not user or not is_super_admin(user.id):
@@ -2191,7 +2194,8 @@ async def manual_running_total_text_handler(update: Update, context: ContextType
     except ValueError:
         return  # Not a plain numeric adjustment
 
-    entry, before_val, now_val, after_val, action_type = await execute_manual_adjustment(val, admin_id=user.id)
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    entry, before_val, now_val, after_val, action_type = await execute_manual_adjustment(val, admin_id=user.id, chat_id=chat_id)
     reply_msg = format_manual_adjustment_message(before_val, now_val, after_val)
     await update.effective_message.reply_text(reply_msg, parse_mode="HTML")
 
@@ -2199,7 +2203,7 @@ async def manual_running_total_text_handler(update: Update, context: ContextType
 async def running_total_undo_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Super Admin command /undo.
-    Displays confirmation card for the last action in running_total_ledger.
+    Displays confirmation card for the last action in running_total_ledger for the current chat group.
     Everyone else is ignored.
     """
     user = update.effective_user
@@ -2207,7 +2211,8 @@ async def running_total_undo_command_handler(update: Update, context: ContextTyp
         logger.warning(f"[UNDO] Unauthorized /undo attempt ignored for user #{user.id if user else 'Unknown'}.")
         return
 
-    last_entry = await get_last_running_total_entry()
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    last_entry = await get_last_running_total_entry(chat_id=chat_id)
     if not last_entry:
         await update.effective_message.reply_text("❌ No actions found to undo.")
         return
@@ -2219,8 +2224,8 @@ async def running_total_undo_command_handler(update: Update, context: ContextTyp
     )
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Confirm", callback_data=f"rt_undo_confirm:{last_entry.id}"),
-            InlineKeyboardButton("❌ Cancel", callback_data=f"rt_undo_cancel:{last_entry.id}")
+            InlineKeyboardButton("✅ Confirm", callback_data=f"rt_undo_confirm:{last_entry.id}:{chat_id or 0}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"rt_undo_cancel:{last_entry.id}:{chat_id or 0}")
         ]
     ])
     await update.effective_message.reply_text(card_text, reply_markup=keyboard, parse_mode="HTML")
@@ -2249,11 +2254,12 @@ async def running_total_undo_callback_handler(update: Update, context: ContextTy
 
     parts = query.data.split(":")
     action = parts[0]
+    target_chat_id = int(parts[2]) if len(parts) > 2 and parts[2] != "0" else (update.effective_chat.id if update.effective_chat else None)
 
     if action == "rt_undo_confirm":
-        undone = await undo_last_running_total_action(admin_id=user.id)
+        undone = await undo_last_running_total_action(admin_id=user.id, chat_id=target_chat_id)
         if undone:
-            curr_tot = await get_running_total_current()
+            curr_tot = await get_running_total_current(chat_id=target_chat_id)
             tot_str = f"{int(curr_tot)}" if curr_tot.is_integer() else f"{curr_tot:g}"
             await query.edit_message_text(f"✅ <b>Action Undone Successfully.</b>\n\n<b>Restored Total:</b> {tot_str}$", parse_mode="HTML")
         else:
