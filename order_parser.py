@@ -264,21 +264,33 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             continue
 
         # Check Recovery Code Section Header
-        if RECOVERY_HEADER_REGEX.search(l_strip) or l_lower.startswith("codes") or l_lower.startswith("código") or l_lower.startswith("codigo"):
+        if RECOVERY_HEADER_REGEX.search(l_strip) or l_lower.startswith("codes") or l_lower.startswith("código") or l_lower.startswith("codigo") or l_lower.startswith("codigos"):
             in_recovery_sec = True
             ignored_lines.add(idx)
             continue
 
         if in_recovery_sec:
-            # Check if line is a recovery code line
-            if RECOVERY_CODE_PATTERN.match(l_strip) or re.match(r'^\d{6,12}$', l_strip):
-                recovery_codes.append(l_strip)
+            clean_code_line = re.sub(r'^[*\s•\-]+', '', l_strip).strip()
+
+            is_rec_code = (
+                bool(RECOVERY_CODE_PATTERN.match(l_strip))
+                or bool(RECOVERY_CODE_PATTERN.match(clean_code_line))
+                or bool(re.match(r'^\d{4,6}[\s\-]?\d{4,6}$', clean_code_line))
+                or bool(re.match(r'^\d{6,12}$', clean_code_line))
+            )
+
+            is_field_header = any(
+                h in l_lower for h in ("order", "pedido", "paquete", "cp pack", "cp", "mode", "time", "email", "correo", "password", "contraseña", "clave", "ign", "nick", "login")
+            ) or (
+                clean_code_line.lower() in aliases or l_lower in aliases or clean_code_line in price_db or l_lower in price_db
+            )
+
+            if is_field_header and not is_rec_code:
+                in_recovery_sec = False
+            elif is_rec_code or (not is_field_header and bool(re.search(r'\d', clean_code_line))):
+                recovery_codes.append(clean_code_line if clean_code_line else l_strip)
                 ignored_lines.add(idx)
                 continue
-            else:
-                # End recovery code section if line is a new field header
-                if any(h in l_lower for h in ("ign", "nick", "cp pack", "mode", "time", "email", "password", "clave")):
-                    in_recovery_sec = False
 
         # Email Headers or Email address line
         if EMAIL_REGEX.search(l_strip):

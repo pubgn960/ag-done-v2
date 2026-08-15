@@ -3933,5 +3933,97 @@ class TestCategoryAGroupLedgerIsolation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await get_running_total_current(chat_id=chat_a3), 150.0)
 
 
+class TestFacebookRecoveryCodeParserExclusion(unittest.IsolatedAsyncioTestCase):
+    async def test_facebook_recovery_codes_not_detected_as_packages(self):
+        from order_parser import parse_order_v2
+
+        sample_fb = (
+            "71#\n"
+            "*facebook*\n\n"
+            "Nick: Apodo en el juego HR°Dxwrin\n\n"
+            "Correo o número fb +529619465770\n\n"
+            "Contraseña de fb: darwin.41\n\n"
+            "Códigos\n"
+            "*1430 8078\n"
+            "*1982 9264\n"
+            "*2347 4217\n\n"
+            "5k"
+        )
+
+        parsed = parse_order_v2(sample_fb)
+
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["login_method"], "Facebook")
+        self.assertEqual(parsed["recovery_codes"], ["1430 8078", "1982 9264", "2347 4217"])
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "5040")
+        self.assertEqual(parsed["unknown_packages"], [])
+
+        pkg_names = [p["package"] for p in parsed["packages"]]
+        self.assertNotIn("8078", pkg_names)
+        self.assertNotIn("9264", pkg_names)
+        self.assertNotIn("4217", pkg_names)
+        self.assertNotIn("1430", pkg_names)
+
+    async def test_facebook_recovery_codes_another_format(self):
+        from order_parser import parse_order_v2
+
+        sample_fb2 = (
+            "*facebook*\n\n"
+            "Correo o número fb: user@gmail.com\n"
+            "Contraseña de fb: password\n\n"
+            "Códigos:\n"
+            "2534 6603\n"
+            "3075 1980\n"
+            "3568 0949\n\n"
+            "5k"
+        )
+
+        parsed = parse_order_v2(sample_fb2)
+
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["packages"][0]["package"], "5040")
+        self.assertEqual(parsed["unknown_packages"], [])
+        self.assertEqual(parsed["recovery_codes"], ["2534 6603", "3075 1980", "3568 0949"])
+
+    async def test_phone_order_and_credentials_safety(self):
+        from order_parser import parse_order_v2
+
+        sample = (
+            "Order #: 54\n"
+            "Correo: test@gmail.com\n"
+            "Phone: +529619465770\n"
+            "Pass: mypass123\n"
+            "5040"
+        )
+
+        parsed = parse_order_v2(sample)
+
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "5040")
+        pkg_names = [p["package"] for p in parsed["packages"]]
+        self.assertNotIn("529619465770", pkg_names)
+        self.assertNotIn("54", pkg_names)
+        self.assertNotIn("123", pkg_names)
+
+    async def test_genuine_unknown_cp_package(self):
+        from order_parser import parse_order_v2
+
+        sample = (
+            "Email: user@gmail.com\n"
+            "Pass: password\n"
+            "CP PACK: 777777"
+        )
+
+        parsed = parse_order_v2(sample)
+
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "777777")
+        self.assertFalse(parsed["packages"][0]["known"])
+        self.assertIn("777777", parsed["unknown_packages"])
+
+
 if __name__ == "__main__":
     unittest.main()
