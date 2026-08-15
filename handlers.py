@@ -76,7 +76,10 @@ from database import (
     update_order_issue_state,
     update_order_raw_text,
     has_active_pending_issue,
-    get_order_waiting_for_customer_update
+    get_order_waiting_for_customer_update,
+    get_order_by_original_message_id,
+    request_order_cancellation,
+    process_cancellation_decision
 )
 from models import Order
 from utils import (
@@ -215,6 +218,13 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not text_content:
         logger.debug(f"[CLIENT] Message {message.message_id} in Client Group has no text/caption content.")
         return
+
+    # Check if this customer message is a cancellation request replying to an order message
+    if message.reply_to_message:
+        if re.match(r'^(?:/?cancel|/?cancel\s*order)$', text_content.strip(), re.IGNORECASE):
+            handled = await handle_client_cancellation_request(update, context)
+            if handled:
+                return
 
     # Check if this customer message is an updated account detail submission for a paused order
     waiting_order = await get_order_waiting_for_customer_update(chat.id)
@@ -3416,7 +3426,12 @@ async def order_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles /cancel <order_id> command."""
+    """Handles /cancel <order_id> admin command or customer reply cancellation request."""
+    if update.effective_message and update.effective_message.reply_to_message and (not context.args or not context.args[0].lstrip("#").isdigit()):
+        handled = await handle_client_cancellation_request(update, context)
+        if handled:
+            return
+
     if not await check_admin_permission(update):
         return
 
@@ -3702,3 +3717,276 @@ async def removedelivery_command(update: Update, context: ContextTypes.DEFAULT_T
 
     await remove_delivery_group()
     await update.effective_message.reply_text("✅ Loader Group Removed Successfully.", parse_mode="HTML")
+
+
+async def handle_client_cancellation_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Handles customer cancellation request when customer replies 'cancel' or '/cancel' to their original order message.
+    Returns True if handled, False otherwise.
+    """
+    message = update.effective_message
+    if not message or not message.reply_to_message:
+        return False
+
+    text = (message.text or message.caption or "").strip()
+    if not re.match(r'^(?:/?cancel|/?cancel\s*order)$', text, re.IGNORECASE):
+        return False
+
+    user = update.effective_user
+    chat = update.effective_chat
+    replied_msg = message.reply_to_message
+
+    # Find the target Order by replied message ID
+    order = await get_order_by_original_message_id(replied_msg.message_id, client_chat_id=chat.id if chat else None)
+    if not order and chat:
+        order = await get_order_by_original_message_id(replied_msg.message_id)
+
+    if not order:
+        logger.info(f"[CANCEL_REQ] Message {message.message_id} replied to msg {replied_msg.message_id}, but no order found.")
+        return False
+
+    # Attempt to request cancellation
+    order_updated, status_reason = await request_order_cancellation(order.id, user_id=user.id if user else None)
+
+    if status_reason == "ALREADY_DELIVERED":
+        await message.reply_text("⚠️ This order has already been delivered and cannot be cancelled.", quote=True)
+        return True
+
+    if status_reason == "ALREADY_CANCELLED":
+        await message.reply_text("❌ This order has already been cancelled.", quote=True)
+        return True
+
+    if status_reason == "ALREADY_REQUESTED":
+        await message.reply_text("⏳ Cancellation request already sent to the loader. Please wait.", quote=True)
+        return True
+
+    if status_reason != "SUCCESS" or not order_updated:
+        return False
+
+    logger.info(f"[ORDER #{order.id}] Client requested cancellation.")
+
+    # Determine if partial delivery exists
+    is_partial = False
+    if order.package_progress:
+        try:
+            items = json.loads(order.package_progress)
+            if any(item.get("delivered", False) or item.get("status") == "Delivered" for item in items):
+                is_partial = True
+        except Exception:
+            pass
+
+    # Build Loader Group notification card
+    if is_partial:
+        card_text = (
+            "⚠️ <b>Partial Delivery</b>\n\n"
+            f"Order #<b>{order.id}</b>\n\n"
+            "Some packages have already been delivered.\n\n"
+            "The loader must decide whether cancellation is allowed."
+        )
+    else:
+        card_text = (
+            "⚠️ <b>Client Cancellation Request</b>\n\n"
+            f"Order #<b>{order.id}</b>\n\n"
+            "The client wants to cancel this order.\n\n"
+            "Please confirm the cancellation:"
+        )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("❌ Cancel Order", callback_data=f"cancel_req_cancel:{order.id}"),
+            InlineKeyboardButton("⏳ Wait", callback_data=f"cancel_req_wait:{order.id}")
+        ],
+        [
+            InlineKeyboardButton("🚫 Order Almost Done — Can't Cancel", callback_data=f"cancel_req_almost:{order.id}")
+        ]
+    ])
+
+    loader_group_id = order.loader_group_id or BOT_SETTINGS.get("delivery_group_id")
+    if loader_group_id:
+        try:
+            if order.loader_message_id:
+                await context.bot.send_message(
+                    chat_id=loader_group_id,
+                    text=card_text,
+                    reply_markup=keyboard,
+                    reply_to_message_id=order.loader_message_id,
+                    parse_mode="HTML"
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=loader_group_id,
+                    text=card_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+        except Exception as e:
+            logger.error(f"[CANCEL_REQ] Failed to send cancellation prompt to Loader Group: {e}")
+
+    await message.reply_text("⏳ Cancellation request sent to loader. Please wait.", quote=True)
+    return True
+
+
+async def client_cancel_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    CommandHandler for /cancel and /cancelorder.
+    Requires customer to reply directly to their original order message.
+    """
+    message = update.effective_message
+    if not message:
+        return
+
+    if not message.reply_to_message:
+        # A random "cancel" message without replying to an order must NOT cancel anything.
+        return
+
+    handled = await handle_client_cancellation_request(update, context)
+    if not handled:
+        logger.info("[CANCEL_REQ] /cancel command was not for a valid active order reply.")
+
+
+async def client_cancellation_request_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles inline callback buttons for Loader Cancellation Request confirmation:
+    - cancel_req_cancel:<order_id>
+    - cancel_req_wait:<order_id>
+    - cancel_req_almost:<order_id>
+    """
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("cancel_req_"):
+        return
+
+    user = query.from_user
+    if not user or not (is_super_admin(user.id) or is_delivery_user(user.id) or is_admin(user.id) or user.id in LOADERS_CACHE):
+        try:
+            await query.answer("⛔ Only authorized loaders can process cancellation requests.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    parts = query.data.split(":")
+    if len(parts) < 2:
+        return
+
+    action = parts[0]
+    try:
+        order_id = int(parts[1])
+    except ValueError:
+        return
+
+    order = await get_order_by_id(order_id)
+    if not order:
+        await query.edit_message_text("❌ Order not found.")
+        return
+
+    if action == "cancel_req_cancel":
+        updated_order, success = await process_cancellation_decision(order_id, decision="cancelled", admin_id=user.id)
+        if success:
+            logger.info(f"[ORDER #{order.id}] Loader selected CANCEL ORDER.")
+
+            # React ❌ to original loader message
+            if order.loader_group_id and order.loader_message_id:
+                await safe_set_message_reaction(
+                    bot=context.bot,
+                    chat_id=order.loader_group_id,
+                    message_id=order.loader_message_id,
+                    emoji="❌",
+                    log_tag="[CANCEL_LOADER_REACTION]"
+                )
+
+            # React ❌ to original client message
+            if order.client_chat_id and order.original_message_id:
+                await safe_set_message_reaction(
+                    bot=context.bot,
+                    chat_id=order.client_chat_id,
+                    message_id=order.original_message_id,
+                    emoji="❌",
+                    log_tag="[CANCEL_CLIENT_REACTION]"
+                )
+
+            await query.edit_message_text(f"❌ <b>Order #{order.id} Cancelled by Loader.</b>", parse_mode="HTML")
+
+            if order.client_chat_id:
+                try:
+                    msg = (
+                        "❌ <b>Order Cancelled</b>\n\n"
+                        f"Order #{order.id} has been cancelled by the loader.\n\n"
+                        "Please stop this order."
+                    )
+                    if order.original_message_id:
+                        await context.bot.send_message(
+                            chat_id=order.client_chat_id,
+                            text=msg,
+                            reply_to_message_id=order.original_message_id,
+                            parse_mode="HTML"
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=order.client_chat_id,
+                            text=msg,
+                            parse_mode="HTML"
+                        )
+                except Exception as e:
+                    logger.error(f"[CANCEL_REQ] Failed to notify client of cancellation for Order #{order.id}: {e}")
+
+    elif action == "cancel_req_wait":
+        updated_order, success = await process_cancellation_decision(order_id, decision="wait", admin_id=user.id)
+        if success:
+            logger.info(f"[ORDER #{order.id}] Loader selected WAIT.")
+            await query.edit_message_text(f"⏳ <b>Cancellation request for Order #{order.id} set to WAIT by Loader.</b>", parse_mode="HTML")
+
+            if order.client_chat_id:
+                try:
+                    msg = (
+                        "⏳ <b>Cancellation request received.</b>\n\n"
+                        "The loader is still processing your order.\n\n"
+                        "Please wait."
+                    )
+                    if order.original_message_id:
+                        await context.bot.send_message(
+                            chat_id=order.client_chat_id,
+                            text=msg,
+                            reply_to_message_id=order.original_message_id,
+                            parse_mode="HTML"
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=order.client_chat_id,
+                            text=msg,
+                            parse_mode="HTML"
+                        )
+                except Exception as e:
+                    logger.error(f"[CANCEL_REQ] Failed to notify client of WAIT decision for Order #{order.id}: {e}")
+
+    elif action == "cancel_req_almost":
+        updated_order, success = await process_cancellation_decision(order_id, decision="rejected", admin_id=user.id)
+        if success:
+            logger.info(f"[ORDER #{order.id}] Loader selected ALMOST DONE.")
+            await query.edit_message_text(f"🚫 <b>Cancellation request for Order #{order.id} rejected (Almost Done).</b>", parse_mode="HTML")
+
+            if order.client_chat_id:
+                try:
+                    msg = (
+                        "⚠️ <b>Order is almost completed.</b>\n\n"
+                        "The loader cannot cancel the order at this stage.\n\n"
+                        "Please wait for delivery."
+                    )
+                    if order.original_message_id:
+                        await context.bot.send_message(
+                            chat_id=order.client_chat_id,
+                            text=msg,
+                            reply_to_message_id=order.original_message_id,
+                            parse_mode="HTML"
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=order.client_chat_id,
+                            text=msg,
+                            parse_mode="HTML"
+                        )
+                except Exception as e:
+                    logger.error(f"[CANCEL_REQ] Failed to notify client of ALMOST DONE decision for Order #{order.id}: {e}")

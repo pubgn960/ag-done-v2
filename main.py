@@ -55,6 +55,8 @@ from handlers import (
     find_command,
     order_info_command,
     cancel_command,
+    client_cancel_command_handler,
+    client_cancellation_request_callback_handler,
     resend_command,
     delete_command,
     stats_command,
@@ -271,7 +273,10 @@ def main() -> None:
     application.add_handler(CommandHandler("todaytotal", todaytotal_command_handler))
     application.add_handler(CommandHandler("resetledger", resetledger_command_handler))
 
+    application.add_handler(CommandHandler("cancelorder", client_cancel_command_handler))
+
     # Register Interactive Callback Query Handlers
+    application.add_handler(CallbackQueryHandler(client_cancellation_request_callback_handler, pattern="^cancel_req_"))
     application.add_handler(CallbackQueryHandler(duplicate_order_callback_handler, pattern="^dup_"))
     application.add_handler(CallbackQueryHandler(category_b_approval_callback_handler, pattern="^catb_"))
     application.add_handler(CallbackQueryHandler(price_callback_handler, pattern="^price_"))

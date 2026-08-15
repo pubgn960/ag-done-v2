@@ -142,6 +142,11 @@ class Order(Base):
     issue_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     last_issue_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     package_progress: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cancellation_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    cancellation_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancellation_requested_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    cancellation_decision: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    cancellation_decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

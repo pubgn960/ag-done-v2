@@ -101,7 +101,12 @@ def _migrate_orders_schema(sync_conn: Any) -> None:
             ("issue_state", "VARCHAR(50)"),
             ("issue_type", "VARCHAR(50)"),
             ("last_issue_type", "VARCHAR(50)"),
-            ("package_progress", "TEXT")
+            ("package_progress", "TEXT"),
+            ("cancellation_requested", "BOOLEAN DEFAULT FALSE"),
+            ("cancellation_requested_at", "TIMESTAMP WITH TIME ZONE" if is_postgres else "DATETIME"),
+            ("cancellation_requested_by", bigint_type),
+            ("cancellation_decision", "VARCHAR(50)"),
+            ("cancellation_decided_at", "TIMESTAMP WITH TIME ZONE" if is_postgres else "DATETIME")
         ]
         for col_name, col_type in columns_to_add:
             if col_name.lower() not in existing_columns:
@@ -842,6 +847,90 @@ async def get_order_by_loader_msg_id(loader_msg_id: int) -> Optional[Order]:
         )
         res = await session.execute(stmt)
         return res.unique().scalar_one_or_none()
+
+
+async def get_order_by_original_message_id(original_message_id: int, client_chat_id: Optional[int] = None) -> Optional[Order]:
+    """Retrieves an Order matching original_message_id (and optionally client_chat_id)."""
+    async with AsyncSessionLocal() as session:
+        stmt = select(Order).options(joinedload(Order.images)).where(Order.original_message_id == original_message_id)
+        if client_chat_id is not None:
+            stmt = stmt.where(Order.client_chat_id == client_chat_id)
+        res = await session.execute(stmt)
+        return res.unique().scalar_one_or_none()
+
+
+async def request_order_cancellation(order_id: int, user_id: Optional[int] = None) -> Tuple[Optional[Order], str]:
+    """
+    Flags cancellation_requested = True on order_id if eligible.
+    Returns (order, status_reason):
+    - "ALREADY_DELIVERED": Order is already completely delivered.
+    - "ALREADY_CANCELLED": Order is already cancelled.
+    - "ALREADY_REQUESTED": Cancellation request already pending.
+    - "SUCCESS": Cancellation request successfully flagged.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(Order).options(joinedload(Order.images)).where(Order.id == order_id)
+            res = await session.execute(stmt)
+            order = res.unique().scalar_one_or_none()
+            if not order:
+                return None, "NOT_FOUND"
+
+            if order.status and order.status.lower() == "delivered":
+                return order, "ALREADY_DELIVERED"
+
+            if order.status and order.status.lower() == "cancelled":
+                return order, "ALREADY_CANCELLED"
+
+            if getattr(order, "cancellation_requested", False):
+                return order, "ALREADY_REQUESTED"
+
+            order.cancellation_requested = True
+            order.cancellation_requested_at = datetime.now(timezone.utc)
+            order.cancellation_requested_by = user_id
+            await session.commit()
+            await session.refresh(order)
+            return order, "SUCCESS"
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[CANCEL_REQ] Failed to set cancellation request for Order #{order_id}: {e}")
+            raise e
+
+
+async def process_cancellation_decision(
+    order_id: int,
+    decision: str,
+    admin_id: Optional[int] = None
+) -> Tuple[Optional[Order], bool]:
+    """
+    Applies the loader's decision on a cancellation request:
+    - decision == "cancelled": Sets status = "Cancelled", cancellation_requested = False, cancellation_decision = "cancelled".
+    - decision == "wait": Sets cancellation_requested = False, cancellation_decision = "wait".
+    - decision == "rejected": Sets cancellation_requested = False, cancellation_decision = "rejected".
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(Order).options(joinedload(Order.images)).where(Order.id == order_id)
+            res = await session.execute(stmt)
+            order = res.unique().scalar_one_or_none()
+            if not order:
+                return None, False
+
+            now_dt = datetime.now(timezone.utc)
+            order.cancellation_requested = False
+            order.cancellation_decision = decision
+            order.cancellation_decided_at = now_dt
+
+            if decision == "cancelled":
+                order.status = "Cancelled"
+
+            await session.commit()
+            await session.refresh(order)
+            return order, True
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[CANCEL_DECISION] Failed to process cancellation decision for Order #{order_id}: {e}")
+            raise e
 
 
 async def add_images_to_order(

@@ -4025,5 +4025,248 @@ class TestFacebookRecoveryCodeParserExclusion(unittest.IsolatedAsyncioTestCase):
         self.assertIn("777777", parsed["unknown_packages"])
 
 
+class TestClientOrderCancellationRequestWorkflow(unittest.IsolatedAsyncioTestCase):
+    async def test_client_replies_cancel_creates_request_for_loader(self):
+        from database import init_db, create_order, get_order_by_id
+        from handlers import handle_client_cancellation_request
+
+        await init_db()
+
+        order = await create_order(
+            email="client_cancel_1@test.com",
+            client_chat_id=-100123456,
+            original_message_id=9001,
+            package="2400",
+            status="Pending"
+        )
+
+        sent_messages = []
+
+        class MockRepliedMsg:
+            message_id = 9001
+
+        class MockUser:
+            id = 111222333
+
+        class MockChat:
+            id = -100123456
+
+        class MockMessage:
+            message_id = 9002
+            text = "cancel"
+            caption = None
+            reply_to_message = MockRepliedMsg()
+
+            async def reply_text(self, text, quote=True):
+                sent_messages.append(text)
+
+        class MockBot:
+            async def send_message(self, chat_id, text, reply_markup=None, reply_to_message_id=None, parse_mode=None):
+                sent_messages.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+
+        class MockUpdate:
+            effective_message = MockMessage()
+            effective_user = MockUser()
+            effective_chat = MockChat()
+
+        mock_update = MockUpdate()
+        mock_context = type("Context", (), {"bot": MockBot()})()
+
+        handled = await handle_client_cancellation_request(mock_update, mock_context)
+        self.assertTrue(handled)
+
+        updated_order = await get_order_by_id(order.id)
+        self.assertTrue(updated_order.cancellation_requested)
+        self.assertEqual(updated_order.status, "Pending")  # Must NOT be cancelled yet
+
+    async def test_random_cancel_without_reply_is_ignored(self):
+        from handlers import handle_client_cancellation_request
+
+        class MockUser:
+            id = 111222333
+
+        class MockChat:
+            id = -100123456
+
+        class MockMessage:
+            message_id = 9005
+            text = "cancel"
+            caption = None
+            reply_to_message = None  # No reply
+
+        class MockUpdate:
+            effective_message = MockMessage()
+            effective_user = MockUser()
+            effective_chat = MockChat()
+
+        mock_update = MockUpdate()
+        mock_context = type("Context", (), {"bot": None})()
+
+        handled = await handle_client_cancellation_request(mock_update, mock_context)
+        self.assertFalse(handled)
+
+    async def test_duplicate_cancellation_request_prevented(self):
+        from database import init_db, create_order, request_order_cancellation
+        from handlers import handle_client_cancellation_request
+
+        await init_db()
+
+        order = await create_order(
+            email="client_cancel_dup@test.com",
+            client_chat_id=-100123456,
+            original_message_id=9010,
+            package="5040",
+            status="Pending"
+        )
+        await request_order_cancellation(order.id)
+
+        replied_text = []
+
+        class MockRepliedMsg:
+            message_id = 9010
+
+        class MockMessage:
+            message_id = 9011
+            text = "cancel"
+            caption = None
+            reply_to_message = MockRepliedMsg()
+
+            async def reply_text(self, text, quote=True):
+                replied_text.append(text)
+
+        class MockUpdate:
+            effective_message = MockMessage()
+            effective_user = type("User", (), {"id": 111})()
+            effective_chat = type("Chat", (), {"id": -100123456})()
+
+        mock_update = MockUpdate()
+        mock_context = type("Context", (), {"bot": None})()
+
+        handled = await handle_client_cancellation_request(mock_update, mock_context)
+        self.assertTrue(handled)
+        self.assertIn("Cancellation request already sent", replied_text[0])
+
+    async def test_already_delivered_order_cannot_be_cancelled(self):
+        from database import init_db, create_order
+        from handlers import handle_client_cancellation_request
+
+        await init_db()
+
+        order = await create_order(
+            email="client_cancel_del@test.com",
+            client_chat_id=-100123456,
+            original_message_id=9020,
+            package="10800",
+            status="Delivered"
+        )
+
+        replied_text = []
+
+        class MockRepliedMsg:
+            message_id = 9020
+
+        class MockMessage:
+            message_id = 9021
+            text = "/cancel"
+            caption = None
+            reply_to_message = MockRepliedMsg()
+
+            async def reply_text(self, text, quote=True):
+                replied_text.append(text)
+
+        class MockUpdate:
+            effective_message = MockMessage()
+            effective_user = type("User", (), {"id": 111})()
+            effective_chat = type("Chat", (), {"id": -100123456})()
+
+        mock_update = MockUpdate()
+        mock_context = type("Context", (), {"bot": None})()
+
+        handled = await handle_client_cancellation_request(mock_update, mock_context)
+        self.assertTrue(handled)
+        self.assertIn("already been delivered and cannot be cancelled", replied_text[0])
+
+    async def test_loader_decisions_cancel_wait_almost(self):
+        from database import init_db, create_order, request_order_cancellation, get_order_by_id
+        from handlers import client_cancellation_request_callback_handler
+
+        await init_db()
+
+        # 1. Loader cancels order
+        order1 = await create_order(
+            email="loader_dec_1@test.com",
+            client_chat_id=-100123456,
+            original_message_id=9030,
+            package="2400",
+            status="Pending"
+        )
+        await request_order_cancellation(order1.id)
+
+        class MockUser:
+            id = 1573531032  # Super Admin ID
+
+        class MockQuery:
+            from_user = MockUser()
+            data = f"cancel_req_cancel:{order1.id}"
+            async def answer(self, text=None, show_alert=False): pass
+            async def edit_message_text(self, text, parse_mode=None): pass
+
+        class MockUpdate:
+            callback_query = MockQuery()
+
+        await client_cancellation_request_callback_handler(MockUpdate(), type("Context", (), {"bot": None})())
+
+        up1 = await get_order_by_id(order1.id)
+        self.assertEqual(up1.status, "Cancelled")
+        self.assertFalse(up1.cancellation_requested)
+        self.assertEqual(up1.cancellation_decision, "cancelled")
+
+        # 2. Loader selects wait
+        order2 = await create_order(
+            email="loader_dec_2@test.com",
+            client_chat_id=-100123456,
+            original_message_id=9040,
+            package="2400",
+            status="Pending"
+        )
+        await request_order_cancellation(order2.id)
+
+        class MockQueryWait:
+            from_user = MockUser()
+            data = f"cancel_req_wait:{order2.id}"
+            async def answer(self, text=None, show_alert=False): pass
+            async def edit_message_text(self, text, parse_mode=None): pass
+
+        await client_cancellation_request_callback_handler(type("Update", (), {"callback_query": MockQueryWait()})(), type("Context", (), {"bot": None})())
+
+        up2 = await get_order_by_id(order2.id)
+        self.assertEqual(up2.status, "Pending")
+        self.assertFalse(up2.cancellation_requested)
+        self.assertEqual(up2.cancellation_decision, "wait")
+
+        # 3. Loader selects almost done
+        order3 = await create_order(
+            email="loader_dec_3@test.com",
+            client_chat_id=-100123456,
+            original_message_id=9050,
+            package="2400",
+            status="Pending"
+        )
+        await request_order_cancellation(order3.id)
+
+        class MockQueryAlmost:
+            from_user = MockUser()
+            data = f"cancel_req_almost:{order3.id}"
+            async def answer(self, text=None, show_alert=False): pass
+            async def edit_message_text(self, text, parse_mode=None): pass
+
+        await client_cancellation_request_callback_handler(type("Update", (), {"callback_query": MockQueryAlmost()})(), type("Context", (), {"bot": None})())
+
+        up3 = await get_order_by_id(order3.id)
+        self.assertEqual(up3.status, "Pending")
+        self.assertFalse(up3.cancellation_requested)
+        self.assertEqual(up3.cancellation_decision, "rejected")
+
+
 if __name__ == "__main__":
     unittest.main()
