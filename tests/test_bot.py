@@ -4554,6 +4554,48 @@ class TestBinanceWatcherAndDepositVerification(unittest.IsolatedAsyncioTestCase)
             bal2 = await get_wallet_balance(group_b, user_id)
             self.assertAlmostEqual(bal2, 0.077, places=4)
 
+    async def test_wallet_decimal_precision_storage_and_formatting(self):
+        from utils import format_wallet_amount
+        from database import topup_wallet, deduct_wallet_balance_for_order, AsyncSessionLocal
+        from models import Wallet, WalletTransaction, PaymentTransaction
+        from sqlalchemy import select
+        import uuid
+
+        # 1. Test format_wallet_amount formatting rules
+        self.assertEqual(format_wallet_amount(0.077), "0.077")
+        self.assertEqual(format_wallet_amount(0.001), "0.001")
+        self.assertEqual(format_wallet_amount(10.50), "10.50")
+        self.assertEqual(format_wallet_amount(100.25), "100.25")
+        self.assertEqual(format_wallet_amount(0.00), "0.00")
+
+        # 2. Test exact DB preservation for micro-decimals (0.077)
+        group_id = -100888999
+        user_id = 123456
+        tx_id = f"TX_PRECISION_{uuid.uuid4().hex[:6]}"
+
+        wallet, ok, msg = await topup_wallet(group_id, user_id, 0.077, provider="Binance", transaction_id=tx_id)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(wallet.balance, 0.077, places=6)
+
+        # Inspect DB record directly
+        async with AsyncSessionLocal() as session:
+            stmt_w = select(Wallet).where(Wallet.client_group_id == group_id, Wallet.telegram_user_id == user_id)
+            w_db = (await session.execute(stmt_w)).scalar_one()
+            self.assertAlmostEqual(w_db.balance, 0.077, places=6)
+
+            stmt_wt = select(WalletTransaction).where(WalletTransaction.wallet_id == w_db.id)
+            wt_db = (await session.execute(stmt_wt)).scalar_one()
+            self.assertAlmostEqual(wt_db.amount, 0.077, places=6)
+
+            stmt_pt = select(PaymentTransaction).where(PaymentTransaction.transaction_id == tx_id)
+            pt_db = (await session.execute(stmt_pt)).scalar_one()
+            self.assertAlmostEqual(pt_db.amount, 0.077, places=6)
+
+        # Deduct micro-decimal amount 0.001
+        wallet_after, ok_deduct, msg_deduct = await deduct_wallet_balance_for_order(group_id, user_id, order_id=5555, amount=0.001)
+        self.assertTrue(ok_deduct)
+        self.assertAlmostEqual(wallet_after.balance, 0.076, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

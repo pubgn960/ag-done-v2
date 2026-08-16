@@ -13,6 +13,7 @@ import shutil
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from sqlalchemy import select, func, delete, update, or_
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -1624,14 +1625,18 @@ async def topup_wallet(
                 session.add(wallet)
                 await session.flush()
 
-            before_bal = wallet.balance
-            wallet.balance += amount
-            after_bal = wallet.balance
+            dec_before = Decimal(str(round(wallet.balance, 6)))
+            dec_amount = Decimal(str(round(amount, 6)))
+            dec_after = dec_before + dec_amount
+
+            wallet.balance = float(dec_after)
+            before_bal = float(dec_before)
+            after_bal = float(dec_after)
 
             w_tx = WalletTransaction(
                 wallet_id=wallet.id,
                 type="TOPUP",
-                amount=amount,
+                amount=float(dec_amount),
                 before_balance=before_bal,
                 after_balance=after_bal,
                 provider=provider,
@@ -1644,7 +1649,7 @@ async def topup_wallet(
                 p_tx = PaymentTransaction(
                     provider=provider,
                     transaction_id=transaction_id,
-                    amount=amount,
+                    amount=float(dec_amount),
                     currency=currency.upper(),
                     wallet_id=wallet.id,
                     status="VERIFIED",
@@ -1654,7 +1659,7 @@ async def topup_wallet(
 
             await session.commit()
             await session.refresh(wallet)
-            logger.info(f"[WALLET_TOPUP] +${amount} credited to Wallet #{wallet.id} (Group {client_group_id}, User {telegram_user_id}). New Balance: ${after_bal}")
+            logger.info(f"[WALLET_TOPUP] +${after_bal - before_bal} credited to Wallet #{wallet.id} (Group {client_group_id}, User {telegram_user_id}). New Balance: ${after_bal}")
 
             return wallet, True, "SUCCESS"
         except Exception as e:
@@ -1698,14 +1703,18 @@ async def deduct_wallet_balance_for_order(
                 logger.info(f"[WALLET_DEDUCTION_FAILED] Insufficient balance for User {telegram_user_id} in Group {client_group_id}. Required: ${amount}, Balance: ${current_bal}")
                 return wallet, False, "INSUFFICIENT_BALANCE"
 
-            before_bal = wallet.balance
-            wallet.balance -= amount
-            after_bal = wallet.balance
+            dec_before = Decimal(str(round(wallet.balance, 6)))
+            dec_amount = Decimal(str(round(amount, 6)))
+            dec_after = dec_before - dec_amount
+
+            wallet.balance = float(dec_after)
+            before_bal = float(dec_before)
+            after_bal = float(dec_after)
 
             w_tx = WalletTransaction(
                 wallet_id=wallet.id,
                 type="ORDER_DEDUCTION",
-                amount=-amount,
+                amount=-float(dec_amount),
                 before_balance=before_bal,
                 after_balance=after_bal,
                 order_id=order_id,

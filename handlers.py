@@ -87,6 +87,7 @@ from database import (
 )
 from models import Order
 from utils import (
+    format_wallet_amount,
     check_admin_permission,
     is_admin,
     is_super_admin,
@@ -402,8 +403,8 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 bal_val = wallet_obj.balance if wallet_obj else 0.0
                 client_pay_msg = (
                     f"✅ <b>Order #{order.id} Paid via Category B Wallet!</b>\n\n"
-                    f"<b>Deducted:</b> ${catb_total_price:.2f}\n"
-                    f"<b>Remaining Balance:</b> ${bal_val:.2f}\n\n"
+                    f"<b>Deducted:</b> ${format_wallet_amount(catb_total_price)}\n"
+                    f"<b>Remaining Balance:</b> ${format_wallet_amount(bal_val)}\n\n"
                     f"Order is now being processed."
                 )
                 await message.reply_text(client_pay_msg, parse_mode="HTML", quote=True)
@@ -453,9 +454,9 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             try:
                 insufficient_msg = (
                     f"⚠️ <b>Insufficient Wallet Balance for Order #{order.id}</b>\n\n"
-                    f"<b>Required Amount:</b> ${catb_total_price:.2f}\n"
-                    f"<b>Your Current Balance:</b> ${bal_val:.2f}\n"
-                    f"<b>Remaining Needed:</b> ${needed:.2f}\n\n"
+                    f"<b>Required Amount:</b> ${format_wallet_amount(catb_total_price)}\n"
+                    f"<b>Your Current Balance:</b> ${format_wallet_amount(bal_val)}\n"
+                    f"<b>Remaining Needed:</b> ${format_wallet_amount(needed)}\n\n"
                     f"Please top up your wallet in this group to process your order."
                 )
                 await message.reply_text(insufficient_msg, parse_mode="HTML", quote=True)
@@ -4110,8 +4111,8 @@ async def topup_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
         f"✅ <b>Category B Wallet Top-Up Successful</b>\n\n"
         f"<b>Group:</b> {html.escape(group_name)}\n"
         f"<b>User ID:</b> <code>{target_user_id}</code>\n"
-        f"<b>Amount Credited:</b> +${amount:.2f}\n"
-        f"<b>New Balance:</b> ${wallet.balance:.2f}\n"
+        f"<b>Amount Credited:</b> +${format_wallet_amount(amount)}\n"
+        f"<b>New Balance:</b> ${format_wallet_amount(wallet.balance)}\n"
         f"<b>Provider:</b> {html.escape(provider)}"
     )
     if tx_id:
@@ -4148,15 +4149,15 @@ async def wallet_command_handler(update: Update, context: ContextTypes.DEFAULT_T
         f"💳 <b>Category B Wallet Overview</b>\n\n"
         f"<b>Group:</b> {html.escape(group_name)}\n"
         f"<b>Customer:</b> {html.escape(user_name)} (<code>{user.id}</code>)\n"
-        f"<b>Current Balance:</b> <b>${balance:.2f}</b>\n\n"
+        f"<b>Current Balance:</b> <b>${format_wallet_amount(balance)}</b>\n\n"
     )
 
     if tx_history:
         msg += "<b>Recent Activity:</b>\n"
         for tx in tx_history:
             dt_str = tx.timestamp.strftime("%m-%d %H:%M")
-            sign = "+" if tx.amount > 0 else ""
-            msg += f"• [{dt_str}] {sign}${tx.amount:.2f} ({tx.type})\n"
+            sign = "+$" if tx.amount > 0 else "-$"
+            msg += f"• [{dt_str}] {sign}{format_wallet_amount(abs(tx.amount))} ({tx.type})\n"
     else:
         msg += "<i>No transaction history yet.</i>"
 

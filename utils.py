@@ -1689,3 +1689,31 @@ def normalize_order_content_for_dedup(text_content: Optional[str]) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     normalized_lines = [re.sub(r'[ \t]+', ' ', line) for line in lines]
     return "\n".join(normalized_lines)
+
+
+def format_wallet_amount(val: Optional[Union[float, int]]) -> str:
+    """
+    Formats wallet monetary amounts preserving exact micro-decimal precision.
+    If the value has sub-cent decimals (e.g. 0.077, 0.001), formats up to 4 decimal places without trailing zero artifacts.
+    If standard 2 decimal places (e.g. 10.50, 100.25, 0.00), formats with 2 decimal places.
+    Examples:
+      0.077  -> "0.077"
+      0.001  -> "0.001"
+      10.5   -> "10.50"
+      100.25 -> "100.25"
+      0.0    -> "0.00"
+    """
+    if val is None:
+        return "0.00"
+    val_clean = round(float(val), 6)
+    val_2dec = round(val_clean, 2)
+    if abs(val_clean - val_2dec) > 1e-5:
+        s = f"{val_clean:.4f}".rstrip('0').rstrip('.')
+        parts = s.split('.')
+        if len(parts) == 1:
+            return f"{s}.00"
+        elif len(parts[1]) == 1:
+            return f"{s}0"
+        return s
+    else:
+        return f"{val_2dec:.2f}"
