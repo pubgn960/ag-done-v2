@@ -443,6 +443,7 @@ def extract_payer_binance_uid(dep: Any) -> Optional[str]:
     # Check top-level direct fields
     top_candidates = [
         dep.get("payer_binance_uid"),
+        dep.get("binanceId"),
         dep.get("payerId"),
         dep.get("payer_uid"),
         dep.get("senderUid"),
@@ -457,6 +458,7 @@ def extract_payer_binance_uid(dep: Any) -> Optional[str]:
     payer_info = dep.get("payerInfo")
     if isinstance(payer_info, dict):
         nested_candidates = [
+            payer_info.get("binanceId"),
             payer_info.get("payerId"),
             payer_info.get("binanceUid"),
             payer_info.get("uid"),

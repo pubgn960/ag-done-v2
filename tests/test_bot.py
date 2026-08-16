@@ -4924,6 +4924,21 @@ class TestBinanceUIDExtractionDiagnostic(unittest.TestCase):
         }
         self.assertEqual(extract_payer_binance_uid(dep), "987654321")
 
+    def test_binance_pay_payerinfo_binance_id(self):
+        from payment_verifier import extract_payer_binance_uid
+        dep = {
+            "orderType": "C2C",
+            "transactionId": "PAY_TX_2002",
+            "uid": "10029384",
+            "payerInfo": {
+                "name": "Altaf",
+                "type": "USER",
+                "binanceId": "509641890",
+                "unmaskData": "masked_user_info"
+            }
+        }
+        self.assertEqual(extract_payer_binance_uid(dep), "509641890")
+
     def test_malformed_and_empty_responses(self):
         from payment_verifier import extract_payer_binance_uid
         self.assertIsNone(extract_payer_binance_uid(None))
