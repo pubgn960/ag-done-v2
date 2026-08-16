@@ -4222,3 +4222,32 @@ async def process_pending_category_b_orders(client_group_id: int, telegram_user_
                     logger.error(f"[WALLET_AUTO_PROCESS] Failed to notify loader group: {e}")
 
             logger.info(f"[WALLET_AUTO_PROCESS] Order #{order.id} auto-paid via wallet balance.")
+
+
+async def testbinance_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command: /testbinance
+    Executes a safe, read-only Binance API connectivity and payment-verification capability test.
+    Does NOT credit any wallet, mutate database, or perform payments/trades.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    if not is_super_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized: Only Super Admin can run /testbinance.")
+        return
+
+    msg_wait = await update.message.reply_text("🧪 <i>Running read-only Binance API connectivity & deposit-verification test...</i>", parse_mode="HTML")
+
+    from payment_verifier import test_binance_api_connectivity
+    report = await test_binance_api_connectivity()
+
+    text_report = report.get("formatted_text", "🧪 Binance API Test Failed.")
+
+    try:
+        await msg_wait.edit_text(text_report, parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text(text_report, parse_mode="HTML")
+

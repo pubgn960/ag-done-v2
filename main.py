@@ -59,6 +59,7 @@ from handlers import (
     client_cancellation_request_callback_handler,
     topup_command_handler,
     wallet_command_handler,
+    testbinance_command_handler,
     resend_command,
     delete_command,
     stats_command,
@@ -276,6 +277,7 @@ def main() -> None:
     application.add_handler(CommandHandler("cancelorder", client_cancel_command_handler))
     application.add_handler(CommandHandler("topup", topup_command_handler))
     application.add_handler(CommandHandler(["wallet", "balance"], wallet_command_handler))
+    application.add_handler(CommandHandler("testbinance", testbinance_command_handler))
 
     # Register Interactive Callback Query Handlers
     application.add_handler(CallbackQueryHandler(client_cancellation_request_callback_handler, pattern="^cancel_req_"))

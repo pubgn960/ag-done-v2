@@ -4403,6 +4403,14 @@ class TestCategoryABPricingAndWalletSystem(unittest.IsolatedAsyncioTestCase):
         # DeliveryLedger running total MUST remain 100% unchanged by wallet top-up / deduction!
         self.assertEqual(before_ledger_total, after_ledger_total)
 
+    async def test_binance_api_read_only_connectivity_test(self):
+        from payment_verifier import test_binance_api_connectivity
+
+        report = await test_binance_api_connectivity()
+        self.assertIn("credentials_loaded", report)
+        self.assertIn("formatted_text", report)
+        self.assertIn("🧪 <b>Binance API Test</b>", report["formatted_text"])
+
 
 if __name__ == "__main__":
     unittest.main()
