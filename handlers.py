@@ -79,7 +79,11 @@ from database import (
     get_order_waiting_for_customer_update,
     get_order_by_original_message_id,
     request_order_cancellation,
-    process_cancellation_decision
+    process_cancellation_decision,
+    get_wallet_balance,
+    get_wallet_transaction_history,
+    topup_wallet,
+    deduct_wallet_balance_for_order
 )
 from models import Order
 from utils import (

@@ -4411,6 +4411,54 @@ class TestCategoryABPricingAndWalletSystem(unittest.IsolatedAsyncioTestCase):
         self.assertIn("formatted_text", report)
         self.assertIn("🧪 <b>Binance API Multi-Endpoint Diagnostics</b>", report["formatted_text"])
 
+    async def test_wallet_command_handler_execution_and_category_a_safety(self):
+        from handlers import wallet_command_handler
+        from database import CLIENT_GROUPS_CACHE, init_db
+
+        await init_db()
+
+        class MockUser:
+            id = 555123
+            first_name = "TestUser"
+            username = "testuser"
+
+        class MockChat:
+            id = -100999888
+            title = "Test Group B"
+
+        class MockMessage:
+            def __init__(self):
+                self.replied_text = None
+            async def reply_text(self, text, parse_mode=None, quote=True):
+                self.replied_text = text
+
+        # 1. Category B Group Wallet Execution (/wallet & /balance)
+        CLIENT_GROUPS_CACHE[-100999888] = "B"
+        msg_b = MockMessage()
+        up_b = type("Update", (), {"effective_user": MockUser(), "effective_chat": MockChat(), "message": msg_b})()
+        ctx_b = type("Context", (), {})()
+
+        # Should execute without NameError
+        await wallet_command_handler(up_b, ctx_b)
+        self.assertIsNotNone(msg_b.replied_text)
+        self.assertIn("Category B Wallet Overview", msg_b.replied_text)
+        self.assertIn("Current Balance:", msg_b.replied_text)
+        self.assertIn("$0.00", msg_b.replied_text)
+
+        # 2. Category A Group Wallet Execution (Must refuse & NOT create wallet)
+        chat_a = MockChat()
+        chat_a.id = -100777666
+        chat_a.title = "Test Group A"
+        CLIENT_GROUPS_CACHE[-100777666] = "A"
+
+        msg_a = MockMessage()
+        up_a = type("Update", (), {"effective_user": MockUser(), "effective_chat": chat_a, "message": msg_a})()
+        ctx_a = type("Context", (), {})()
+
+        await wallet_command_handler(up_a, ctx_a)
+        self.assertIsNotNone(msg_a.replied_text)
+        self.assertIn("Wallet system is active only for Category B groups.", msg_a.replied_text)
+
 
 if __name__ == "__main__":
     unittest.main()
