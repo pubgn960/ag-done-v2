@@ -57,6 +57,8 @@ from handlers import (
     cancel_command,
     client_cancel_command_handler,
     client_cancellation_request_callback_handler,
+    topup_command_handler,
+    wallet_command_handler,
     resend_command,
     delete_command,
     stats_command,
@@ -271,9 +273,9 @@ def main() -> None:
     application.add_handler(CommandHandler("subtractprice", subtractprice_command_handler))
     application.add_handler(CommandHandler("ledger", ledger_command_handler))
     application.add_handler(CommandHandler("todaytotal", todaytotal_command_handler))
-    application.add_handler(CommandHandler("resetledger", resetledger_command_handler))
-
     application.add_handler(CommandHandler("cancelorder", client_cancel_command_handler))
+    application.add_handler(CommandHandler("topup", topup_command_handler))
+    application.add_handler(CommandHandler(["wallet", "balance"], wallet_command_handler))
 
     # Register Interactive Callback Query Handlers
     application.add_handler(CallbackQueryHandler(client_cancellation_request_callback_handler, pattern="^cancel_req_"))

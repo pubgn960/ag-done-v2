@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import joinedload
 
 from config import Config
-from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger, CalculatorLedger, RunningTotalLedger
+from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger, CalculatorLedger, RunningTotalLedger, Wallet, WalletTransaction, PaymentTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -140,11 +140,26 @@ def _migrate_orders_schema(sync_conn: Any) -> None:
             try:
                 if is_postgres:
                     sync_conn.execute(text(f"ALTER TABLE running_total_ledger ADD COLUMN IF NOT EXISTS chat_id {bigint_type};"))
-                else:
-                    sync_conn.execute(text(f"ALTER TABLE running_total_ledger ADD COLUMN chat_id {bigint_type};"))
-                logger.info("Successfully added column chat_id to running_total_ledger.")
             except Exception as e:
                 logger.error(f"Failed to add column chat_id to running_total_ledger: {e}")
+
+    if "package_prices" in tables:
+        pk_cols = [col.lower() for col in inspector.get_pk_constraint("package_prices").get("constrained_columns", [])]
+        if "category" not in pk_cols:
+            logger.info("Migrating package_prices schema to compound primary key (category, package)...")
+            try:
+                if is_postgres:
+                    sync_conn.execute(text("ALTER TABLE package_prices ADD COLUMN IF NOT EXISTS category VARCHAR(10) DEFAULT 'A';"))
+                    sync_conn.execute(text("ALTER TABLE package_prices DROP CONSTRAINT IF EXISTS package_prices_pkey;"))
+                    sync_conn.execute(text("ALTER TABLE package_prices ADD PRIMARY KEY (category, package);"))
+                else:
+                    sync_conn.execute(text("CREATE TABLE IF NOT EXISTS package_prices_new (category VARCHAR(10) NOT NULL DEFAULT 'A', package VARCHAR(50) NOT NULL, price FLOAT NOT NULL, updated_by BIGINT, updated_at DATETIME NOT NULL, PRIMARY KEY (category, package));"))
+                    sync_conn.execute(text("INSERT OR IGNORE INTO package_prices_new (category, package, price, updated_by, updated_at) SELECT 'A', package, price, updated_by, updated_at FROM package_prices;"))
+                    sync_conn.execute(text("DROP TABLE package_prices;"))
+                    sync_conn.execute(text("ALTER TABLE package_prices_new RENAME TO package_prices;"))
+                logger.info("Successfully migrated package_prices schema to compound primary key (category, package).")
+            except Exception as e:
+                logger.error(f"Failed to migrate package_prices schema: {e}")
 
 
 async def init_db() -> None:
@@ -1408,15 +1423,16 @@ DEFAULT_PACKAGE_PRICES: Dict[str, float] = {
 }
 
 
-async def seed_and_load_package_prices() -> Dict[str, float]:
+async def seed_and_load_package_prices(category: str = "A") -> Dict[str, float]:
     """
-    Seeds default package prices into DB if empty or missing,
-    loads all package prices from DB, and updates in-memory cache.
+    Seeds default package prices into DB for specific category ('A' or 'B') if empty,
+    loads package prices from DB, and updates in-memory cache for that category.
     """
     from utils import reload_package_prices_cache
+    cat = (category or "A").upper()
 
     async with AsyncSessionLocal() as session:
-        stmt = select(PackagePrice)
+        stmt = select(PackagePrice).where(PackagePrice.category == cat)
         res = await session.execute(stmt)
         existing_prices = {p.package: p.price for p in res.scalars().all()}
 
@@ -1424,45 +1440,52 @@ async def seed_and_load_package_prices() -> Dict[str, float]:
         if missing:
             for pkg in missing:
                 session.add(PackagePrice(
+                    category=cat,
                     package=pkg,
                     price=DEFAULT_PACKAGE_PRICES[pkg],
                     updated_at=datetime.now(timezone.utc)
                 ))
             await session.commit()
-            logger.info(f"[PRICE_DB] Seeded {len(missing)} missing default package prices into database.")
+            logger.info(f"[PRICE_DB] Seeded {len(missing)} missing default package prices into database for Category {cat}.")
 
-            res = await session.execute(select(PackagePrice))
+            res = await session.execute(select(PackagePrice).where(PackagePrice.category == cat))
             existing_prices = {p.package: p.price for p in res.scalars().all()}
 
-        reload_package_prices_cache(existing_prices)
-        logger.info(f"[PRICE_DB] Loaded {len(existing_prices)} package prices from database into cache.")
+        reload_package_prices_cache(existing_prices, category=cat)
+        logger.info(f"[PRICE_DB] Loaded {len(existing_prices)} Category {cat} package prices from database into cache.")
         return existing_prices
 
 
-async def get_all_package_prices_from_db() -> Dict[str, float]:
+async def get_all_package_prices_from_db(category: str = "A") -> Dict[str, float]:
     """
-    Retrieves all 22 package prices directly from the database table.
+    Retrieves package prices directly from the database table for a specific category ('A' or 'B').
     """
+    cat = (category or "A").upper()
     async with AsyncSessionLocal() as session:
-        stmt = select(PackagePrice)
+        stmt = select(PackagePrice).where(PackagePrice.category == cat)
         res = await session.execute(stmt)
         prices = {p.package: p.price for p in res.scalars().all()}
         return prices
 
 
-async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_by_id: Optional[int] = None) -> bool:
+async def bulk_update_package_prices_in_db(
+    price_map: Dict[str, float],
+    category: str = "A",
+    updated_by_id: Optional[int] = None
+) -> bool:
     """
-    Atomically performs UPSERT for package prices in the database in a single transaction.
-    - If package exists: UPDATE price.
-    - If package does NOT exist: INSERT new PackagePrice record.
-    Reloads complete in-memory cache directly from the database upon success.
+    Atomically performs UPSERT for package prices in the database for Category 'A' or 'B'.
+    - Updates only specified category's price list.
+    - Category A updates DO NOT affect Category B. Category B updates DO NOT affect Category A.
+    - Reloads category in-memory cache directly from the database upon success.
     """
     from utils import reload_package_prices_cache
     from order_parser import normalize_package_alias
+    cat = (category or "A").upper()
 
     async with AsyncSessionLocal() as session:
         try:
-            res = await session.execute(select(PackagePrice))
+            res = await session.execute(select(PackagePrice).where(PackagePrice.category == cat))
             old_prices = {p.package: p.price for p in res.scalars().all()}
 
             now = datetime.now(timezone.utc)
@@ -1470,29 +1493,33 @@ async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_
             for raw_pkg, new_price in price_map.items():
                 canonical_pkg = normalize_package_alias(str(raw_pkg))
                 old_p = old_prices.get(canonical_pkg)
-                stmt = select(PackagePrice).where(PackagePrice.package == canonical_pkg)
+                stmt = select(PackagePrice).where(
+                    PackagePrice.category == cat,
+                    PackagePrice.package == canonical_pkg
+                )
                 existing = (await session.execute(stmt)).scalar_one_or_none()
                 if existing:
-                    existing.price = new_price
+                    existing.price = float(new_price)
                     existing.updated_by = updated_by_id
                     existing.updated_at = now
                 else:
                     session.add(PackagePrice(
+                        category=cat,
                         package=canonical_pkg,
-                        price=new_price,
+                        price=float(new_price),
                         updated_by=updated_by_id,
                         updated_at=now
                     ))
 
-                logger.info(f"[PRICE_UPDATE] Package {canonical_pkg}: Old Price {old_p} -> New Price {new_price} | Updated By #{updated_by_id}")
+                logger.info(f"[PRICE_UPDATE] Category {cat} Package {canonical_pkg}: Old {old_p} -> New {new_price} | Updated By #{updated_by_id}")
 
             await session.commit()
 
-            # Reload complete DB price map into cache
-            res_all = await session.execute(select(PackagePrice))
+            # Reload complete DB price map for category into cache
+            res_all = await session.execute(select(PackagePrice).where(PackagePrice.category == cat))
             all_db_prices = {p.package: p.price for p in res_all.scalars().all()}
-            reload_package_prices_cache(all_db_prices)
-            logger.info(f"[PRICE_UPDATE] Successfully upserted {len(price_map)} package prices in database. Total in DB: {len(all_db_prices)}.")
+            reload_package_prices_cache(all_db_prices, category=cat)
+            logger.info(f"[PRICE_UPDATE] Successfully upserted {len(price_map)} Category {cat} prices in database. Total in Cat {cat}: {len(all_db_prices)}.")
             return True
         except Exception as e:
             await session.rollback()
@@ -1500,16 +1527,218 @@ async def bulk_update_package_prices_in_db(price_map: Dict[str, float], updated_
             raise e
 
 
-async def update_single_package_price_in_db(pkg: str, price_val: float, updated_by_id: Optional[int] = None) -> bool:
+async def update_single_package_price_in_db(
+    pkg: str,
+    price_val: float,
+    category: str = "A",
+    updated_by_id: Optional[int] = None
+) -> bool:
     """
-    Updates price for a single package in DB via UPSERT and reloads in-memory cache.
+    Updates price for a single package in DB via UPSERT and reloads in-memory cache for category.
     Canonical package alias normalization is applied.
     """
     from order_parser import normalize_package_alias
     canonical_pkg = normalize_package_alias(pkg)
 
-    success = await bulk_update_package_prices_in_db({canonical_pkg: price_val}, updated_by_id=updated_by_id)
+    success = await bulk_update_package_prices_in_db({canonical_pkg: price_val}, category=category, updated_by_id=updated_by_id)
     return success
+
+
+# ==========================================
+# Category B Wallet Operations
+# ==========================================
+
+async def get_or_create_wallet(client_group_id: int, telegram_user_id: int) -> Wallet:
+    """
+    Retrieves or creates a Wallet for a specific (client_group_id, telegram_user_id) pair.
+    Wallet identity is strictly scoped per group + user ID.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(Wallet).where(
+            Wallet.client_group_id == client_group_id,
+            Wallet.telegram_user_id == telegram_user_id
+        )
+        wallet = (await session.execute(stmt)).scalar_one_or_none()
+        if not wallet:
+            wallet = Wallet(
+                client_group_id=client_group_id,
+                telegram_user_id=telegram_user_id,
+                balance=0.0
+            )
+            session.add(wallet)
+            await session.commit()
+            await session.refresh(wallet)
+            logger.info(f"[WALLET_CREATED] Created new Category B wallet #{wallet.id} for Group {client_group_id} User {telegram_user_id}.")
+        return wallet
+
+
+async def get_wallet_balance(client_group_id: int, telegram_user_id: int) -> float:
+    """Returns wallet balance for (client_group_id, telegram_user_id). Defaults to 0.0."""
+    wallet = await get_or_create_wallet(client_group_id, telegram_user_id)
+    return wallet.balance if wallet else 0.0
+
+
+async def topup_wallet(
+    client_group_id: int,
+    telegram_user_id: int,
+    amount: float,
+    provider: str = "Admin",
+    transaction_id: Optional[str] = None,
+    currency: str = "USDT"
+) -> Tuple[Optional[Wallet], bool, str]:
+    """
+    Top-up wallet balance for (client_group_id, telegram_user_id).
+    Enforces duplicate transaction protection via (provider, transaction_id).
+    Allowed currencies: USDT, USDC.
+    Does NOT update DeliveryLedger or RunningTotalLedger.
+    """
+    if currency.upper() not in ("USDT", "USDC"):
+        return None, False, "INVALID_CURRENCY"
+
+    if amount <= 0:
+        return None, False, "INVALID_AMOUNT"
+
+    async with AsyncSessionLocal() as session:
+        try:
+            if transaction_id:
+                stmt_tx = select(PaymentTransaction).where(
+                    PaymentTransaction.provider == provider,
+                    PaymentTransaction.transaction_id == transaction_id
+                )
+                dup_tx = (await session.execute(stmt_tx)).scalar_one_or_none()
+                if dup_tx:
+                    logger.warning(f"[DUPLICATE_PAYMENT_BLOCKED] Provider {provider} TxID {transaction_id} already credited.")
+                    return None, False, "DUPLICATE_TRANSACTION"
+
+            stmt_w = select(Wallet).where(
+                Wallet.client_group_id == client_group_id,
+                Wallet.telegram_user_id == telegram_user_id
+            )
+            wallet = (await session.execute(stmt_w)).scalar_one_or_none()
+            if not wallet:
+                wallet = Wallet(
+                    client_group_id=client_group_id,
+                    telegram_user_id=telegram_user_id,
+                    balance=0.0
+                )
+                session.add(wallet)
+                await session.flush()
+
+            before_bal = wallet.balance
+            wallet.balance += amount
+            after_bal = wallet.balance
+
+            w_tx = WalletTransaction(
+                wallet_id=wallet.id,
+                type="TOPUP",
+                amount=amount,
+                before_balance=before_bal,
+                after_balance=after_bal,
+                provider=provider,
+                transaction_id=transaction_id,
+                status="COMPLETED"
+            )
+            session.add(w_tx)
+
+            if transaction_id:
+                p_tx = PaymentTransaction(
+                    provider=provider,
+                    transaction_id=transaction_id,
+                    amount=amount,
+                    currency=currency.upper(),
+                    wallet_id=wallet.id,
+                    status="VERIFIED",
+                    verified_at=datetime.now(timezone.utc)
+                )
+                session.add(p_tx)
+
+            await session.commit()
+            await session.refresh(wallet)
+            logger.info(f"[WALLET_TOPUP] +${amount} credited to Wallet #{wallet.id} (Group {client_group_id}, User {telegram_user_id}). New Balance: ${after_bal}")
+
+            return wallet, True, "SUCCESS"
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[WALLET_TOPUP_FAILED] {e}")
+            return None, False, str(e)
+
+
+async def deduct_wallet_balance_for_order(
+    client_group_id: int,
+    telegram_user_id: int,
+    order_id: int,
+    amount: float
+) -> Tuple[Optional[Wallet], bool, str]:
+    """
+    Atomically deducts order price from (client_group_id, telegram_user_id) wallet balance.
+    Prevents double deduction for the same order_id.
+    Does NOT update DeliveryLedger or RunningTotalLedger.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            # Check if this order has ALREADY been deducted from wallet
+            stmt_dup = select(WalletTransaction).where(
+                WalletTransaction.order_id == order_id,
+                WalletTransaction.type == "ORDER_DEDUCTION"
+            )
+            dup_deduction = (await session.execute(stmt_dup)).scalar_one_or_none()
+            if dup_deduction:
+                logger.info(f"[WALLET_DEDUCTION] Order #{order_id} already deducted from wallet.")
+                stmt_w = select(Wallet).where(Wallet.id == dup_deduction.wallet_id)
+                wallet = (await session.execute(stmt_w)).scalar_one_or_none()
+                return wallet, True, "ALREADY_DEDUCTED"
+
+            stmt_w = select(Wallet).where(
+                Wallet.client_group_id == client_group_id,
+                Wallet.telegram_user_id == telegram_user_id
+            )
+            wallet = (await session.execute(stmt_w)).scalar_one_or_none()
+            if not wallet or wallet.balance < amount:
+                current_bal = wallet.balance if wallet else 0.0
+                logger.info(f"[WALLET_DEDUCTION_FAILED] Insufficient balance for User {telegram_user_id} in Group {client_group_id}. Required: ${amount}, Balance: ${current_bal}")
+                return wallet, False, "INSUFFICIENT_BALANCE"
+
+            before_bal = wallet.balance
+            wallet.balance -= amount
+            after_bal = wallet.balance
+
+            w_tx = WalletTransaction(
+                wallet_id=wallet.id,
+                type="ORDER_DEDUCTION",
+                amount=-amount,
+                before_balance=before_bal,
+                after_balance=after_bal,
+                order_id=order_id,
+                status="COMPLETED"
+            )
+            session.add(w_tx)
+            await session.commit()
+            await session.refresh(wallet)
+
+            logger.info(f"[WALLET_DEDUCTION] -${amount} deducted for Order #{order_id} from Wallet #{wallet.id}. New Balance: ${after_bal}")
+            return wallet, True, "SUCCESS"
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[WALLET_DEDUCTION_ERROR] {e}")
+            return None, False, str(e)
+
+
+async def get_wallet_transaction_history(client_group_id: int, telegram_user_id: int, limit: int = 10) -> List[WalletTransaction]:
+    """Retrieves recent wallet transaction history for (client_group_id, telegram_user_id)."""
+    async with AsyncSessionLocal() as session:
+        stmt_w = select(Wallet).where(
+            Wallet.client_group_id == client_group_id,
+            Wallet.telegram_user_id == telegram_user_id
+        )
+        wallet = (await session.execute(stmt_w)).scalar_one_or_none()
+        if not wallet:
+            return []
+
+        stmt = select(WalletTransaction).where(
+            WalletTransaction.wallet_id == wallet.id
+        ).order_by(WalletTransaction.timestamp.desc()).limit(limit)
+        res = await session.execute(stmt)
+        return list(res.scalars().all())
 
 
 # ==========================================

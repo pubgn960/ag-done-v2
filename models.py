@@ -7,7 +7,7 @@ Multi Loader Approval System, and Category A Only Price Workflow with prompt & c
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from sqlalchemy import String, Text, Integer, BigInteger, Float, Boolean, DateTime, ForeignKey, Index
+from sqlalchemy import String, Text, Integer, BigInteger, Float, Boolean, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -225,12 +225,13 @@ Index("idx_orders_email_created_desc", Order.email, Order.created_at.desc())
 
 class PackagePrice(Base):
     """
-    Stores official production package prices in the database.
-    Allows Super Admins to dynamically update prices via /updateprices command.
+    Stores official production package prices in the database per category ('A' or 'B').
+    Allows Super Admins to dynamically update prices via /updateprices A or /updateprices B command.
     """
 
     __tablename__ = "package_prices"
 
+    category: Mapped[str] = mapped_column(String(10), primary_key=True, default="A")
     package: Mapped[str] = mapped_column(String(50), primary_key=True)
     price: Mapped[float] = mapped_column(Float, nullable=False)
     updated_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
@@ -241,14 +242,104 @@ class PackagePrice(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<PackagePrice(package='{self.package}', price={self.price}, updated_by={self.updated_by})>"
+        return f"<PackagePrice(category='{self.category}', package='{self.package}', price={self.price}, updated_by={self.updated_by})>"
+
+
+class Wallet(Base):
+    """
+    Stores Category B Client Wallets.
+    Unique identity: (client_group_id, telegram_user_id).
+    Wallet system exists ONLY for Category B. Category A does NOT use wallets.
+    """
+    __tablename__ = "wallets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_group_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    balance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("client_group_id", "telegram_user_id", name="uq_wallet_group_user"),
+        Index("idx_wallet_group_user", "client_group_id", "telegram_user_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Wallet(id={self.id}, group_id={self.client_group_id}, user_id={self.telegram_user_id}, balance={self.balance})>"
+
+
+class WalletTransaction(Base):
+    """
+    Ledger recording all wallet operations (+ topups, - order deductions, refunds).
+    """
+    __tablename__ = "wallet_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id", ondelete="CASCADE"), nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String(50), nullable=False)  # "TOPUP", "ORDER_DEDUCTION", "REFUND", "ADJUSTMENT"
+    amount: Mapped[float] = mapped_column(Float, nullable=False)  # Positive for topup/refund, negative for deduction
+    before_balance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    after_balance: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # "Binance", "Bybit", "Admin"
+    transaction_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="COMPLETED")  # "COMPLETED", "PENDING", "FAILED"
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<WalletTransaction(id={self.id}, wallet_id={self.wallet_id}, type='{self.type}', amount={self.amount})>"
+
+
+class PaymentTransaction(Base):
+    """
+    Stores top-up payment records from providers (Binance / Bybit / Admin).
+    Enforces unique constraint on (provider, transaction_id) to prevent duplicate payment crediting.
+    """
+    __tablename__ = "payment_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)  # "Binance", "Bybit", "Admin"
+    transaction_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False, default="USDT")  # "USDT", "USDC"
+    destination: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    wallet_id: Mapped[Optional[int]] = mapped_column(ForeignKey("wallets.id", ondelete="SET NULL"), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="VERIFIED")  # "VERIFIED", "UNVERIFIED", "REJECTED"
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "transaction_id", name="uq_payment_provider_tx"),
+        Index("idx_payment_provider_tx", "provider", "transaction_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<PaymentTransaction(id={self.id}, provider='{self.provider}', tx_id='{self.transaction_id}', amount={self.amount})>"
 
 
 class DeliveryLedger(Base):
     """
     Stores individual delivery ledger entries and running totals for accounting.
     Includes deduplication protection via dedup_hash, audit reasons, and manual flags.
-    Scoped per Client Group via chat_id.
     """
 
     __tablename__ = "delivery_ledger"
@@ -262,9 +353,9 @@ class DeliveryLedger(Base):
     now_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     running_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     loader: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    dedup_hash: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True, index=True)
-    is_manual: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    dedup_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -273,13 +364,12 @@ class DeliveryLedger(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<DeliveryLedger(id={self.id}, chat_id={self.chat_id}, order_id={self.order_id}, now={self.now_value}, total={self.running_total}, manual={self.is_manual})>"
+        return f"<DeliveryLedger(id={self.id}, chat_id={self.chat_id}, order_id={self.order_id}, package='{self.package}', running_total={self.running_total})>"
 
 
 class CalculatorLedger(Base):
     """
-    Stores individual entries and running totals for the Simple Running Total Calculator.
-    Positive values ADD, negative values SUBTRACT.
+    Stores individual calculation entries for the Simple Running Total Calculator system.
     """
 
     __tablename__ = "calculator_ledger"

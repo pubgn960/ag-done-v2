@@ -356,54 +356,107 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.warning("Reaction not supported.")
 
     if category == "B":
-        # Category B Workflow: Forward to Payment Review Group (-1004441603990) with Accept / Reject buttons
+        # Parse Category B order and calculate price using Category B Price List
+        parsed_catb = parse_order_v2(text_content, category="B")
+        prices_catb = get_dynamic_package_prices(category="B")
+        catb_total_price = 0.0
+        if parsed_catb.get("packages"):
+            for pkg_item in parsed_catb["packages"]:
+                pkg_n = pkg_item["package"]
+                qty_n = pkg_item.get("qty", 1)
+                catb_total_price += (prices_catb.get(pkg_n, 0.0) * qty_n)
+
         order = await create_order(
             email=email,
             client_chat_id=chat.id,
             original_message_id=message.message_id,
             package=package_desc,
-            status="Pending Approval",
+            status="Pending Payment" if catb_total_price > 0 else "Pending Approval",
             category="B",
             raw_text=text_content
         )
 
-        payment_group_id = BOT_SETTINGS["payment_review_group_id"] or Config.PAYMENT_REVIEW_GROUP_ID
-        if payment_group_id:
-            try:
-                try:
-                    await context.bot.copy_message(
-                        chat_id=payment_group_id,
-                        from_chat_id=chat.id,
-                        message_id=message.message_id
-                    )
-                except Exception as e_copy:
-                    logger.exception(f"[PAYMENT] copy_message failed: {e_copy}")
+        wallet_deducted = False
+        wallet_obj = None
+        if catb_total_price > 0 and user_id:
+            wallet_obj, wallet_deducted, reason = await deduct_wallet_balance_for_order(
+                client_group_id=chat.id,
+                telegram_user_id=user_id,
+                order_id=order.id,
+                amount=catb_total_price
+            )
 
-                group_title = chat.title or "Client Group"
-                card_msg = (
-                    f"🟨 <b>NEW ORDER</b>\n\n"
-                    f"<b>Order ID:</b> #{order.id}\n\n"
-                    f"<b>Email:</b>\n{html.escape(order.email)}\n\n"
-                    f"<b>Group:</b>\n{html.escape(group_title)}\n\n"
-                    f"Choose an action."
+        if wallet_deducted:
+            async with AsyncSessionLocal() as session:
+                stmt_u = select(Order).where(Order.id == order.id)
+                ord_to_up = (await session.execute(stmt_u)).scalar_one_or_none()
+                if ord_to_up:
+                    ord_to_up.status = "Pending Approval"
+                    await session.commit()
+
+            try:
+                bal_val = wallet_obj.balance if wallet_obj else 0.0
+                client_pay_msg = (
+                    f"✅ <b>Order #{order.id} Paid via Category B Wallet!</b>\n\n"
+                    f"<b>Deducted:</b> ${catb_total_price:.2f}\n"
+                    f"<b>Remaining Balance:</b> ${bal_val:.2f}\n\n"
+                    f"Order is now being processed."
                 )
-                keyboard = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("✅ Accept", callback_data=f"catb_accept:{order.id}"),
-                        InlineKeyboardButton("❌ Reject", callback_data=f"catb_reject:{order.id}")
-                    ]
-                ])
-                await context.bot.send_message(
-                    chat_id=payment_group_id,
-                    text=card_msg,
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
-                logger.info(f"[PAYMENT] Order #{order.id} routed to Payment Review Group (-1004441603990).")
+                await message.reply_text(client_pay_msg, parse_mode="HTML", quote=True)
             except Exception as e:
-                logger.exception(f"[PAYMENT] Failed to route Order #{order.id} to Payment Review Group: {e}")
+                logger.error(f"[WALLET] Failed to send payment confirmation to customer: {e}")
+
+            # Forward paid Category B order to Payment Review Group / Loader Group
+            payment_group_id = BOT_SETTINGS["payment_review_group_id"] or Config.PAYMENT_REVIEW_GROUP_ID
+            if payment_group_id:
+                try:
+                    try:
+                        await context.bot.copy_message(
+                            chat_id=payment_group_id,
+                            from_chat_id=chat.id,
+                            message_id=message.message_id
+                        )
+                    except Exception as e_copy:
+                        logger.exception(f"[PAYMENT] copy_message failed: {e_copy}")
+
+                    group_title = chat.title or "Client Group"
+                    card_msg = (
+                        f"🟨 <b>NEW ORDER (Paid via Wallet)</b>\n\n"
+                        f"<b>Order ID:</b> #{order.id}\n\n"
+                        f"<b>Email:</b>\n{html.escape(order.email)}\n\n"
+                        f"<b>Group:</b>\n{html.escape(group_title)}\n\n"
+                        f"Choose an action."
+                    )
+                    keyboard = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("✅ Accept", callback_data=f"catb_accept:{order.id}"),
+                            InlineKeyboardButton("❌ Reject", callback_data=f"catb_reject:{order.id}")
+                        ]
+                    ])
+                    await context.bot.send_message(
+                        chat_id=payment_group_id,
+                        text=card_msg,
+                        reply_markup=keyboard,
+                        parse_mode="HTML"
+                    )
+                    logger.info(f"[PAYMENT] Order #{order.id} routed to Payment Review Group (-1004441603990).")
+                except Exception as e:
+                    logger.exception(f"[PAYMENT] Failed to route Order #{order.id} to Payment Review Group: {e}")
         else:
-            logger.warning(f"[PAYMENT] Order #{order.id} registered as Category B, but Payment Review Group is not configured yet!")
+            # Insufficient balance: Order remains Pending Payment
+            bal_val = wallet_obj.balance if wallet_obj else 0.0
+            needed = max(0.0, catb_total_price - bal_val)
+            try:
+                insufficient_msg = (
+                    f"⚠️ <b>Insufficient Wallet Balance for Order #{order.id}</b>\n\n"
+                    f"<b>Required Amount:</b> ${catb_total_price:.2f}\n"
+                    f"<b>Your Current Balance:</b> ${bal_val:.2f}\n"
+                    f"<b>Remaining Needed:</b> ${needed:.2f}\n\n"
+                    f"Please top up your wallet in this group to process your order."
+                )
+                await message.reply_text(insufficient_msg, parse_mode="HTML", quote=True)
+            except Exception as e:
+                logger.error(f"[WALLET] Failed to send insufficient balance notice to customer: {e}")
 
     else:
         # Parse initial package progress
@@ -1622,20 +1675,26 @@ async def exportprices_command_handler(update: Update, context: ContextTypes.DEF
 
 async def updateprices_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Super Admin command /updateprices.
-    Prompts Super Admin to reply/send the complete price list in ONE message.
+    Super Admin command /updateprices [A|B].
+    Prompts Super Admin to send the complete price list for Category A or Category B in ONE message.
     """
     user = update.effective_user
     if not user or not is_super_admin(user.id):
         logger.warning(f"[PRICE_UPDATE] Unauthorized /updateprices attempt by user #{user.id if user else 'Unknown'}.")
         return
 
-    BULK_PRICE_UPDATE_SESSIONS[user.id] = True
+    target_category = "A"
+    if context.args:
+        arg_cat = context.args[0].strip().upper()
+        if arg_cat in ("A", "B"):
+            target_category = arg_cat
+
+    BULK_PRICE_UPDATE_SESSIONS[user.id] = target_category
 
     prompt_text = (
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📋 <b>Bulk Price Update</b>\n\n"
-        "Please send the COMPLETE price list.\n\n"
+        f"📋 <b>Bulk Price Update for Category {target_category}</b>\n\n"
+        f"Please send the COMPLETE price list for <b>Category {target_category}</b>.\n\n"
         "Example\n\n"
         "10800 64\n"
         "5040 33\n"
@@ -1643,28 +1702,28 @@ async def updateprices_command_handler(update: Update, context: ContextTypes.DEF
         "880 8\n"
         "420 4.5\n"
         "80 1\n\n"
-        "108000 563\n"
-        "96000 503\n"
-        "72000 375\n"
-        "...\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
     await update.message.reply_text(prompt_text, parse_mode="HTML")
-    logger.info(f"[PRICE_UPDATE] Prompted Super Admin #{user.id} for bulk price list update.")
+    logger.info(f"[PRICE_UPDATE] Prompted Super Admin #{user.id} for Category {target_category} price list update.")
 
 
 async def bulk_price_update_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
     Intercepts text messages sent by Super Admin when BULK_PRICE_UPDATE_SESSIONS is active.
-    Parses, validates, atomically updates database, reloads in-memory cache, and replies with result.
+    Parses, validates, atomically updates database for category, reloads in-memory cache, and replies with result.
     Returns True if handled, False otherwise.
     """
     user = update.effective_user
     if not user or not is_super_admin(user.id):
         return False
 
-    if not BULK_PRICE_UPDATE_SESSIONS.get(user.id):
+    if user.id not in BULK_PRICE_UPDATE_SESSIONS:
         return False
+
+    target_category = BULK_PRICE_UPDATE_SESSIONS.pop(user.id, "A")
+    if not isinstance(target_category, str):
+        target_category = "A"
 
     message = update.effective_message
     if not message or not message.text:
@@ -1672,10 +1731,7 @@ async def bulk_price_update_text_handler(update: Update, context: ContextTypes.D
 
     text = message.text.strip()
     if text.startswith("/"):
-        BULK_PRICE_UPDATE_SESSIONS.pop(user.id, None)
         return False
-
-    BULK_PRICE_UPDATE_SESSIONS.pop(user.id, None)
 
     price_map, err_msg = parse_bulk_prices_input(text)
     if err_msg:
@@ -1684,20 +1740,20 @@ async def bulk_price_update_text_handler(update: Update, context: ContextTypes.D
         return True
 
     try:
-        success = await bulk_update_package_prices_in_db(price_map, updated_by_id=user.id)
+        success = await bulk_update_package_prices_in_db(price_map, category=target_category, updated_by_id=user.id)
         if success:
             user_ref = f"@{user.username}" if user.username else f"User #{user.id}"
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             cnt = len(price_map)
             cnt_str = f"{cnt} Package{'s' if cnt != 1 else ''} Updated"
             success_msg = (
-                "✅ <b>Price List Updated Successfully</b>\n\n"
+                f"✅ <b>Category {target_category} Price List Updated Successfully</b>\n\n"
                 f"<b>{cnt_str}</b>\n\n"
                 f"<b>Updated By:</b>\n{user_ref}\n\n"
                 f"<b>Updated At:</b>\n{now_str}"
             )
             await message.reply_text(success_msg, parse_mode="HTML")
-            logger.info(f"[PRICE_UPDATE] Super Admin #{user.id} successfully updated {len(price_map)} package prices.")
+            logger.info(f"[PRICE_UPDATE] Super Admin #{user.id} successfully updated {len(price_map)} package prices for Category {target_category}.")
         else:
             await message.reply_text("❌ Database update failed. Transaction rolled back.")
     except Exception as e:
@@ -3990,3 +4046,179 @@ async def client_cancellation_request_callback_handler(update: Update, context: 
                         )
                 except Exception as e:
                     logger.error(f"[CANCEL_REQ] Failed to notify client of ALMOST DONE decision for Order #{order.id}: {e}")
+
+
+# ==========================================
+# Category B Wallet Handlers & Commands
+# ==========================================
+
+async def topup_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command /topup <user_id> <amount> [provider] [tx_id].
+    Top-up Category B wallet balance for a specific customer in current group.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat or not (is_super_admin(user.id) or is_admin(user.id)):
+        logger.warning(f"[WALLET_TOPUP] Unauthorized /topup attempt by user #{user.id if user else 'Unknown'}.")
+        return
+
+    args = context.args or []
+    if len(args) < 2:
+        usage_msg = (
+            "⚠️ <b>Usage:</b>\n"
+            "<code>/topup &lt;user_id&gt; &lt;amount&gt; [provider] [tx_id]</code>\n\n"
+            "Example:\n"
+            "<code>/topup 123456789 100.0 Binance TX12345</code>"
+        )
+        await update.message.reply_text(usage_msg, parse_mode="HTML")
+        return
+
+    try:
+        target_user_id = int(args[0])
+        amount = float(args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user_id or amount. Usage: <code>/topup &lt;user_id&gt; &lt;amount&gt;</code>", parse_mode="HTML")
+        return
+
+    provider = args[2] if len(args) > 2 else "Admin"
+    tx_id = args[3] if len(args) > 3 else None
+
+    wallet, success, reason = await topup_wallet(
+        client_group_id=chat.id,
+        telegram_user_id=target_user_id,
+        amount=amount,
+        provider=provider,
+        transaction_id=tx_id
+    )
+
+    if not success:
+        if reason == "DUPLICATE_TRANSACTION":
+            await update.message.reply_text(f"❌ Payment transaction ID <code>{tx_id}</code> has ALREADY been credited.", parse_mode="HTML")
+        elif reason == "INVALID_CURRENCY":
+            await update.message.reply_text("❌ Unsupported currency. Only USDT and USDC are allowed.", parse_mode="HTML")
+        else:
+            await update.message.reply_text(f"❌ Failed to top up wallet: {reason}")
+        return
+
+    group_name = chat.title or str(chat.id)
+    msg = (
+        f"✅ <b>Category B Wallet Top-Up Successful</b>\n\n"
+        f"<b>Group:</b> {html.escape(group_name)}\n"
+        f"<b>User ID:</b> <code>{target_user_id}</code>\n"
+        f"<b>Amount Credited:</b> +${amount:.2f}\n"
+        f"<b>New Balance:</b> ${wallet.balance:.2f}\n"
+        f"<b>Provider:</b> {html.escape(provider)}"
+    )
+    if tx_id:
+        msg += f"\n<b>TxID:</b> <code>{html.escape(tx_id)}</code>"
+
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+    # Auto-process any pending orders for this user in this group!
+    await process_pending_category_b_orders(client_group_id=chat.id, telegram_user_id=target_user_id, context=context)
+
+
+async def wallet_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    User/Admin command /wallet or /balance.
+    Shows customer's Category B wallet balance & recent transactions for the current group.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    category = CLIENT_GROUPS_CACHE.get(chat.id, "A")
+    if category != "B":
+        await update.message.reply_text("ℹ️ Wallet system is active only for Category B groups.", quote=True)
+        return
+
+    balance = await get_wallet_balance(client_group_id=chat.id, telegram_user_id=user.id)
+    tx_history = await get_wallet_transaction_history(client_group_id=chat.id, telegram_user_id=user.id, limit=5)
+
+    user_name = user.first_name or f"User #{user.id}"
+    group_name = chat.title or str(chat.id)
+
+    msg = (
+        f"💳 <b>Category B Wallet Overview</b>\n\n"
+        f"<b>Group:</b> {html.escape(group_name)}\n"
+        f"<b>Customer:</b> {html.escape(user_name)} (<code>{user.id}</code>)\n"
+        f"<b>Current Balance:</b> <b>${balance:.2f}</b>\n\n"
+    )
+
+    if tx_history:
+        msg += "<b>Recent Activity:</b>\n"
+        for tx in tx_history:
+            dt_str = tx.timestamp.strftime("%m-%d %H:%M")
+            sign = "+" if tx.amount > 0 else ""
+            msg += f"• [{dt_str}] {sign}${tx.amount:.2f} ({tx.type})\n"
+    else:
+        msg += "<i>No transaction history yet.</i>"
+
+    await update.message.reply_text(msg, parse_mode="HTML", quote=True)
+
+
+async def process_pending_category_b_orders(client_group_id: int, telegram_user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Auto-processes pending Category B orders for a user after wallet top-up.
+    Consumes wallet balance sequentially in order of order creation.
+    """
+    from database import AsyncSessionLocal, Order
+    from order_parser import parse_order_v2, get_dynamic_package_prices
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(Order).where(
+            Order.client_chat_id == client_group_id,
+            Order.status == "Pending Payment"
+        ).order_by(Order.created_at.asc())
+        orders = list((await session.execute(stmt)).scalars().all())
+
+    for order in orders:
+        if not order.raw_text:
+            continue
+
+        parsed = parse_order_v2(order.raw_text, category="B")
+        if not parsed.get("order_detected") or not parsed.get("packages"):
+            continue
+
+        prices = get_dynamic_package_prices(category="B")
+        order_price = 0.0
+        for pkg in parsed["packages"]:
+            pkg_name = pkg["package"]
+            qty = pkg.get("qty", 1)
+            unit_p = prices.get(pkg_name, 0.0)
+            order_price += (unit_p * qty)
+
+        if order_price <= 0:
+            continue
+
+        wallet, success, reason = await deduct_wallet_balance_for_order(
+            client_group_id=client_group_id,
+            telegram_user_id=telegram_user_id,
+            order_id=order.id,
+            amount=order_price
+        )
+
+        if success:
+            async with AsyncSessionLocal() as session:
+                stmt_u = select(Order).where(Order.id == order.id)
+                ord_to_up = (await session.execute(stmt_u)).scalar_one_or_none()
+                if ord_to_up:
+                    ord_to_up.status = "Pending"
+                    ord_to_up.category = "B"
+                    await session.commit()
+
+            # Forward to Loader Group using existing loader workflow
+            loader_group_id = BOT_SETTINGS.get("delivery_group_id")
+            if loader_group_id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=loader_group_id,
+                        text=f"📦 <b>Category B Order #{order.id} Paid via Wallet</b>\n\nEmail: {order.email}\nPackage: {order.package}",
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.error(f"[WALLET_AUTO_PROCESS] Failed to notify loader group: {e}")
+
+            logger.info(f"[WALLET_AUTO_PROCESS] Order #{order.id} auto-paid via wallet balance.")

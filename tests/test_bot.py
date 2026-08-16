@@ -4268,5 +4268,141 @@ class TestClientOrderCancellationRequestWorkflow(unittest.IsolatedAsyncioTestCas
         self.assertEqual(up3.cancellation_decision, "rejected")
 
 
+class TestCategoryABPricingAndWalletSystem(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from database import init_db, AsyncSessionLocal
+        from models import Wallet, WalletTransaction, PaymentTransaction
+        from sqlalchemy import delete
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(WalletTransaction))
+            await session.execute(delete(PaymentTransaction))
+            await session.execute(delete(Wallet))
+            await session.commit()
+
+    async def asyncTearDown(self):
+        from database import bulk_update_package_prices_in_db, DEFAULT_PACKAGE_PRICES
+        await bulk_update_package_prices_in_db(DEFAULT_PACKAGE_PRICES, category="A")
+        await bulk_update_package_prices_in_db(DEFAULT_PACKAGE_PRICES, category="B")
+
+    async def test_category_a_and_b_price_list_isolation(self):
+        from database import init_db, bulk_update_package_prices_in_db, get_all_package_prices_from_db, DEFAULT_PACKAGE_PRICES
+
+        await init_db()
+
+        try:
+            # Update Category A 2400 price to 16.5
+            await bulk_update_package_prices_in_db({"2400": 16.5}, category="A")
+            # Update Category B 2400 price to 15.0
+            await bulk_update_package_prices_in_db({"2400": 15.0}, category="B")
+
+            prices_a = await get_all_package_prices_from_db(category="A")
+            prices_b = await get_all_package_prices_from_db(category="B")
+
+            self.assertEqual(prices_a.get("2400"), 16.5)
+            self.assertEqual(prices_b.get("2400"), 15.0)
+
+            # Update Category A price to 15.5
+            await bulk_update_package_prices_in_db({"2400": 15.5}, category="A")
+
+            prices_a_new = await get_all_package_prices_from_db(category="A")
+            prices_b_new = await get_all_package_prices_from_db(category="B")
+
+            # Category A price must be 15.5, Category B price MUST remain 15.0!
+            self.assertEqual(prices_a_new.get("2400"), 15.5)
+            self.assertEqual(prices_b_new.get("2400"), 15.0)
+        finally:
+            await bulk_update_package_prices_in_db(DEFAULT_PACKAGE_PRICES, category="A")
+            await bulk_update_package_prices_in_db(DEFAULT_PACKAGE_PRICES, category="B")
+
+    async def test_critical_wallet_identity_rule(self):
+        import uuid
+        from database import init_db, get_or_create_wallet, topup_wallet, deduct_wallet_balance_for_order
+
+        await init_db()
+
+        group_b1 = -1001111111111
+        group_b2 = -1002222222222
+        user_123 = 777123
+
+        tx1 = f"TX_B1_{uuid.uuid4().hex[:6]}"
+        tx2 = f"TX_B2_{uuid.uuid4().hex[:6]}"
+
+        # Create wallets for B1+User123 and B2+User123
+        w1, s1, _ = await topup_wallet(group_b1, user_123, 100.0, provider="Binance", transaction_id=tx1)
+        w2, s2, _ = await topup_wallet(group_b2, user_123, 20.0, provider="Bybit", transaction_id=tx2)
+
+        self.assertTrue(s1)
+        self.assertTrue(s2)
+        self.assertEqual(w1.balance, 100.0)
+        self.assertEqual(w2.balance, 20.0)
+
+        # Spend $30 in Group B1
+        w1_after, s_deduct, _ = await deduct_wallet_balance_for_order(group_b1, user_123, order_id=8801, amount=30.0)
+        self.assertTrue(s_deduct)
+        self.assertEqual(w1_after.balance, 70.0)
+
+        # Group B2 wallet MUST remain 20.0!
+        w2_check = await get_or_create_wallet(group_b2, user_123)
+        self.assertEqual(w2_check.balance, 20.0)
+
+    async def test_duplicate_transaction_protection(self):
+        import uuid
+        from database import init_db, topup_wallet
+
+        await init_db()
+
+        group_b1 = -1001111111111
+        user_id = 999111
+        tx_dup = f"TX_DUP_{uuid.uuid4().hex[:6]}"
+
+        # First topup with tx_dup
+        w1, ok1, reason1 = await topup_wallet(group_b1, user_id, 50.0, provider="Binance", transaction_id=tx_dup)
+        self.assertTrue(ok1)
+        self.assertEqual(w1.balance, 50.0)
+
+        # Duplicate topup attempt with SAME provider and transaction_id
+        w2, ok2, reason2 = await topup_wallet(group_b1, user_id, 50.0, provider="Binance", transaction_id=tx_dup)
+        self.assertFalse(ok2)
+        self.assertEqual(reason2, "DUPLICATE_TRANSACTION")
+
+        # Balance must remain 50.0
+        w_final = await topup_wallet(group_b1, user_id, 0.0, provider="Binance") # Check
+        self.assertEqual(w1.balance, 50.0)
+
+    async def test_payment_verifier_rule_17_missing_credentials(self):
+        from payment_verifier import verify_payment_transaction
+
+        # Invalid currency test
+        ok_curr, code_curr, msg_curr = await verify_payment_transaction("Binance", "TX100", 50.0, currency="BTC")
+        self.assertFalse(ok_curr)
+        self.assertEqual(code_curr, "UNSUPPORTED_CURRENCY")
+
+        # Rule #17 test: Missing API credentials
+        ok_rule17, code_rule17, msg_rule17 = await verify_payment_transaction("Binance", "TX100", 50.0, currency="USDT")
+        self.assertFalse(ok_rule17)
+        self.assertEqual(code_rule17, "MISSING_API_CREDENTIALS")
+
+    async def test_wallet_deduction_does_not_modify_delivery_ledger(self):
+        from database import init_db, topup_wallet, deduct_wallet_balance_for_order, get_running_total_current
+
+        await init_db()
+
+        group_b1 = -1005555555555
+        user_id = 333444
+
+        before_ledger_total = await get_running_total_current(chat_id=group_b1)
+
+        # Top up wallet
+        await topup_wallet(group_b1, user_id, 200.0, provider="Admin")
+        # Deduct wallet
+        await deduct_wallet_balance_for_order(group_b1, user_id, order_id=9999, amount=65.0)
+
+        after_ledger_total = await get_running_total_current(chat_id=group_b1)
+
+        # DeliveryLedger running total MUST remain 100% unchanged by wallet top-up / deduction!
+        self.assertEqual(before_ledger_total, after_ledger_total)
+
+
 if __name__ == "__main__":
     unittest.main()

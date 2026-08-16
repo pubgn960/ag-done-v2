@@ -85,8 +85,9 @@ RECOVERY_CODE_PATTERN = re.compile(
 )
 
 
-def get_dynamic_package_prices() -> Dict[str, float]:
-    """Dynamically loads package prices from utils.PACKAGE_PRICES with fallback."""
+def get_dynamic_package_prices(category: str = "A") -> Dict[str, float]:
+    """Dynamically loads package prices from utils for specified category ('A' or 'B') with fallback."""
+    cat = (category or "A").upper()
     fallback = {
         "108000": 563.0, "96000": 503.0, "72000": 375.0, "55200": 291.0,
         "48000": 254.0, "43200": 229.0, "38400": 211.0, "24000": 132.0,
@@ -96,8 +97,12 @@ def get_dynamic_package_prices() -> Dict[str, float]:
         "420": 4.5, "80": 1.0
     }
     try:
-        from utils import PACKAGE_PRICES, TEST_PACKAGE_PRICES
-        prices = dict(PACKAGE_PRICES)
+        from utils import PACKAGE_PRICES_CAT_A, PACKAGE_PRICES_CAT_B, TEST_PACKAGE_PRICES
+        if cat == "B":
+            prices = dict(PACKAGE_PRICES_CAT_B)
+        else:
+            prices = dict(PACKAGE_PRICES_CAT_A)
+
         if not prices:
             prices = dict(TEST_PACKAGE_PRICES)
         if not prices:
@@ -124,12 +129,12 @@ def normalize_package_alias(pkg_name: Optional[str], alias_map: Optional[Dict[st
     if re.match(r'^\d{1,3}[.,]\d{3}$', pkg_str):
         pkg_str = re.sub(r'[.,]', '', pkg_str)
 
-    pkg_lower = pkg_str.lower()
     aliases = dict(DEFAULT_PACKAGE_ALIASES)
     if alias_map:
         aliases.update(alias_map)
 
-    return aliases.get(pkg_lower, pkg_str)
+    pkg_clean = pkg_str.lower()
+    return aliases.get(pkg_clean, pkg_str)
 
 
 def extract_customer_ref_id(text: Optional[str]) -> Optional[str]:
@@ -142,7 +147,11 @@ def extract_customer_ref_id(text: Optional[str]) -> Optional[str]:
     return None
 
 
-def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def parse_order_v2(
+    text: Optional[str],
+    alias_map: Optional[Dict[str, str]] = None,
+    category: str = "A"
+) -> Dict[str, Any]:
     """
     Production Order Parser v2 - Real Customer Pattern Support.
 
@@ -176,7 +185,7 @@ def parse_order_v2(text: Optional[str], alias_map: Optional[Dict[str, str]] = No
             "total_price": None
         }
 
-    price_db = get_dynamic_package_prices()
+    price_db = get_dynamic_package_prices(category=category)
     aliases = dict(DEFAULT_PACKAGE_ALIASES)
     if alias_map:
         aliases.update(alias_map)

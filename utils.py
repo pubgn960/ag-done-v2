@@ -514,19 +514,30 @@ PACKAGE_PRICES: Dict[str, float] = {
     "80": 1.0,
 }
 
+PACKAGE_PRICES_CAT_A: Dict[str, float] = dict(PACKAGE_PRICES)
+PACKAGE_PRICES_CAT_B: Dict[str, float] = dict(PACKAGE_PRICES)
 TEST_PACKAGE_PRICES = PACKAGE_PRICES
 
 
-def reload_package_prices_cache(new_prices: Dict[str, float]) -> None:
-    """Reloads in-memory package price cache immediately without restarting."""
-    global PACKAGE_PRICES, SUPPORTED_PACKAGES
-    PACKAGE_PRICES.clear()
+def reload_package_prices_cache(new_prices: Dict[str, float], category: str = "A") -> None:
+    """Reloads in-memory package price cache for Category 'A' or 'B' immediately without restarting."""
+    global PACKAGE_PRICES, PACKAGE_PRICES_CAT_A, PACKAGE_PRICES_CAT_B, SUPPORTED_PACKAGES
+    cat = (category or "A").upper()
+    target_cache = PACKAGE_PRICES_CAT_B if cat == "B" else PACKAGE_PRICES_CAT_A
+    target_cache.clear()
+
     if new_prices:
-        PACKAGE_PRICES.update(new_prices)
+        target_cache.update(new_prices)
     else:
-        PACKAGE_PRICES.update(TEST_PACKAGE_PRICES)
+        target_cache.update(TEST_PACKAGE_PRICES)
+
+    if cat == "A":
+        PACKAGE_PRICES.clear()
+        PACKAGE_PRICES.update(PACKAGE_PRICES_CAT_A)
+
     SUPPORTED_PACKAGES.clear()
-    SUPPORTED_PACKAGES.update(PACKAGE_PRICES.keys())
+    SUPPORTED_PACKAGES.update(PACKAGE_PRICES_CAT_A.keys())
+    SUPPORTED_PACKAGES.update(PACKAGE_PRICES_CAT_B.keys())
 
 
 def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
