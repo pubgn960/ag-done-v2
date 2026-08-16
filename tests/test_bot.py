@@ -4511,13 +4511,17 @@ class TestBinanceWatcherAndDepositVerification(unittest.IsolatedAsyncioTestCase)
 
     async def test_duplicate_transaction_protection_and_decimal_topup(self):
         import uuid
-        from database import create_order, get_wallet_balance
+        from database import create_order, get_wallet_balance, register_binance_identity
         from payment_verifier import poll_and_auto_credit_binance_deposits
         from unittest.mock import patch
 
         group_b = -100999111
         user_id = 444555
+        binance_uid = "444555888"
         tx_decimal = f"TX_DECIMAL_{uuid.uuid4().hex[:6]}"
+
+        # Register client identity
+        await register_binance_identity(group_b, user_id, binance_uid)
 
         # Create Category B pending order
         order = await create_order(
@@ -4531,7 +4535,7 @@ class TestBinanceWatcherAndDepositVerification(unittest.IsolatedAsyncioTestCase)
         )
 
         mock_deps = [
-            {"txId": tx_decimal, "coin": "USDT", "amount": "0.077", "status": 1}
+            {"txId": tx_decimal, "coin": "USDT", "amount": "0.077", "status": 1, "payerId": binance_uid}
         ]
 
         with patch("payment_verifier.check_provider_api_configured", return_value=True), \
@@ -4698,6 +4702,57 @@ class TestBinanceClientIdentityRegistrationAndMatching(unittest.IsolatedAsyncioT
             self.assertFalse(res["is_ready"])
             self.assertTrue(res["http_451"])
             self.assertIn("BINANCE UID AUTO-MATCHING IS NOT AVAILABLE THROUGH THIS ENDPOINT", res["report_text"])
+
+    async def test_binance_payment_credits_wallet_even_when_no_pending_order_exists(self):
+        import uuid
+        from database import register_binance_identity, get_wallet_balance, AsyncSessionLocal
+        from models import Order, WalletTransaction, PaymentTransaction
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+        from sqlalchemy import select
+
+        group_b = -1003978746139
+        user_id = 6444805520
+        binance_uid = "509641890"
+
+        # Register client identity
+        await register_binance_identity(group_b, user_id, binance_uid)
+
+        # Confirm ZERO pending orders exist in DB
+        async with AsyncSessionLocal() as session:
+            stmt = select(Order).where(Order.client_chat_id == group_b, Order.category == "B")
+            orders = list((await session.execute(stmt)).scalars().all())
+            self.assertEqual(len(orders), 0)
+
+        tx_no_order = f"TX_NO_ORDER_{uuid.uuid4().hex[:6]}"
+        mock_deps = [
+            {"tx_id": tx_no_order, "coin": "USDT", "amount": 1.0, "status": "completed", "payer_binance_uid": binance_uid}
+        ]
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier.fetch_recent_binance_deposits", return_value=(True, "SUCCESS", mock_deps)):
+
+            res = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["credited_count"], 1)
+
+            # Wallet MUST be credited +$1.0 USDT despite 0 pending orders!
+            bal = await get_wallet_balance(group_b, user_id)
+            self.assertEqual(bal, 1.0)
+
+            # Verify PaymentTransaction & WalletTransaction TOPUP
+            async with AsyncSessionLocal() as session:
+                stmt_pt = select(PaymentTransaction).where(PaymentTransaction.transaction_id == tx_no_order)
+                pt = (await session.execute(stmt_pt)).scalar_one()
+                self.assertEqual(pt.amount, 1.0)
+                self.assertEqual(pt.provider, "BINANCE")
+                self.assertEqual(pt.status, "VERIFIED")
+
+                stmt_wt = select(WalletTransaction).where(WalletTransaction.transaction_id == tx_no_order)
+                wt = (await session.execute(stmt_wt)).scalar_one()
+                self.assertEqual(wt.amount, 1.0)
+                self.assertEqual(wt.type, "TOPUP")
+                self.assertEqual(wt.status, "COMPLETED")
 
 
 if __name__ == "__main__":

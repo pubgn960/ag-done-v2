@@ -21,6 +21,8 @@ import urllib.parse
 import urllib.request
 from typing import Tuple, Optional, Dict, Any
 
+from utils import format_wallet_amount
+
 logger = logging.getLogger(__name__)
 
 # Authorized destinations configured in MASTER PROMPT
@@ -451,10 +453,16 @@ async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
             continue
         if ok and isinstance(data, list):
             for dep in data:
-                tx_id = str(dep.get("txId", "")).strip()
-                coin = str(dep.get("coin", "")).strip().upper()
+                tx_id = str(dep.get("txId", "") or dep.get("tx_id", "")).strip()
+                coin = str(dep.get("coin", "") or dep.get("currency", "")).strip().upper()
                 dep_amount = float(dep.get("amount", 0))
-                status = int(dep.get("status", 0))
+                status = int(dep.get("status", 0)) if str(dep.get("status", "")).isdigit() else (1 if dep.get("status") in (1, "1", "completed", "COMPLETED") else 0)
+                payer_uid = (
+                    dep.get("payer_binance_uid")
+                    or dep.get("payerId")
+                    or dep.get("payer_uid")
+                    or dep.get("senderUid")
+                )
 
                 # Rule check: USDT or USDC ONLY & status == 1 (Completed)
                 if coin in SUPPORTED_CURRENCIES and status == 1 and tx_id and dep_amount > 0:
@@ -464,6 +472,7 @@ async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
                         "amount": dep_amount,
                         "status": "completed",
                         "provider": "BINANCE",
+                        "payer_binance_uid": payer_uid,
                         "raw": dep
                     })
             return True, "SUCCESS", deposits
@@ -515,7 +524,15 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
 
         logger.info(f"[PAYMENT_WATCHER] Duplicate: False | Processing new deposit {masked_tx}...")
 
-        payer_uid = dep.get("payer_binance_uid")
+        payer_uid = (
+            dep.get("payer_binance_uid")
+            or dep.get("payerId")
+            or dep.get("payer_uid")
+            or dep.get("senderUid")
+            or (dep.get("raw", {}).get("payerId") if isinstance(dep.get("raw"), dict) else None)
+            or (dep.get("raw", {}).get("senderUid") if isinstance(dep.get("raw"), dict) else None)
+        )
+
         matched_user_id = None
         matched_group_id = None
 
@@ -532,6 +549,14 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
                     matched_user_id = ident.telegram_user_id
 
         if matched_group_id and matched_user_id:
+            uid_str = str(payer_uid).strip()
+            user_str = str(matched_user_id).strip()
+            masked_uid = uid_str[:4] + "***" + uid_str[-3:] if len(uid_str) > 7 else "***"
+            masked_user = user_str[:4] + "***" + user_str[-3:] if len(user_str) > 7 else "***"
+
+            logger.info(f"[PAYMENT_WATCHER] Payer identity matched: True | Binance UID: {masked_uid}")
+            logger.info(f"[PAYMENT_WATCHER] Wallet resolved: True | Group: {matched_group_id} | User: {masked_user}")
+
             w_obj, ok_topup, reason = await topup_wallet(
                 client_group_id=matched_group_id,
                 telegram_user_id=matched_user_id,
@@ -540,55 +565,45 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
                 transaction_id=tx_id,
                 currency=coin
             )
-            if ok_topup:
+
+            if ok_topup and w_obj:
                 credited_count += 1
-                logger.info(f"[PAYMENT_WATCHER] Wallet matched via Binance UID {payer_uid}: True | Wallet credited successfully: ${amount} for Group {matched_group_id} User {matched_user_id}")
-                if context:
-                    try:
-                        from handlers import process_pending_category_b_orders
-                        await process_pending_category_b_orders(matched_group_id, matched_user_id, context)
-                    except Exception as ex_proc:
-                        logger.error(f"[PAYMENT_WATCHER] Auto-processing orders error: {ex_proc}")
-            else:
-                logger.warning(f"[PAYMENT_WATCHER] Wallet crediting failed: {reason}")
-        elif payer_uid:
-            # Unmatched Payer UID: DO NOT auto credit!
-            logger.warning(f"[PAYMENT_WATCHER] Unmatched Binance Payment | Payer UID: {payer_uid} | Amount: ${amount} {coin} | Transaction ID: {masked_tx}")
-        else:
-            # Fallback to pending order group matching
-            async with AsyncSessionLocal() as session:
-                stmt_ord = select(Order).where(
-                    Order.category == "B",
-                    Order.status == "Pending Payment"
-                ).order_by(Order.created_at.asc())
-                pending_b_orders = list((await session.execute(stmt_ord)).scalars().all())
+                formatted_amt = format_wallet_amount(amount)
+                formatted_bal = format_wallet_amount(w_obj.balance)
+                logger.info(f"[PAYMENT_WATCHER] Wallet credited: +${formatted_amt} {coin} | New Balance: ${formatted_bal}")
 
-            if pending_b_orders:
-                target_order = pending_b_orders[0]
-                group_id = target_order.client_chat_id
-                user_id = target_user_id or getattr(target_order, "created_by", 0) or 0
+                # Secondary Step: Check for pending Category B orders
+                async with AsyncSessionLocal() as session:
+                    stmt_ord = select(Order).where(
+                        Order.client_chat_id == matched_group_id,
+                        Order.category == "B",
+                        Order.status == "Pending Payment"
+                    )
+                    pending_b_orders = list((await session.execute(stmt_ord)).scalars().all())
 
-                w_obj, ok_topup, reason = await topup_wallet(
-                    client_group_id=group_id,
-                    telegram_user_id=user_id,
-                    amount=amount,
-                    provider="BINANCE",
-                    transaction_id=tx_id,
-                    currency=coin
-                )
-                if ok_topup:
-                    credited_count += 1
-                    logger.info(f"[PAYMENT_WATCHER] Wallet matched: True | Wallet credited successfully: ${amount} for Group {group_id} User {user_id}")
+                pending_count = len(pending_b_orders)
+                if pending_count > 0:
+                    logger.info(f"[PAYMENT_WATCHER] Pending orders found: {pending_count} | Auto-processing orders...")
                     if context:
                         try:
                             from handlers import process_pending_category_b_orders
-                            await process_pending_category_b_orders(group_id, user_id, context)
+                            await process_pending_category_b_orders(matched_group_id, matched_user_id, context)
                         except Exception as ex_proc:
                             logger.error(f"[PAYMENT_WATCHER] Auto-processing orders error: {ex_proc}")
                 else:
-                    logger.warning(f"[PAYMENT_WATCHER] Wallet crediting failed: {reason}")
+                    logger.info(f"[PAYMENT_WATCHER] Pending orders found: 0 | Balance remains in wallet")
             else:
-                logger.info(f"[PAYMENT_WATCHER] Wallet matched: False | No pending Category B order waiting for deposit {masked_tx}.")
+                logger.warning(f"[PAYMENT_WATCHER] Wallet crediting failed: {reason}")
+
+        elif payer_uid:
+            uid_str = str(payer_uid).strip()
+            masked_uid = uid_str[:4] + "***" + uid_str[-3:] if len(uid_str) > 7 else "***"
+            logger.warning(f"[PAYMENT_WATCHER] UNMATCHED PAYMENT | Payer Binance UID {masked_uid} not registered in any Category B group.")
+            logger.warning("[PAYMENT_WATCHER] Manual review required. Wallet NOT credited.")
+
+        else:
+            logger.warning("[PAYMENT_WATCHER] UNMATCHED PAYMENT | Payer Binance UID unavailable")
+            logger.warning("[PAYMENT_WATCHER] Manual review required. Wallet NOT credited.")
 
     return {"ok": True, "status": "SUCCESS", "credited_count": credited_count}
 
