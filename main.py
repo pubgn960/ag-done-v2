@@ -60,6 +60,7 @@ from handlers import (
     topup_command_handler,
     wallet_command_handler,
     testbinance_command_handler,
+    testbinancepay_command_handler,
     setbinance_command_handler,
     setbinance_callback_handler,
     binanceid_command_handler,
@@ -197,6 +198,7 @@ async def post_init(application: Application) -> None:
         BotCommand("balance", "View Category B Wallet Balance"),
         BotCommand("topup", "Admin Top-up Customer Wallet"),
         BotCommand("testbinance", "Test Binance API Connectivity"),
+        BotCommand("testbinancepay", "Test Binance Pay API Diagnostic"),
         BotCommand("setbinance", "Link Binance UID"),
         BotCommand("binanceid", "View Registered Binance Clients")
     ]
@@ -301,6 +303,7 @@ def main() -> None:
     application.add_handler(CommandHandler("topup", topup_command_handler))
     application.add_handler(CommandHandler(["wallet", "balance"], wallet_command_handler))
     application.add_handler(CommandHandler("testbinance", testbinance_command_handler))
+    application.add_handler(CommandHandler("testbinancepay", testbinancepay_command_handler))
     application.add_handler(CommandHandler("setbinance", setbinance_command_handler))
     application.add_handler(CommandHandler(["binanceid", "binanceusers"], binanceid_command_handler))
 

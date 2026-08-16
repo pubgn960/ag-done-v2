@@ -4394,3 +4394,32 @@ async def testbinance_command_handler(update: Update, context: ContextTypes.DEFA
     except Exception:
         await update.message.reply_text(text_report, parse_mode="HTML")
 
+
+async def testbinancepay_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Super Admin command: /testbinancepay
+    Executes a safe, read-only diagnostic test for Binance Pay API (/sapi/v1/pay/transactions).
+    Checks Binance Pay availability, API permissions, and payerId / sender UID presence.
+    Never exposes API key or secret.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    if not is_super_admin(user.id):
+        await update.message.reply_text("❌ Unauthorized: Only Super Admin can run /testbinancepay.")
+        return
+
+    msg_wait = await update.message.reply_text("💳 <i>Running read-only Binance Pay API diagnostic test...</i>", parse_mode="HTML")
+
+    from payment_verifier import test_binance_pay_api_connectivity
+    report = await test_binance_pay_api_connectivity()
+
+    text_report = report.get("report_text", "💳 Binance Pay API Diagnostic Failed.")
+
+    try:
+        await msg_wait.edit_text(text_report, parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text(text_report, parse_mode="HTML")
+

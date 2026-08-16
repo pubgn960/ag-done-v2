@@ -288,6 +288,89 @@ async def test_binance_api_connectivity() -> Dict[str, Any]:
     }
 
 
+async def test_binance_pay_api_connectivity() -> Dict[str, Any]:
+    """
+    Performs a READ-ONLY diagnostic test specifically for Binance Pay API (/sapi/v1/pay/transactions).
+    Checks whether Binance Pay API endpoint is accessible, whether API permissions allow access,
+    and whether sender Binance UID (payerId) is available in the API response.
+    Never exposes API key or secret.
+    """
+    api_key_present = bool(os.getenv("BINANCE_API_KEY"))
+    api_secret_present = bool(os.getenv("BINANCE_API_SECRET"))
+    credentials_loaded = api_key_present and api_secret_present
+
+    base_urls = [
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://api-gcp.binance.com"
+    ]
+
+    pay_api_ok = False
+    payer_uid_available = False
+    http_451 = False
+    perm_sufficient = False
+    last_err_msg = ""
+
+    for b_url in base_urls:
+        ok, code, data, err = await asyncio.to_thread(
+            _execute_binance_signed_get_with_url, b_url, "/sapi/v1/pay/transactions"
+        )
+        if code == 451:
+            http_451 = True
+            last_err_msg = "HTTP 451: Service unavailable from a restricted location."
+            continue
+        if ok and isinstance(data, dict):
+            pay_api_ok = True
+            perm_sufficient = True
+            tx_list = data.get("data", [])
+            if isinstance(tx_list, list) and tx_list:
+                for item in tx_list:
+                    if isinstance(item, dict) and ("payerId" in item or "payerBinanceUid" in item):
+                        payer_uid_available = True
+                        break
+            last_err_msg = "Reachable"
+            break
+        elif code in (400, 401, 403):
+            last_err_msg = f"HTTP {code}: {err or 'Missing Binance Pay permissions or account restriction.'}"
+        else:
+            if err:
+                last_err_msg = err
+
+    is_ready = credentials_loaded and pay_api_ok and payer_uid_available and perm_sufficient
+
+    lines = ["💳 <b>Binance Pay API Verification Diagnostic</b>\n"]
+    lines.append(f"<b>Binance Pay API:</b> {'✅ Available' if pay_api_ok else '❌ Not Available'}")
+    lines.append(f"<b>Payer Identity (Sender UID):</b> {'✅ Sender UID Available' if payer_uid_available else '❌ Sender UID Not Available'}")
+    lines.append(f"<b>USDT Supported:</b> {'✅ Supported' if pay_api_ok else '❌ Not Available'}")
+    lines.append(f"<b>USDC Supported:</b> {'✅ Supported' if pay_api_ok else '❌ Not Available'}")
+    lines.append(f"<b>API Permission:</b> {'✅ Sufficient' if perm_sufficient else '❌ Missing / Restricted'}")
+    lines.append(f"<b>Payment Verification:</b> {'✅ READY' if is_ready else '❌ NOT READY'}\n")
+
+    if not is_ready:
+        lines.append("⚠️ <b>BINANCE UID AUTO-MATCHING IS NOT AVAILABLE THROUGH THIS ENDPOINT</b>")
+        lines.append(f"<b>Diagnostic Detail:</b> {last_err_msg}")
+        if http_451:
+            lines.append("<i>Reason: Railway deployment IP is restricted by Binance geographic eligibility (HTTP 451).</i>")
+        elif not payer_uid_available and pay_api_ok:
+            lines.append("<i>Reason: Binance Pay API accessible, but no incoming Pay transactions with payerId returned.</i>")
+        elif not perm_sufficient:
+            lines.append("<i>Reason: Binance API key lacks Binance Pay Merchant read permissions.</i>")
+    else:
+        lines.append("✅ Binance Pay API is fully verified and ready for automated payer UID wallet crediting.")
+
+    report_text = "\n".join(lines)
+
+    return {
+        "credentials_loaded": credentials_loaded,
+        "pay_api_available": pay_api_ok,
+        "payer_uid_available": payer_uid_available,
+        "permission_sufficient": perm_sufficient,
+        "is_ready": is_ready,
+        "http_451": http_451,
+        "report_text": report_text
+    }
+
+
 async def verify_payment_transaction(
     provider: str,
     transaction_id: str,

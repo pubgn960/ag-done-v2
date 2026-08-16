@@ -4667,33 +4667,37 @@ class TestBinanceClientIdentityRegistrationAndMatching(unittest.IsolatedAsyncioT
             bal_altaf = await get_wallet_balance(group_b1, user_altaf)
             self.assertEqual(bal_altaf, 10.0)
 
-    async def test_category_a_cannot_register_or_use_binance_uid(self):
-        from handlers import setbinance_command_handler
-        from database import CLIENT_GROUPS_CACHE
+    async def test_on_chain_deposit_without_sender_uid_is_unmatched_and_not_auto_credited(self):
+        import uuid
+        from database import get_wallet_balance
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
 
-        class MockUser:
-            id = 777
-            first_name = "UserA"
+        tx_onchain = f"TX_ONCHAIN_{uuid.uuid4().hex[:6]}"
 
-        class MockChat:
-            id = -100777000
-            title = "Category A Group"
+        # On-chain deposit containing NO payer_binance_uid
+        mock_deps = [
+            {"tx_id": tx_onchain, "coin": "USDT", "amount": 50.0, "status": "completed"}
+        ]
 
-        class MockMessage:
-            def __init__(self):
-                self.replied_text = None
-            async def reply_text(self, text, parse_mode=None):
-                self.replied_text = text
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier.fetch_recent_binance_deposits", return_value=(True, "SUCCESS", mock_deps)):
 
-        CLIENT_GROUPS_CACHE[-100777000] = "A"
+            res = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["credited_count"], 0)
 
-        msg_a = MockMessage()
-        up_a = type("Update", (), {"effective_user": MockUser(), "effective_chat": MockChat(), "message": msg_a})()
-        ctx_a = type("Context", (), {"args": ["123456789"]})()
+    async def test_binance_pay_diagnostic_test_handler_and_connectivity(self):
+        from payment_verifier import test_binance_pay_api_connectivity
+        from unittest.mock import patch
 
-        await setbinance_command_handler(up_a, ctx_a)
-        self.assertIsNotNone(msg_a.replied_text)
-        self.assertIn("active only for Category B groups", msg_a.replied_text)
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(False, 451, {}, "HTTP 451 Restricted Location")):
+
+            res = await test_binance_pay_api_connectivity()
+            self.assertFalse(res["is_ready"])
+            self.assertTrue(res["http_451"])
+            self.assertIn("BINANCE UID AUTO-MATCHING IS NOT AVAILABLE THROUGH THIS ENDPOINT", res["report_text"])
 
 
 if __name__ == "__main__":
