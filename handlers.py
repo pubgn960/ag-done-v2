@@ -4135,7 +4135,7 @@ async def wallet_command_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     category = CLIENT_GROUPS_CACHE.get(chat.id, "A")
     if category != "B":
-        await update.message.reply_text("ℹ️ Wallet system is active only for Category B groups.", quote=True)
+        await update.message.reply_text("ℹ️ Wallet system is active only for Category B groups.")
         return
 
     balance = await get_wallet_balance(client_group_id=chat.id, telegram_user_id=user.id)
@@ -4160,7 +4160,7 @@ async def wallet_command_handler(update: Update, context: ContextTypes.DEFAULT_T
     else:
         msg += "<i>No transaction history yet.</i>"
 
-    await update.message.reply_text(msg, parse_mode="HTML", quote=True)
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def process_pending_category_b_orders(client_group_id: int, telegram_user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:

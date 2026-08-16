@@ -4429,7 +4429,9 @@ class TestCategoryABPricingAndWalletSystem(unittest.IsolatedAsyncioTestCase):
         class MockMessage:
             def __init__(self):
                 self.replied_text = None
-            async def reply_text(self, text, parse_mode=None, quote=True):
+            async def reply_text(self, text, parse_mode=None, **kwargs):
+                if "quote" in kwargs:
+                    raise TypeError("Message.reply_text() got an unexpected keyword argument 'quote'")
                 self.replied_text = text
 
         # 1. Category B Group Wallet Execution (/wallet & /balance)
