@@ -176,7 +176,11 @@ async def post_init(application: Application) -> None:
         BotCommand("subtractprice", "Subtract Price Adjustment"),
         BotCommand("ledger", "View Delivery Ledger"),
         BotCommand("todaytotal", "View Today Revenue & Stats"),
-        BotCommand("resetledger", "Reset Running Total")
+        BotCommand("resetledger", "Reset Running Total"),
+        BotCommand("wallet", "View Category B Wallet Balance"),
+        BotCommand("balance", "View Category B Wallet Balance"),
+        BotCommand("topup", "Admin Top-up Customer Wallet"),
+        BotCommand("testbinance", "Test Binance API Connectivity")
     ]
 
     valid_commands = []
