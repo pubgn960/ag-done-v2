@@ -61,9 +61,9 @@ PHONE_REGEX = re.compile(
     r'(?:\+|\b00)\d{1,3}[\s.-]?\d{6,14}\b'
 )
 
-# Customer Reference / Order ID Prefix Regex (e.g. "Order #:54", "Order #54", "Order: #54", "991#", "#54")
+# Customer Reference / Order ID Prefix Regex (e.g. "Order #:54", "Order #54", "Order: #54", "991#", "#54", "#105")
 CUSTOMER_REF_REGEX = re.compile(
-    r'\border\s*#?\s*[:=\-]?\s*#?\s*(\d+)\b|^\s*#?(\d+)#',
+    r'\border\s*#?\s*[:=\-]?\s*#?\s*(\d+)\b|^\s*#(\d+)\b|^\s*#?(\d+)#',
     re.IGNORECASE | re.MULTILINE
 )
 
@@ -138,12 +138,12 @@ def normalize_package_alias(pkg_name: Optional[str], alias_map: Optional[Dict[st
 
 
 def extract_customer_ref_id(text: Optional[str]) -> Optional[str]:
-    """Extracts customer reference ID prefix like '54', '991', etc."""
+    """Extracts customer reference ID prefix like '54', '991', '105', etc."""
     if not text:
         return None
     match = CUSTOMER_REF_REGEX.search(text)
     if match:
-        return match.group(1) or match.group(2)
+        return match.group(1) or match.group(2) or match.group(3)
     return None
 
 

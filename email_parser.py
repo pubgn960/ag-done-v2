@@ -153,7 +153,7 @@ def extract_order_section(text: Optional[str]) -> Optional[str]:
                     extracted_lines.append(line_strip)
                     continue
         else:
-            if any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) or line_lower in STANDALONE_HEADERS:
+            if any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) or line_lower in STANDALONE_HEADERS or EMAIL_REGEX.search(line_strip):
                 break
             if line_strip:
                 extracted_lines.append(line_strip)

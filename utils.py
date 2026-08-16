@@ -1137,7 +1137,7 @@ def format_order_details_block(raw_text: Optional[str], fallback_email: Optional
                 continue
 
         if in_order_sec:
-            if any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) or line_lower in STANDALONE_HEADERS:
+            if any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) or line_lower in STANDALONE_HEADERS or re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', line_strip):
                 in_order_sec = False
             else:
                 continue

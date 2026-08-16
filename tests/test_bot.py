@@ -4755,5 +4755,121 @@ class TestBinanceClientIdentityRegistrationAndMatching(unittest.IsolatedAsyncioT
                 self.assertEqual(wt.status, "COMPLETED")
 
 
+class TestCategoryAOrderDetectionRestoration(unittest.TestCase):
+    def test_category_a_order_105_activision_safe_12000_fast(self):
+        from order_parser import parse_order_v2, extract_customer_ref_id
+        from email_parser import extract_package
+
+        text = (
+            "Zain Active 🐱\n"
+            "#105\n"
+            "Activision\n"
+            "Safe\n"
+            "12000\n"
+            "Fast\n\n"
+            "manuel.3lgzl@hotmail.com\n\n"
+            "Pass:\n"
+            "26manuel07\n\n"
+            "Nick: LzMeme"
+        )
+        parsed = parse_order_v2(text, category="A")
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["email"], "manuel.3lgzl@hotmail.com")
+        self.assertEqual(parsed["login_method"], "Activision")
+        self.assertEqual(parsed["password"], "26manuel07")
+        self.assertEqual(parsed["username"], "LzMeme")
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "12000")
+        self.assertEqual(extract_customer_ref_id(text), "105")
+        self.assertNotIn("@hotmail.com", extract_package(text))
+
+    def test_category_a_order_106_activision_safe_10800_fast_nick_questionmarks(self):
+        from order_parser import parse_order_v2, extract_customer_ref_id
+        from email_parser import extract_package
+
+        text = (
+            "#106\n"
+            "Activision\n"
+            "Safe\n"
+            "10800\n"
+            "Fast\n\n"
+            "tokiokaultiz1@hotmail.com\n\n"
+            "Pass:\n"
+            "LOLA2503.T\n\n"
+            "Nick:\n"
+            "???"
+        )
+        parsed = parse_order_v2(text, category="A")
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["email"], "tokiokaultiz1@hotmail.com")
+        self.assertEqual(parsed["login_method"], "Activision")
+        self.assertEqual(parsed["password"], "LOLA2503.T")
+        self.assertEqual(parsed["username"], "???")
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "10800")
+        self.assertEqual(extract_customer_ref_id(text), "106")
+        self.assertNotIn("@hotmail.com", extract_package(text))
+
+    def test_category_a_order_with_customer_name_before_order_number(self):
+        from order_parser import parse_order_v2, extract_customer_ref_id
+
+        text = (
+            "VIP Customer John 🔥\n"
+            "Status: Active\n"
+            "#500\n"
+            "Activision\n"
+            "Safe\n"
+            "5040\n"
+            "Normal\n\n"
+            "john.doe@gmail.com\n\n"
+            "Pass:\n"
+            "secret123\n\n"
+            "Nick: GamerJohn"
+        )
+        parsed = parse_order_v2(text, category="A")
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["email"], "john.doe@gmail.com")
+        self.assertEqual(parsed["packages"][0]["package"], "5040")
+        self.assertEqual(extract_customer_ref_id(text), "500")
+
+    def test_category_a_order_with_extra_blank_lines(self):
+        from order_parser import parse_order_v2
+
+        text = (
+            "\n\n#999\n\n"
+            "Activision\n\n"
+            "Safe\n\n"
+            "2400\n\n"
+            "Fast\n\n\n"
+            "test.user@outlook.com\n\n\n"
+            "Pass:\n\n"
+            "Pass1234\n\n\n"
+            "Nick:\n\n"
+            "ProGamer\n\n"
+        )
+        parsed = parse_order_v2(text, category="A")
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["email"], "test.user@outlook.com")
+        self.assertEqual(parsed["packages"][0]["package"], "2400")
+
+    def test_caption_text_detection_support(self):
+        from keywords import contains_order_keyword
+
+        caption_text = (
+            "#777\n"
+            "Activision\n"
+            "Safe\n"
+            "12000\n"
+            "Fast\n\n"
+            "caption.user@gmail.com\n\n"
+            "Pass:\n"
+            "CapPass123\n\n"
+            "Nick: CaptionPlayer"
+        )
+        matched, kw = contains_order_keyword(caption_text)
+        self.assertTrue(matched)
+        self.assertEqual(kw, "activision")
+
+
 if __name__ == "__main__":
     unittest.main()
