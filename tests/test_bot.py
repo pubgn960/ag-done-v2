@@ -4462,5 +4462,98 @@ class TestCategoryABPricingAndWalletSystem(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Wallet system is active only for Category B groups.", msg_a.replied_text)
 
 
+class TestBinanceWatcherAndDepositVerification(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from database import init_db, AsyncSessionLocal
+        from models import Wallet, WalletTransaction, PaymentTransaction, Order
+        from sqlalchemy import delete
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(WalletTransaction))
+            await session.execute(delete(PaymentTransaction))
+            await session.execute(delete(Wallet))
+            await session.execute(delete(Order))
+            await session.commit()
+
+    async def test_usdt_and_usdc_deposit_detection_and_decimal_precision(self):
+        from payment_verifier import fetch_recent_binance_deposits
+        from unittest.mock import patch
+
+        mock_deps = [
+            {"txId": "TX_USDT_077", "coin": "USDT", "amount": "0.077", "status": 1},
+            {"txId": "TX_USDC_100", "coin": "USDC", "amount": "100.50", "status": 1}
+        ]
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_deps, "")):
+            ok, msg, deposits = await fetch_recent_binance_deposits()
+            self.assertTrue(ok)
+            self.assertEqual(len(deposits), 2)
+            self.assertEqual(deposits[0]["amount"], 0.077)
+            self.assertEqual(deposits[0]["coin"], "USDT")
+            self.assertEqual(deposits[1]["amount"], 100.50)
+            self.assertEqual(deposits[1]["coin"], "USDC")
+
+    async def test_pending_or_failed_deposit_and_wrong_currency_rejected(self):
+        from payment_verifier import fetch_recent_binance_deposits
+        from unittest.mock import patch
+
+        mock_deps = [
+            {"txId": "TX_BTC", "coin": "BTC", "amount": "1.0", "status": 1},  # Unsupported coin
+            {"txId": "TX_PENDING", "coin": "USDT", "amount": "50.0", "status": 0}  # Unconfirmed status
+        ]
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_deps, "")):
+            ok, msg, deposits = await fetch_recent_binance_deposits()
+            self.assertTrue(ok)
+            self.assertEqual(len(deposits), 0)
+
+    async def test_duplicate_transaction_protection_and_decimal_topup(self):
+        import uuid
+        from database import create_order, get_wallet_balance
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+
+        group_b = -100999111
+        user_id = 444555
+        tx_decimal = f"TX_DECIMAL_{uuid.uuid4().hex[:6]}"
+
+        # Create Category B pending order
+        order = await create_order(
+            email="testb@example.com",
+            client_chat_id=group_b,
+            original_message_id=101,
+            package="2400",
+            status="Pending Payment",
+            category="B",
+            raw_text="email: testb@example.com pass: 123 nick: B 2400"
+        )
+
+        mock_deps = [
+            {"txId": tx_decimal, "coin": "USDT", "amount": "0.077", "status": 1}
+        ]
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_deps, "")):
+
+            # First run: should credit 0.077 USDT
+            res1 = await poll_and_auto_credit_binance_deposits(target_user_id=user_id)
+            self.assertTrue(res1["ok"])
+            self.assertEqual(res1["credited_count"], 1)
+
+            bal1 = await get_wallet_balance(group_b, user_id)
+            self.assertAlmostEqual(bal1, 0.077, places=4)
+
+            # Second run with SAME TxID: must be blocked as duplicate!
+            res2 = await poll_and_auto_credit_binance_deposits(target_user_id=user_id)
+            self.assertTrue(res2["ok"])
+            self.assertEqual(res2["credited_count"], 0)
+
+            # Balance must remain 0.077 (not 0.154!)
+            bal2 = await get_wallet_balance(group_b, user_id)
+            self.assertAlmostEqual(bal2, 0.077, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()

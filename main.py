@@ -135,6 +135,19 @@ async def periodic_maintenance_task() -> None:
             logger.error(f"Error in periodic maintenance task: {e}")
 
 
+async def periodic_binance_watcher_task(application: Application) -> None:
+    """Periodic background task running every 60 seconds to poll Binance deposit history and auto-credit Category B wallets."""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            from payment_verifier import poll_and_auto_credit_binance_deposits
+            await poll_and_auto_credit_binance_deposits(context=application)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in Binance payment watcher task: {e}")
+
+
 async def post_init(application: Application) -> None:
     """Post-initialization callback run inside the active application event loop."""
     logger.info("Initializing database schema...")
@@ -206,8 +219,9 @@ async def post_init(application: Application) -> None:
         if cleaned > 0:
             logger.info(f"Startup retention check purged {cleaned} expired records.")
 
-    # Schedule background maintenance task in active event loop
+    # Schedule background maintenance task and Binance watcher task in active event loop
     asyncio.create_task(periodic_maintenance_task())
+    asyncio.create_task(periodic_binance_watcher_task(application))
 
     logger.info("Bot initialization complete. Active and listening for updates...")
 

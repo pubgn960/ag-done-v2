@@ -336,7 +336,7 @@ async def verify_payment_transaction(
                     if tx_id == transaction_id.strip():
                         if coin != currency_clean:
                             return False, "CURRENCY_MISMATCH", f"Transaction coin is {coin}, expected {currency_clean}."
-                        if abs(dep_amount - amount) > 0.01:
+                        if abs(dep_amount - amount) > 0.001:
                             return False, "AMOUNT_MISMATCH", f"Transaction amount is {dep_amount}, expected {amount}."
                         if status != 1:
                             return False, "DEPOSIT_NOT_COMPLETED", f"Transaction deposit status is {status} (pending/failed)."
@@ -344,4 +344,128 @@ async def verify_payment_transaction(
                 return False, "TX_NOT_FOUND", f"Transaction {transaction_id} not found in recent Binance deposit history."
 
     return False, "UNVERIFIED", f"Transaction {transaction_id} could not be verified via live {p_upper} API."
+
+
+async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
+    """
+    Fetches recent completed USDT/USDC deposits from official Binance API.
+    Queries both /sapi/v1/capital/deposit/hisrec (on-chain deposits) and returns completed items.
+    Returns Tuple[ok: bool, code_or_msg: str, deposits: list].
+    """
+    if not check_provider_api_configured("BINANCE"):
+        return False, "MISSING_API_CREDENTIALS", []
+
+    base_urls = ["https://api.binance.com", "https://api1.binance.com", "https://api-gcp.binance.com"]
+    deposits = []
+    http_451 = False
+
+    for base_url in base_urls:
+        ok, code, data, err = await asyncio.to_thread(
+            _execute_binance_signed_get_with_url, base_url, "/sapi/v1/capital/deposit/hisrec"
+        )
+        if code == 451:
+            http_451 = True
+            continue
+        if ok and isinstance(data, list):
+            for dep in data:
+                tx_id = str(dep.get("txId", "")).strip()
+                coin = str(dep.get("coin", "")).strip().upper()
+                dep_amount = float(dep.get("amount", 0))
+                status = int(dep.get("status", 0))
+
+                # Rule check: USDT or USDC ONLY & status == 1 (Completed)
+                if coin in SUPPORTED_CURRENCIES and status == 1 and tx_id and dep_amount > 0:
+                    deposits.append({
+                        "tx_id": tx_id,
+                        "coin": coin,
+                        "amount": dep_amount,
+                        "status": "completed",
+                        "provider": "BINANCE",
+                        "raw": dep
+                    })
+            return True, "SUCCESS", deposits
+
+    if http_451:
+        logger.warning("[PAYMENT_WATCHER] Binance API deposit fetch blocked (HTTP 451 Restricted Location).")
+        return False, "RESTRICTED_LOCATION_HTTP_451", []
+
+    return False, "FETCH_FAILED", []
+
+
+async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Periodic background watcher task for Binance deposits.
+    Fetches official Binance deposits, validates coin (USDT/USDC), status (completed),
+    checks duplicate PaymentTransaction records, and credits Category B wallets safely.
+    """
+    logger.info("[PAYMENT_WATCHER] Checking Binance deposits...")
+    ok, status_code, deposits = await fetch_recent_binance_deposits()
+
+    if not ok:
+        logger.info(f"[PAYMENT_WATCHER] Deposit check status: {status_code}")
+        return {"ok": False, "status": status_code, "credited_count": 0}
+
+    from database import AsyncSessionLocal, topup_wallet
+    from models import PaymentTransaction, Order
+    from sqlalchemy import select
+
+    credited_count = 0
+
+    for dep in deposits:
+        tx_id = dep["tx_id"]
+        coin = dep["coin"]
+        amount = dep["amount"]
+
+        masked_tx = tx_id[:6] + "..." + tx_id[-4:] if len(tx_id) > 10 else "***"
+        logger.info(f"[PAYMENT_WATCHER] Found {coin} deposit | Amount: {amount} | Status: completed | Transaction ID: {masked_tx}")
+
+        # Duplicate check against PaymentTransaction
+        async with AsyncSessionLocal() as session:
+            stmt_tx = select(PaymentTransaction).where(
+                PaymentTransaction.provider == "BINANCE",
+                PaymentTransaction.transaction_id == tx_id
+            )
+            dup_tx = (await session.execute(stmt_tx)).scalar_one_or_none()
+            if dup_tx:
+                logger.info(f"[PAYMENT_WATCHER] Duplicate: True | Transaction ID: {masked_tx} already processed.")
+                continue
+
+        logger.info(f"[PAYMENT_WATCHER] Duplicate: False | Processing new deposit {masked_tx}...")
+
+        # Match deposit to pending Category B customer orders
+        async with AsyncSessionLocal() as session:
+            stmt_ord = select(Order).where(
+                Order.category == "B",
+                Order.status == "Pending Payment"
+            ).order_by(Order.created_at.asc())
+            pending_b_orders = list((await session.execute(stmt_ord)).scalars().all())
+
+        if pending_b_orders:
+            target_order = pending_b_orders[0]
+            group_id = target_order.client_chat_id
+            user_id = target_user_id or getattr(target_order, "created_by", 0) or 0
+
+            w_obj, ok_topup, reason = await topup_wallet(
+                client_group_id=group_id,
+                telegram_user_id=user_id,
+                amount=amount,
+                provider="BINANCE",
+                transaction_id=tx_id,
+                currency=coin
+            )
+            if ok_topup:
+                credited_count += 1
+                logger.info(f"[PAYMENT_WATCHER] Wallet matched: True | Wallet credited successfully: ${amount} for Group {group_id} User {user_id}")
+                if context:
+                    try:
+                        from handlers import process_pending_category_b_orders
+                        await process_pending_category_b_orders(group_id, user_id, context)
+                    except Exception as ex_proc:
+                        logger.error(f"[PAYMENT_WATCHER] Auto-processing orders error: {ex_proc}")
+            else:
+                logger.warning(f"[PAYMENT_WATCHER] Wallet crediting failed: {reason}")
+        else:
+            logger.info(f"[PAYMENT_WATCHER] Wallet matched: False | No pending Category B order waiting for deposit {masked_tx}.")
+
+    return {"ok": True, "status": "SUCCESS", "credited_count": credited_count}
 
