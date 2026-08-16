@@ -5196,6 +5196,71 @@ class TestBinancePayIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(res["ok"])
             self.assertEqual(res["credited_count"], 0)  # Must NOT credit due to ambiguous multi-user link!
 
+    async def test_binance_pay_unmatched_retry_flow(self):
+        import uuid
+        from database import register_binance_identity, get_wallet_balance, AsyncSessionLocal
+        from models import PaymentTransaction
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+        from sqlalchemy import select
+
+        user_id = 666777
+        binance_uid = "444555666"
+        group_id = -1009988
+        tx_id = f"PAY_UNMATCHED_RETRY_{uuid.uuid4().hex[:6]}"
+
+        mock_payload = {
+            "code": "000000",
+            "message": "success",
+            "data": [{
+                "orderType": "C2C",
+                "transactionId": tx_id,
+                "amount": "15.0",
+                "currency": "USDT",
+                "payerInfo": {"binanceId": binance_uid}
+            }]
+        }
+
+        # 1. First scan BEFORE user registers UID -> Unmatched!
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_payload, "")):
+            res1 = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res1["ok"])
+            self.assertEqual(res1["credited_count"], 0)
+
+        # Confirm UNMATCHED record created
+        async with AsyncSessionLocal() as session:
+            stmt = select(PaymentTransaction).where(PaymentTransaction.provider == "BINANCE", PaymentTransaction.transaction_id == tx_id)
+            ptx1 = (await session.execute(stmt)).scalar_one_or_none()
+            self.assertIsNotNone(ptx1)
+            self.assertEqual(ptx1.status, "UNMATCHED")
+
+        # 2. User registers UID via /setbinance
+        await register_binance_identity(group_id, user_id, binance_uid)
+
+        # 3. Second scan AFTER user registers UID -> Retry succeeds and credits wallet!
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_payload, "")):
+            res2 = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res2["ok"])
+            self.assertEqual(res2["credited_count"], 1)
+
+            bal = await get_wallet_balance(group_id, user_id)
+            self.assertAlmostEqual(bal, 15.0, places=4)
+
+        # Confirm PaymentTransaction updated to VERIFIED
+        async with AsyncSessionLocal() as session:
+            stmt = select(PaymentTransaction).where(PaymentTransaction.provider == "BINANCE", PaymentTransaction.transaction_id == tx_id)
+            ptx2 = (await session.execute(stmt)).scalar_one_or_none()
+            self.assertEqual(ptx2.status, "VERIFIED")
+
+        # 4. Third scan -> Duplicate check blocks second credit!
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_payload, "")):
+            res3 = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res3["ok"])
+            self.assertEqual(res3["credited_count"], 0)  # Double credit blocked!
+
 
 if __name__ == "__main__":
     unittest.main()

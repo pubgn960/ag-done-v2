@@ -1601,6 +1601,7 @@ async def topup_wallet(
 
     async with AsyncSessionLocal() as session:
         try:
+            existing_ptx = None
             if transaction_id:
                 stmt_tx = select(PaymentTransaction).where(
                     PaymentTransaction.provider == provider,
@@ -1608,8 +1609,11 @@ async def topup_wallet(
                 )
                 dup_tx = (await session.execute(stmt_tx)).scalar_one_or_none()
                 if dup_tx:
-                    logger.warning(f"[DUPLICATE_PAYMENT_BLOCKED] Provider {provider} TxID {transaction_id} already credited.")
-                    return None, False, "DUPLICATE_TRANSACTION"
+                    if dup_tx.status == "VERIFIED":
+                        logger.warning(f"[DUPLICATE_PAYMENT_BLOCKED] Provider {provider} TxID {transaction_id} already credited.")
+                        return None, False, "DUPLICATE_TRANSACTION"
+                    elif dup_tx.status == "UNMATCHED":
+                        existing_ptx = dup_tx
 
             stmt_w = select(Wallet).where(
                 Wallet.client_group_id == client_group_id,
@@ -1646,16 +1650,21 @@ async def topup_wallet(
             session.add(w_tx)
 
             if transaction_id:
-                p_tx = PaymentTransaction(
-                    provider=provider,
-                    transaction_id=transaction_id,
-                    amount=float(dec_amount),
-                    currency=currency.upper(),
-                    wallet_id=wallet.id,
-                    status="VERIFIED",
-                    verified_at=datetime.now(timezone.utc)
-                )
-                session.add(p_tx)
+                if existing_ptx:
+                    existing_ptx.status = "VERIFIED"
+                    existing_ptx.wallet_id = wallet.id
+                    existing_ptx.verified_at = datetime.now(timezone.utc)
+                else:
+                    p_tx = PaymentTransaction(
+                        provider=provider,
+                        transaction_id=transaction_id,
+                        amount=float(dec_amount),
+                        currency=currency.upper(),
+                        wallet_id=wallet.id,
+                        status="VERIFIED",
+                        verified_at=datetime.now(timezone.utc)
+                    )
+                    session.add(p_tx)
 
             await session.commit()
             await session.refresh(wallet)

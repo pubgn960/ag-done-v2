@@ -584,10 +584,12 @@ async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
     http_451 = False
     query_success = False
 
+    start_ts = int((time.time() - 86400 * 7) * 1000)
+
     # 1. Query Binance Pay API (/sapi/v1/pay/transactions)
     for base_url in base_urls:
         ok, code, data, err = await asyncio.to_thread(
-            _execute_binance_signed_get_with_url, base_url, "/sapi/v1/pay/transactions"
+            _execute_binance_signed_get_with_url, base_url, f"/sapi/v1/pay/transactions?startTimestamp={start_ts}"
         )
         if code == 451:
             http_451 = True
@@ -602,7 +604,7 @@ async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
     # 2. Query Capital Deposit History API (/sapi/v1/capital/deposit/hisrec)
     for base_url in base_urls:
         ok, code, data, err = await asyncio.to_thread(
-            _execute_binance_signed_get_with_url, base_url, "/sapi/v1/capital/deposit/hisrec"
+            _execute_binance_signed_get_with_url, base_url, f"/sapi/v1/capital/deposit/hisrec?startTimestamp={start_ts}"
         )
         if code == 451:
             http_451 = True
@@ -667,17 +669,18 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
         logger.info(f"[PAYMENT_WATCHER] Found {coin} deposit | Amount: {amount} | Status: completed | Transaction ID: {masked_tx}")
 
         # Duplicate check against PaymentTransaction
+        dup_tx = None
         async with AsyncSessionLocal() as session:
             stmt_tx = select(PaymentTransaction).where(
                 PaymentTransaction.provider == "BINANCE",
                 PaymentTransaction.transaction_id == tx_id
             )
             dup_tx = (await session.execute(stmt_tx)).scalar_one_or_none()
-            if dup_tx:
-                logger.info(f"[PAYMENT_WATCHER] Duplicate: True | Transaction ID: {masked_tx} already processed.")
+            if dup_tx and dup_tx.status == "VERIFIED":
+                logger.info(f"[PAYMENT_WATCHER] Duplicate: True | Transaction ID: {masked_tx} already verified & credited.")
                 continue
 
-        logger.info(f"[PAYMENT_WATCHER] Duplicate: False | Processing new deposit {masked_tx}...")
+        logger.info(f"[PAYMENT_WATCHER] Duplicate: False | Processing deposit {masked_tx}...")
         log_payment_diagnostic(dep.get("raw", dep), masked_tx, amount, "completed")
 
         payer_uid = dep.get("payer_binance_uid") or extract_payer_binance_uid(dep) or extract_payer_binance_uid(dep.get("raw"))
@@ -775,16 +778,24 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
                     logger.info(f"[PAYMENT_WATCHER] Pending orders found: 0 | Balance remains in wallet")
             else:
                 logger.warning(f"[PAYMENT_WATCHER] Wallet crediting failed: {reason}")
-
-        elif payer_uid:
-            uid_str = str(payer_uid).strip()
-            masked_uid = uid_str[:4] + "***" + uid_str[-3:] if len(uid_str) > 7 else "***"
-            logger.warning(f"[PAYMENT_WATCHER] UNMATCHED PAYMENT | Payer Binance UID {masked_uid} not registered in any Category B group.")
-            logger.warning("[PAYMENT_WATCHER] Manual review required. Wallet NOT credited.")
-
         else:
-            logger.warning("[PAYMENT_WATCHER] UNMATCHED PAYMENT | Payer Binance UID unavailable")
+            # Record unmatched deposit if not already recorded, silencing 60s duplicate logs while keeping retryable
+            if not dup_tx:
+                async with AsyncSessionLocal() as session:
+                    try:
+                        unmatched_ptx = PaymentTransaction(
+                            provider="BINANCE",
+                            transaction_id=tx_id,
+                            amount=amount,
+                            currency=coin,
+                            wallet_id=None,
+                            status="UNMATCHED"
+                        )
+                        session.add(unmatched_ptx)
+                        await session.commit()
+                    except Exception as e_unm:
+                        await session.rollback()
+                        logger.debug(f"[PAYMENT_WATCHER] Track unmatched tx {masked_tx}: {e_unm}")
             logger.warning("[PAYMENT_WATCHER] Manual review required. Wallet NOT credited.")
 
     return {"ok": True, "status": "SUCCESS", "credited_count": credited_count}
-
