@@ -431,6 +431,75 @@ async def verify_payment_transaction(
     return False, "UNVERIFIED", f"Transaction {transaction_id} could not be verified via live {p_upper} API."
 
 
+def extract_payer_binance_uid(dep: Any) -> Optional[str]:
+    """
+    Safely extracts the sender Binance UID (payerId) from a Binance transaction/deposit dictionary.
+    Supports top-level fields, nested payerInfo objects, and raw payload structures.
+    Does NOT leak secrets or API credentials.
+    """
+    if not isinstance(dep, dict):
+        return None
+
+    # Check top-level direct fields
+    top_candidates = [
+        dep.get("payer_binance_uid"),
+        dep.get("payerId"),
+        dep.get("payer_uid"),
+        dep.get("senderUid"),
+        dep.get("payerBinanceUid"),
+        dep.get("sender_uid"),
+    ]
+    for cand in top_candidates:
+        if cand is not None and str(cand).strip():
+            return str(cand).strip()
+
+    # Check nested payerInfo dictionary (Binance Pay API format)
+    payer_info = dep.get("payerInfo")
+    if isinstance(payer_info, dict):
+        nested_candidates = [
+            payer_info.get("payerId"),
+            payer_info.get("binanceUid"),
+            payer_info.get("uid"),
+            payer_info.get("payer_uid"),
+        ]
+        for cand in nested_candidates:
+            if cand is not None and str(cand).strip():
+                return str(cand).strip()
+
+    # Check nested raw payload dictionary if wrapped
+    raw_payload = dep.get("raw")
+    if isinstance(raw_payload, dict) and raw_payload != dep:
+        return extract_payer_binance_uid(raw_payload)
+
+    return None
+
+
+def log_payment_diagnostic(dep: Any, tx_id: str, amount: float, status: str) -> None:
+    """
+    Outputs safe diagnostic information for deposit/transaction payload inspection without exposing secrets.
+    """
+    if not isinstance(dep, dict):
+        logger.info(f"[PAYMENT_DIAGNOSTIC] transaction_id={tx_id} | amount={amount} | status={status} | payload=invalid_dict")
+        return
+
+    available_payer_fields = [
+        k for k in dep.keys()
+        if "payer" in k.lower() or "sender" in k.lower() or "uid" in k.lower() or "user" in k.lower()
+    ]
+
+    nested_payer_fields = []
+    if isinstance(dep.get("payerInfo"), dict):
+        nested_payer_fields = [f"payerInfo.{k}" for k in dep["payerInfo"].keys()]
+
+    all_fields = available_payer_fields + nested_payer_fields
+    uid = extract_payer_binance_uid(dep)
+    logger.info(
+        f"[PAYMENT_DIAGNOSTIC] transaction_id={tx_id} | amount={amount} | status={status} | "
+        f"available_payer_fields={all_fields} | payer_uid_field_found={'True' if uid else 'False'} | "
+        f"extraction_result={'available' if uid else 'unavailable'}"
+    )
+
+
 async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
     """
     Fetches recent completed USDT/USDC deposits from official Binance API.
@@ -457,12 +526,7 @@ async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
                 coin = str(dep.get("coin", "") or dep.get("currency", "")).strip().upper()
                 dep_amount = float(dep.get("amount", 0))
                 status = int(dep.get("status", 0)) if str(dep.get("status", "")).isdigit() else (1 if dep.get("status") in (1, "1", "completed", "COMPLETED") else 0)
-                payer_uid = (
-                    dep.get("payer_binance_uid")
-                    or dep.get("payerId")
-                    or dep.get("payer_uid")
-                    or dep.get("senderUid")
-                )
+                payer_uid = extract_payer_binance_uid(dep)
 
                 # Rule check: USDT or USDC ONLY & status == 1 (Completed)
                 if coin in SUPPORTED_CURRENCIES and status == 1 and tx_id and dep_amount > 0:
@@ -523,15 +587,9 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
                 continue
 
         logger.info(f"[PAYMENT_WATCHER] Duplicate: False | Processing new deposit {masked_tx}...")
+        log_payment_diagnostic(dep.get("raw", dep), masked_tx, amount, "completed")
 
-        payer_uid = (
-            dep.get("payer_binance_uid")
-            or dep.get("payerId")
-            or dep.get("payer_uid")
-            or dep.get("senderUid")
-            or (dep.get("raw", {}).get("payerId") if isinstance(dep.get("raw"), dict) else None)
-            or (dep.get("raw", {}).get("senderUid") if isinstance(dep.get("raw"), dict) else None)
-        )
+        payer_uid = dep.get("payer_binance_uid") or extract_payer_binance_uid(dep) or extract_payer_binance_uid(dep.get("raw"))
 
         matched_user_id = None
         matched_group_id = None

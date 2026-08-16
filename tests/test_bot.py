@@ -4871,5 +4871,67 @@ class TestCategoryAOrderDetectionRestoration(unittest.TestCase):
         self.assertEqual(kw, "activision")
 
 
+class TestBinanceUIDExtractionDiagnostic(unittest.TestCase):
+    def test_current_binance_capital_deposit_hisrec_response_format_missing_uid(self):
+        from payment_verifier import extract_payer_binance_uid
+        dep = {
+            "amount": "100.00000000",
+            "coin": "USDT",
+            "network": "TRX",
+            "status": 1,
+            "address": "0x788c44bda2b3de1f6c640865377f0a6d091e98d1",
+            "addressTag": "105577",
+            "txId": "0xaad4654a5574f177e7a678966128d7b007010464a4a4b263e5a4c5804f653f55",
+            "insertTime": 1566813289000,
+            "transferType": 0,
+            "unlockConfirm": "12/12",
+            "confirmTimes": "12/12"
+        }
+        self.assertIsNone(extract_payer_binance_uid(dep))
+
+    def test_top_level_payer_id_exists(self):
+        from payment_verifier import extract_payer_binance_uid
+        dep = {
+            "txId": "TX_PAYER_TOP_LEVEL_123",
+            "coin": "USDT",
+            "amount": "50.0",
+            "status": 1,
+            "payerId": "123456789"
+        }
+        self.assertEqual(extract_payer_binance_uid(dep), "123456789")
+
+    def test_payer_id_missing_completely(self):
+        from payment_verifier import extract_payer_binance_uid
+        dep = {
+            "txId": "TX_NO_PAYER",
+            "coin": "USDT",
+            "amount": "25.0",
+            "status": 1
+        }
+        self.assertIsNone(extract_payer_binance_uid(dep))
+
+    def test_nested_payer_info_exists(self):
+        from payment_verifier import extract_payer_binance_uid
+        dep = {
+            "orderType": "C2C",
+            "transactionId": "BINANCE_PAY_987654",
+            "amount": "15.0",
+            "currency": "USDT",
+            "payerInfo": {
+                "payerId": "987654321",
+                "payerName": "John"
+            }
+        }
+        self.assertEqual(extract_payer_binance_uid(dep), "987654321")
+
+    def test_malformed_and_empty_responses(self):
+        from payment_verifier import extract_payer_binance_uid
+        self.assertIsNone(extract_payer_binance_uid(None))
+        self.assertIsNone(extract_payer_binance_uid({}))
+        self.assertIsNone(extract_payer_binance_uid([]))
+        self.assertIsNone(extract_payer_binance_uid("invalid"))
+        self.assertIsNone(extract_payer_binance_uid(12345))
+
+
 if __name__ == "__main__":
     unittest.main()
