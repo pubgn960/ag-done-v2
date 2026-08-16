@@ -19,7 +19,7 @@ import hashlib
 import asyncio
 import urllib.parse
 import urllib.request
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 
 from utils import format_wallet_amount
 
