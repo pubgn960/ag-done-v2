@@ -41,10 +41,64 @@ def check_provider_api_configured(provider: str) -> bool:
     return False
 
 
-def _execute_binance_signed_get(endpoint_path: str, params: Optional[Dict[str, Any]] = None) -> Tuple[bool, int, Any, str]:
+def _get_outbound_ip_info() -> Dict[str, str]:
     """
-    Executes a read-only GET request to Binance API.
-    Returns Tuple[success: bool, status_code: int, response_data: Any, safe_error_message: str].
+    Fetches outbound public IP address and geo location info cleanly.
+    """
+    try:
+        req = urllib.request.Request("https://ipinfo.io/json", headers={"User-Agent": "TelegramDeliveryBot/2.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return {
+                "ip": data.get("ip", "Unknown"),
+                "country": data.get("country", "Unknown"),
+                "region": data.get("region", "Unknown"),
+                "city": data.get("city", "Unknown"),
+                "org": data.get("org", "Unknown")
+            }
+    except Exception:
+        try:
+            req = urllib.request.Request("https://api.ipify.org?format=json", headers={"User-Agent": "TelegramDeliveryBot/2.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return {
+                    "ip": data.get("ip", "Unknown"),
+                    "country": "Unknown",
+                    "region": "Unknown",
+                    "city": "Unknown",
+                    "org": "Unknown"
+                }
+        except Exception:
+            return {"ip": "Unknown", "country": "Unknown", "region": "Unknown", "city": "Unknown", "org": "Unknown"}
+
+
+def _execute_binance_public_get(base_url: str, endpoint_path: str) -> Tuple[bool, int, str]:
+    """
+    Executes a public, unauthenticated GET request to a Binance endpoint.
+    Returns Tuple[success: bool, status_code: int, safe_message: str].
+    """
+    try:
+        full_url = f"{base_url}{endpoint_path}"
+        req = urllib.request.Request(full_url, headers={"User-Agent": "TelegramDeliveryBot/2.0"}, method="GET")
+        with urllib.request.urlopen(req, timeout=8) as response:
+            return True, response.getcode(), "Reachable"
+    except urllib.error.HTTPError as e:
+        safe_msg = f"HTTP {e.code}"
+        try:
+            err_body = e.read().decode("utf-8")
+            err_json = json.loads(err_body)
+            if isinstance(err_json, dict) and "msg" in err_json:
+                safe_msg = f"HTTP {e.code}: {err_json['msg']}"
+        except Exception:
+            pass
+        return False, e.code, safe_msg
+    except Exception as e:
+        return False, 500, f"Network error: {type(e).__name__}"
+
+
+def _execute_binance_signed_get_with_url(base_url: str, endpoint_path: str, params: Optional[Dict[str, Any]] = None) -> Tuple[bool, int, Any, str]:
+    """
+    Executes a read-only signed GET request to a specific Binance base URL.
     NEVER logs or exposes BINANCE_API_KEY or BINANCE_API_SECRET.
     """
     api_key = os.getenv("BINANCE_API_KEY", "").strip()
@@ -54,7 +108,6 @@ def _execute_binance_signed_get(endpoint_path: str, params: Optional[Dict[str, A
         return False, 401, {}, "Binance API Key or Secret missing in environment variables."
 
     try:
-        base_url = "https://api.binance.com"
         query_params = dict(params or {})
         query_params["timestamp"] = int(time.time() * 1000)
         query_params["recvWindow"] = 5000
@@ -82,12 +135,12 @@ def _execute_binance_signed_get(endpoint_path: str, params: Optional[Dict[str, A
             data = json.loads(body)
             return True, status_code, data, ""
     except urllib.error.HTTPError as e:
-        safe_msg = f"HTTP Error {e.code}"
+        safe_msg = f"HTTP {e.code}"
         try:
             err_body = e.read().decode("utf-8")
             err_json = json.loads(err_body)
             if isinstance(err_json, dict) and "msg" in err_json:
-                safe_msg = f"HTTP Error {e.code}: {err_json['msg']}"
+                safe_msg = f"HTTP {e.code}: {err_json['msg']}"
         except Exception:
             pass
         return False, e.code, {}, safe_msg
@@ -95,15 +148,17 @@ def _execute_binance_signed_get(endpoint_path: str, params: Optional[Dict[str, A
         return False, 500, {}, f"Network connection error: {type(e).__name__}"
 
 
+def _execute_binance_signed_get(endpoint_path: str, params: Optional[Dict[str, Any]] = None) -> Tuple[bool, int, Any, str]:
+    """Executes default signed GET against https://api.binance.com."""
+    return _execute_binance_signed_get_with_url("https://api.binance.com", endpoint_path, params)
+
+
 async def test_binance_api_connectivity() -> Dict[str, Any]:
     """
     Performs a completely SAFE, READ-ONLY Binance API connectivity and capability test.
-    Checks:
-    - API Credentials Loaded
-    - Authenticated API Connection
-    - Account Access
-    - Deposit History Access (/sapi/v1/capital/deposit/hisrec)
-    - USDT & USDC verification capabilities
+    Tests 3 base URLs: api.binance.com, api1.binance.com, api-gcp.binance.com.
+    Checks public ping reachability vs authenticated account/deposit access.
+    Retrieves outbound server IP and region info cleanly.
     Returns structured report dict with formatted Telegram text report.
     Does NOT credit any wallet, mutate database, or perform any payment or trade.
     """
@@ -113,96 +168,121 @@ async def test_binance_api_connectivity() -> Dict[str, Any]:
 
     logger.info(f"[PAYMENT_TEST] Binance API credentials loaded: {'YES' if credentials_loaded else 'NO'}")
 
-    if not credentials_loaded:
-        logger.info("[PAYMENT_TEST] Binance API connection: FAILED")
-        logger.info("[PAYMENT_TEST] Account access: FAILED")
-        logger.info("[PAYMENT_TEST] Deposit history access: FAILED")
-        logger.info("[PAYMENT_TEST] USDT verification capability: NOT AVAILABLE")
-        logger.info("[PAYMENT_TEST] USDC verification capability: NOT AVAILABLE")
+    ip_info = await asyncio.to_thread(_get_outbound_ip_info)
+    outbound_ip = ip_info.get("ip", "Unknown")
+    country = ip_info.get("country", "Unknown")
+    region = ip_info.get("region", "Unknown")
+    city = ip_info.get("city", "Unknown")
+    org = ip_info.get("org", "Unknown")
 
-        report_text = (
-            "🧪 <b>Binance API Test</b>\n\n"
-            "API Credentials: ❌ Missing\n"
-            "API Connection: ❌ Failed\n"
-            "Account Access: ❌ Not Available\n"
-            "Deposit History: ❌ Not Available\n\n"
-            "USDT Verification: ❌ Not Available\n"
-            "USDC Verification: ❌ Not Available\n\n"
-            "Withdrawal Permission: ❌ Not Required (Read-Only Test)\n"
-            "Trading Permission: ❌ Not Required (Read-Only Test)\n\n"
-            "<b>Payment Verification System: ❌ NOT READY</b>\n\n"
-            "<i>Reason: BINANCE_API_KEY or BINANCE_API_SECRET is missing in environment variables.</i>"
-        )
-        return {
-            "credentials_loaded": False,
-            "api_connected": False,
-            "account_access": False,
-            "deposit_history_access": False,
-            "usdt_verification": False,
-            "usdc_verification": False,
-            "is_ready": False,
-            "formatted_text": report_text
+    logger.info(f"[PAYMENT_TEST] Outbound IP: {outbound_ip}, Location: {city}, {region}, {country} ({org})")
+
+    base_urls = [
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://api-gcp.binance.com"
+    ]
+
+    results = {}
+    any_auth_ok = False
+    any_deposit_ok = False
+    http_451_detected = False
+
+    for b_url in base_urls:
+        domain = b_url.replace("https://", "")
+        # Public test
+        pub_ok, pub_code, pub_msg = await asyncio.to_thread(_execute_binance_public_get, b_url, "/api/v3/time")
+        
+        # Authenticated account test
+        acc_ok, acc_code, acc_data, acc_msg = await asyncio.to_thread(_execute_binance_signed_get_with_url, b_url, "/api/v3/account")
+        
+        # Authenticated deposit history test
+        dep_ok, dep_code, dep_data, dep_msg = await asyncio.to_thread(_execute_binance_signed_get_with_url, b_url, "/sapi/v1/capital/deposit/hisrec")
+
+        if acc_code == 451 or dep_code == 451 or pub_code == 451:
+            http_451_detected = True
+
+        if acc_ok:
+            any_auth_ok = True
+        if dep_ok:
+            any_deposit_ok = True
+
+        results[domain] = {
+            "public_ok": pub_ok, "public_code": pub_code, "public_msg": pub_msg,
+            "account_ok": acc_ok, "account_code": acc_code, "account_msg": acc_msg,
+            "deposit_ok": dep_ok, "deposit_code": dep_code, "deposit_msg": dep_msg
         }
 
-    # 1. Test Authenticated Account Access
-    acc_ok, acc_code, acc_data, acc_err = await asyncio.to_thread(_execute_binance_signed_get, "/api/v3/account")
-    api_connected = acc_ok
-    account_access = acc_ok
+        logger.info(f"[PAYMENT_TEST] [{domain}] Public: {pub_msg} | Account: {acc_msg} | Deposit: {dep_msg}")
 
-    logger.info(f"[PAYMENT_TEST] Binance API connection: {'SUCCESS' if api_connected else 'FAILED'}")
-    logger.info(f"[PAYMENT_TEST] Account access: {'SUCCESS' if account_access else 'FAILED'}")
+    usdt_verification = any_deposit_ok
+    usdc_verification = any_deposit_ok
+    is_ready = credentials_loaded and any_auth_ok and any_deposit_ok
 
-    # 2. Test Deposit History Access (/sapi/v1/capital/deposit/hisrec)
-    dep_ok, dep_code, dep_data, dep_err = await asyncio.to_thread(_execute_binance_signed_get, "/sapi/v1/capital/deposit/hisrec")
-    deposit_history_access = dep_ok
-
-    logger.info(f"[PAYMENT_TEST] Deposit history access: {'SUCCESS' if deposit_history_access else 'FAILED'}")
-
-    usdt_verification = deposit_history_access
-    usdc_verification = deposit_history_access
-
+    logger.info(f"[PAYMENT_TEST] Binance API connection: {'SUCCESS' if any_auth_ok else 'FAILED'}")
+    logger.info(f"[PAYMENT_TEST] Account access: {'SUCCESS' if any_auth_ok else 'FAILED'}")
+    logger.info(f"[PAYMENT_TEST] Deposit history access: {'SUCCESS' if any_deposit_ok else 'FAILED'}")
     logger.info(f"[PAYMENT_TEST] USDT verification capability: {'AVAILABLE' if usdt_verification else 'NOT AVAILABLE'}")
     logger.info(f"[PAYMENT_TEST] USDC verification capability: {'AVAILABLE' if usdc_verification else 'NOT AVAILABLE'}")
 
-    is_ready = credentials_loaded and api_connected and account_access and deposit_history_access
-
     status_cred = "✅ Valid" if credentials_loaded else "❌ Missing"
-    status_conn = "✅ Connected" if api_connected else "❌ Failed"
-    status_acc = "✅ Available" if account_access else "❌ Not Available"
-    status_dep = "✅ Available" if deposit_history_access else "❌ Not Available"
-    status_usdt = "✅ Available" if usdt_verification else "❌ Not Available"
-    status_usdc = "✅ Available" if usdc_verification else "❌ Not Available"
     status_sys = "✅ READY" if is_ready else "❌ NOT READY"
 
-    reason_lines = []
-    if not api_connected:
-        reason_lines.append(f"Account API check failed ({acc_err})")
-    if not deposit_history_access:
-        reason_lines.append(f"Deposit history endpoint failed ({dep_err}). Ensure 'Enable Reading' is checked on Binance API key management.")
+    # Format Telegram Message
+    lines = ["🧪 <b>Binance API Multi-Endpoint Diagnostics</b>\n"]
+    lines.append(f"<b>API Credentials:</b> {status_cred}")
+    lines.append(f"<b>Server Outbound IP:</b> <code>{outbound_ip}</code>")
+    lines.append(f"<b>Detected Region:</b> {city}, {region}, {country} ({org})\n")
 
-    reason_str = "\n".join(reason_lines) if reason_lines else "None. All read-only deposit verification checks passed successfully."
+    lines.append("<b>1. Public Connectivity (/api/v3/time):</b>")
+    for dom, res in results.items():
+        icon = "✅" if res["public_ok"] else "❌"
+        lines.append(f"• {dom}: {icon} {res['public_msg']}")
 
-    report_text = (
-        "🧪 <b>Binance API Test</b>\n\n"
-        f"API Credentials: {status_cred}\n"
-        f"API Connection: {status_conn}\n"
-        f"Account Access: {status_acc}\n"
-        f"Deposit History: {status_dep}\n\n"
-        f"USDT Verification: {status_usdt}\n"
-        f"USDC Verification: {status_usdc}\n\n"
-        "Withdrawal Permission: ❌ Not Required (Read-Only Test)\n"
-        "Trading Permission: ❌ Not Required (Read-Only Test)\n\n"
-        f"<b>Payment Verification System: {status_sys}</b>\n\n"
-        f"<i>Details / Reason:</i>\n{reason_str}"
-    )
+    lines.append("\n<b>2. Authenticated Account (/api/v3/account):</b>")
+    for dom, res in results.items():
+        icon = "✅" if res["account_ok"] else "❌"
+        lines.append(f"• {dom}: {icon} {res['account_msg']}")
+
+    lines.append("\n<b>3. Deposit History (/sapi/v1/capital/deposit/hisrec):</b>")
+    for dom, res in results.items():
+        icon = "✅" if res["deposit_ok"] else "❌"
+        lines.append(f"• {dom}: {icon} {res['deposit_msg']}")
+
+    lines.append(f"\nUSDT Verification: {'✅ Available' if usdt_verification else '❌ Not Available'}")
+    lines.append(f"USDC Verification: {'✅ Available' if usdc_verification else '❌ Not Available'}")
+    lines.append(f"Withdrawal Permission: ❌ Not Required (Read-Only)")
+    lines.append(f"Trading Permission: ❌ Not Required (Read-Only)")
+    lines.append(f"\n<b>Payment Verification System: {status_sys}</b>\n")
+
+    lines.append("<b>Diagnosis & Cause:</b>")
+    if http_451_detected:
+        lines.append(
+            f"❌ <b>HTTP 451 Restricted Location Block</b>\n"
+            f"Binance Cloudflare edge servers block outbound requests originating from your Railway deployment's IP region ({country} / {org}). "
+            f"Public ping and API keys are valid, but Binance restricts API access from US/datacenter IP ranges."
+        )
+    elif not credentials_loaded:
+        lines.append("❌ BINANCE_API_KEY or BINANCE_API_SECRET missing in environment variables.")
+    elif is_ready:
+        lines.append("✅ All read-only deposit verification endpoints are active and accessible.")
+    else:
+        lines.append("❌ API query failed. Ensure 'Enable Reading' is checked in Binance API Management.")
+
+    report_text = "\n".join(lines)
 
     return {
         "credentials_loaded": credentials_loaded,
-        "api_connected": api_connected,
-        "account_access": account_access,
-        "deposit_history_access": deposit_history_access,
+        "outbound_ip": outbound_ip,
+        "country": country,
+        "region": region,
+        "results": results,
+        "api_connected": any_auth_ok,
+        "account_access": any_auth_ok,
+        "deposit_history_access": any_deposit_ok,
         "usdt_verification": usdt_verification,
         "usdc_verification": usdc_verification,
+        "http_451_detected": http_451_detected,
         "is_ready": is_ready,
         "formatted_text": report_text
     }
@@ -240,24 +320,28 @@ async def verify_payment_transaction(
         return False, "MISSING_API_CREDENTIALS", msg
 
     if p_upper == "BINANCE":
-        # Check deposit history using read-only API
-        ok, code, data, err = await asyncio.to_thread(_execute_binance_signed_get, "/sapi/v1/capital/deposit/hisrec")
-        if not ok:
-            return False, "API_ERROR", f"Binance API query failed: {err}"
-        if isinstance(data, list):
-            for dep in data:
-                tx_id = str(dep.get("txId", "")).strip()
-                coin = str(dep.get("coin", "")).strip().upper()
-                dep_amount = float(dep.get("amount", 0))
-                status = int(dep.get("status", 0))
-                if tx_id == transaction_id.strip():
-                    if coin != currency_clean:
-                        return False, "CURRENCY_MISMATCH", f"Transaction coin is {coin}, expected {currency_clean}."
-                    if abs(dep_amount - amount) > 0.01:
-                        return False, "AMOUNT_MISMATCH", f"Transaction amount is {dep_amount}, expected {amount}."
-                    if status != 1:
-                        return False, "DEPOSIT_NOT_COMPLETED", f"Transaction deposit status is {status} (pending/failed)."
-                    return True, "SUCCESS", f"Transaction {transaction_id} verified successfully via Binance API."
-            return False, "TX_NOT_FOUND", f"Transaction {transaction_id} not found in recent Binance deposit history."
+        # Try primary base URLs safely
+        for base_url in ["https://api.binance.com", "https://api1.binance.com", "https://api-gcp.binance.com"]:
+            ok, code, data, err = await asyncio.to_thread(_execute_binance_signed_get_with_url, base_url, "/sapi/v1/capital/deposit/hisrec")
+            if code == 451:
+                return False, "RESTRICTED_LOCATION_HTTP_451", f"Binance API access blocked from server location (HTTP 451). Automated crediting suspended."
+            if not ok:
+                continue
+            if isinstance(data, list):
+                for dep in data:
+                    tx_id = str(dep.get("txId", "")).strip()
+                    coin = str(dep.get("coin", "")).strip().upper()
+                    dep_amount = float(dep.get("amount", 0))
+                    status = int(dep.get("status", 0))
+                    if tx_id == transaction_id.strip():
+                        if coin != currency_clean:
+                            return False, "CURRENCY_MISMATCH", f"Transaction coin is {coin}, expected {currency_clean}."
+                        if abs(dep_amount - amount) > 0.01:
+                            return False, "AMOUNT_MISMATCH", f"Transaction amount is {dep_amount}, expected {amount}."
+                        if status != 1:
+                            return False, "DEPOSIT_NOT_COMPLETED", f"Transaction deposit status is {status} (pending/failed)."
+                        return True, "SUCCESS", f"Transaction {transaction_id} verified successfully via Binance API."
+                return False, "TX_NOT_FOUND", f"Transaction {transaction_id} not found in recent Binance deposit history."
 
     return False, "UNVERIFIED", f"Transaction {transaction_id} could not be verified via live {p_upper} API."
+

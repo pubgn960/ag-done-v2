@@ -4409,7 +4409,7 @@ class TestCategoryABPricingAndWalletSystem(unittest.IsolatedAsyncioTestCase):
         report = await test_binance_api_connectivity()
         self.assertIn("credentials_loaded", report)
         self.assertIn("formatted_text", report)
-        self.assertIn("🧪 <b>Binance API Test</b>", report["formatted_text"])
+        self.assertIn("🧪 <b>Binance API Multi-Endpoint Diagnostics</b>", report["formatted_text"])
 
 
 if __name__ == "__main__":
