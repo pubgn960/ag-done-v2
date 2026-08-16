@@ -4933,5 +4933,134 @@ class TestBinanceUIDExtractionDiagnostic(unittest.TestCase):
         self.assertIsNone(extract_payer_binance_uid(12345))
 
 
+class TestBinancePayIntegration(unittest.IsolatedAsyncioTestCase):
+    async def test_parse_binance_pay_transactions(self):
+        from payment_verifier import parse_binance_pay_transactions
+
+        pay_data = {
+            "code": "000000",
+            "message": "success",
+            "data": [
+                {
+                    "orderType": "C2C",
+                    "transactionId": "PAY_TX_1001",
+                    "transactionTime": 1610000000000,
+                    "amount": "10.5",
+                    "currency": "USDT",
+                    "payerInfo": {
+                        "payerId": "123456789",
+                        "payerName": "TestUser"
+                    }
+                },
+                {
+                    "orderType": "C2C",
+                    "transactionId": "PAY_TX_1002",
+                    "transactionTime": 1610000005000,
+                    "amount": "25.0",
+                    "currency": "BTC",  # Wrong currency!
+                    "payerInfo": {
+                        "payerId": "123456789"
+                    }
+                },
+                {
+                    "orderType": "C2C",
+                    "transactionId": "PAY_TX_1003",
+                    "transactionTime": 1610000010000,
+                    "amount": "0.0",  # Wrong amount!
+                    "currency": "USDT",
+                    "payerInfo": {
+                        "payerId": "123456789"
+                    }
+                },
+                {
+                    "orderType": "C2C",
+                    "transactionId": "PAY_TX_1004",
+                    "status": "FAILED",  # Failed status!
+                    "amount": "50.0",
+                    "currency": "USDT",
+                    "payerInfo": {
+                        "payerId": "123456789"
+                    }
+                }
+            ]
+        }
+
+        parsed = parse_binance_pay_transactions(pay_data)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["tx_id"], "PAY_TX_1001")
+        self.assertEqual(parsed[0]["coin"], "USDT")
+        self.assertEqual(parsed[0]["amount"], 10.5)
+        self.assertEqual(parsed[0]["payer_binance_uid"], "123456789")
+
+    async def test_binance_pay_watcher_successful_registered_topup(self):
+        import uuid
+        from database import register_binance_identity, get_wallet_balance
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+
+        group_b = -100888777
+        user_id = 999888
+        binance_uid = "999888777"
+        tx_pay = f"PAY_TX_{uuid.uuid4().hex[:6]}"
+
+        # Register Binance client identity
+        await register_binance_identity(group_b, user_id, binance_uid)
+
+        mock_pay_response = {
+            "code": "000000",
+            "message": "success",
+            "data": [
+                {
+                    "orderType": "C2C",
+                    "transactionId": tx_pay,
+                    "amount": "15.75",
+                    "currency": "USDT",
+                    "payerInfo": {
+                        "payerId": binance_uid
+                    }
+                }
+            ]
+        }
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_pay_response, "")):
+
+            res = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["credited_count"], 1)
+
+            bal = await get_wallet_balance(group_b, user_id)
+            self.assertAlmostEqual(bal, 15.75, places=4)
+
+    async def test_binance_pay_unregistered_or_missing_uid_safety(self):
+        import uuid
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+
+        tx_unregistered = f"PAY_UNREG_{uuid.uuid4().hex[:6]}"
+        mock_unregistered_pay = {
+            "code": "000000",
+            "message": "success",
+            "data": [
+                {
+                    "orderType": "C2C",
+                    "transactionId": tx_unregistered,
+                    "amount": "50.0",
+                    "currency": "USDT",
+                    "payerInfo": {
+                        "payerId": "000999000"  # Unregistered Binance UID!
+                    }
+                }
+            ]
+        }
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_unregistered_pay, "")):
+
+            res = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["credited_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

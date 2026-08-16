@@ -327,7 +327,7 @@ async def test_binance_pay_api_connectivity() -> Dict[str, Any]:
             tx_list = data.get("data", [])
             if isinstance(tx_list, list) and tx_list:
                 for item in tx_list:
-                    if isinstance(item, dict) and ("payerId" in item or "payerBinanceUid" in item):
+                    if extract_payer_binance_uid(item) is not None:
                         payer_uid_available = True
                         break
             last_err_msg = "Reachable"
@@ -500,19 +500,104 @@ def log_payment_diagnostic(dep: Any, tx_id: str, amount: float, status: str) -> 
     )
 
 
+def parse_binance_pay_transactions(data: Any) -> List[Dict[str, Any]]:
+    """
+    Parses items from Binance Pay API response (/sapi/v1/pay/transactions).
+    Extracts transactionId, currency/coin, amount, status, payer_binance_uid.
+    Supports dictionary wrapper {"data": [...]} and direct list returns.
+    """
+    results = []
+    if isinstance(data, dict):
+        items = data.get("data", [])
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+
+    if not isinstance(items, list):
+        return []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        tx_id = str(
+            item.get("transactionId")
+            or item.get("orderId")
+            or item.get("tradeId")
+            or item.get("txId")
+            or item.get("tx_id")
+            or ""
+        ).strip()
+
+        coin = str(
+            item.get("currency")
+            or item.get("coin")
+            or ""
+        ).strip().upper()
+
+        raw_amt = item.get("amount")
+        try:
+            dep_amount = float(raw_amt) if raw_amt is not None else 0.0
+        except (ValueError, TypeError):
+            dep_amount = 0.0
+
+        raw_status = str(item.get("status", "")).lower()
+        # Binance Pay status: SUCCESS, COMPLETED, C2C, 1, or present in /pay/transactions payload
+        is_failed = raw_status in ("failed", "rejected", "canceled", "cancelled", "0", "false", "error")
+        is_completed = not is_failed and (
+            raw_status in ("success", "completed", "c2c", "1", "true")
+            or item.get("status") in (1, "1")
+            or item.get("orderType") in ("C2C", "PAY")
+            or bool(tx_id)
+        )
+
+        payer_uid = extract_payer_binance_uid(item)
+
+        if coin in SUPPORTED_CURRENCIES and is_completed and tx_id and dep_amount > 0:
+            results.append({
+                "tx_id": tx_id,
+                "coin": coin,
+                "amount": dep_amount,
+                "status": "completed",
+                "provider": "BINANCE",
+                "payer_binance_uid": payer_uid,
+                "raw": item
+            })
+
+    return results
+
+
 async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
     """
     Fetches recent completed USDT/USDC deposits from official Binance API.
-    Queries both /sapi/v1/capital/deposit/hisrec (on-chain deposits) and returns completed items.
+    Queries both Binance Pay API (/sapi/v1/pay/transactions) and Capital Deposit History (/sapi/v1/capital/deposit/hisrec).
     Returns Tuple[ok: bool, code_or_msg: str, deposits: list].
     """
     if not check_provider_api_configured("BINANCE"):
         return False, "MISSING_API_CREDENTIALS", []
 
     base_urls = ["https://api.binance.com", "https://api1.binance.com", "https://api-gcp.binance.com"]
-    deposits = []
+    deposits_map: Dict[str, Dict[str, Any]] = {}
     http_451 = False
+    query_success = False
 
+    # 1. Query Binance Pay API (/sapi/v1/pay/transactions)
+    for base_url in base_urls:
+        ok, code, data, err = await asyncio.to_thread(
+            _execute_binance_signed_get_with_url, base_url, "/sapi/v1/pay/transactions"
+        )
+        if code == 451:
+            http_451 = True
+            continue
+        if ok:
+            query_success = True
+            pay_items = parse_binance_pay_transactions(data)
+            for item in pay_items:
+                deposits_map[item["tx_id"]] = item
+            break
+
+    # 2. Query Capital Deposit History API (/sapi/v1/capital/deposit/hisrec)
     for base_url in base_urls:
         ok, code, data, err = await asyncio.to_thread(
             _execute_binance_signed_get_with_url, base_url, "/sapi/v1/capital/deposit/hisrec"
@@ -521,6 +606,7 @@ async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
             http_451 = True
             continue
         if ok and isinstance(data, list):
+            query_success = True
             for dep in data:
                 tx_id = str(dep.get("txId", "") or dep.get("tx_id", "")).strip()
                 coin = str(dep.get("coin", "") or dep.get("currency", "")).strip().upper()
@@ -528,21 +614,24 @@ async def fetch_recent_binance_deposits() -> Tuple[bool, str, list]:
                 status = int(dep.get("status", 0)) if str(dep.get("status", "")).isdigit() else (1 if dep.get("status") in (1, "1", "completed", "COMPLETED") else 0)
                 payer_uid = extract_payer_binance_uid(dep)
 
-                # Rule check: USDT or USDC ONLY & status == 1 (Completed)
                 if coin in SUPPORTED_CURRENCIES and status == 1 and tx_id and dep_amount > 0:
-                    deposits.append({
-                        "tx_id": tx_id,
-                        "coin": coin,
-                        "amount": dep_amount,
-                        "status": "completed",
-                        "provider": "BINANCE",
-                        "payer_binance_uid": payer_uid,
-                        "raw": dep
-                    })
-            return True, "SUCCESS", deposits
+                    if tx_id not in deposits_map:
+                        deposits_map[tx_id] = {
+                            "tx_id": tx_id,
+                            "coin": coin,
+                            "amount": dep_amount,
+                            "status": "completed",
+                            "provider": "BINANCE",
+                            "payer_binance_uid": payer_uid,
+                            "raw": dep
+                        }
+            break
+
+    if query_success:
+        return True, "SUCCESS", list(deposits_map.values())
 
     if http_451:
-        logger.warning("[PAYMENT_WATCHER] Binance API deposit fetch blocked (HTTP 451 Restricted Location).")
+        logger.warning("[PAYMENT_WATCHER] Binance API fetch blocked (HTTP 451 Restricted Location).")
         return False, "RESTRICTED_LOCATION_HTTP_451", []
 
     return False, "FETCH_FAILED", []
