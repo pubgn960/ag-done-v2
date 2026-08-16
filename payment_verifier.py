@@ -687,15 +687,47 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
 
         if payer_uid:
             from database import AsyncSessionLocal, BinanceClientIdentity
+            from models import Order
             async with AsyncSessionLocal() as session:
                 stmt_bin = select(BinanceClientIdentity).where(
                     BinanceClientIdentity.binance_uid == str(payer_uid).strip(),
                     BinanceClientIdentity.status == "LINKED"
-                )
-                ident = (await session.execute(stmt_bin)).scalar_one_or_none()
-                if ident:
-                    matched_group_id = ident.client_group_id
-                    matched_user_id = ident.telegram_user_id
+                ).order_by(BinanceClientIdentity.updated_at.desc())
+                matching_idents = list((await session.execute(stmt_bin)).scalars().all())
+
+                if not matching_idents:
+                    uid_str = str(payer_uid).strip()
+                    masked_uid = uid_str[:4] + "***" + uid_str[-3:] if len(uid_str) > 7 else "***"
+                    logger.warning(f"[PAYMENT_WATCHER] UNMATCHED PAYMENT | Binance UID {masked_uid} not registered.")
+                else:
+                    user_ids = list({ident.telegram_user_id for ident in matching_idents})
+                    if len(user_ids) > 1:
+                        uid_str = str(payer_uid).strip()
+                        masked_uid = uid_str[:4] + "***" + uid_str[-3:] if len(uid_str) > 7 else "***"
+                        logger.warning(f"[PAYMENT_WATCHER] UNMATCHED PAYMENT | Binance UID {masked_uid} linked to multiple customers ({len(user_ids)} users). Manual review required.")
+                    else:
+                        target_user_id = user_ids[0]
+                        matching_group_ids = list({ident.client_group_id for ident in matching_idents})
+
+                        stmt_pending = select(Order).where(
+                            Order.client_chat_id.in_(matching_group_ids),
+                            Order.category == "B",
+                            Order.status == "Pending Payment"
+                        )
+                        pending_orders = list((await session.execute(stmt_pending)).scalars().all())
+                        groups_with_pending = list({ord_obj.client_chat_id for ord_obj in pending_orders if ord_obj.client_chat_id is not None})
+
+                        if len(groups_with_pending) == 1:
+                            matched_group_id = groups_with_pending[0]
+                            matched_user_id = target_user_id
+                        elif len(groups_with_pending) > 1:
+                            uid_str = str(payer_uid).strip()
+                            masked_uid = uid_str[:4] + "***" + uid_str[-3:] if len(uid_str) > 7 else "***"
+                            logger.warning(f"[PAYMENT_WATCHER] UNMATCHED PAYMENT | Competing pending orders in multiple groups for Binance UID {masked_uid}. Manual review required.")
+                        else:
+                            # Safe fallback: no pending orders, select most recently updated identity for this customer
+                            matched_group_id = matching_idents[0].client_group_id
+                            matched_user_id = target_user_id
 
         if matched_group_id and matched_user_id:
             uid_str = str(payer_uid).strip()

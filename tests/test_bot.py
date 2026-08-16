@@ -5076,6 +5076,126 @@ class TestBinancePayIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(res["ok"])
             self.assertEqual(res["credited_count"], 0)
 
+    async def test_binance_pay_matching_multiple_groups_same_user_one_pending_order(self):
+        import uuid
+        from database import register_binance_identity, create_order, get_wallet_balance
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+
+        user_id = 777111
+        binance_uid = "555444333"
+        group_1 = -1001111
+        group_2 = -1002222
+        tx_id = f"PAY_MULTI_GRP_1_{uuid.uuid4().hex[:6]}"
+
+        await register_binance_identity(group_1, user_id, binance_uid)
+        await register_binance_identity(group_2, user_id, binance_uid)
+
+        # Create pending order in group_2
+        await create_order(
+            email="multi_grp@test.com",
+            client_chat_id=group_2,
+            original_message_id=1,
+            package="2400",
+            status="Pending Payment",
+            category="B",
+            raw_text="2400 multi_grp@test.com"
+        )
+
+        mock_payload = {
+            "code": "000000",
+            "message": "success",
+            "data": [{
+                "orderType": "C2C",
+                "transactionId": tx_id,
+                "amount": "10.0",
+                "currency": "USDT",
+                "payerInfo": {"binanceId": binance_uid}
+            }]
+        }
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_payload, "")):
+            res = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["credited_count"], 1)
+
+            # Confirm group_2 received the credit because it had the pending order
+            bal_g2 = await get_wallet_balance(group_2, user_id)
+            self.assertAlmostEqual(bal_g2, 10.0, places=4)
+
+    async def test_binance_pay_matching_multiple_groups_same_user_competing_orders(self):
+        import uuid
+        from database import register_binance_identity, create_order, get_wallet_balance
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+
+        user_id = 777222
+        binance_uid = "555444334"
+        group_1 = -1003333
+        group_2 = -1004444
+        tx_id = f"PAY_MULTI_GRP_COMPETE_{uuid.uuid4().hex[:6]}"
+
+        await register_binance_identity(group_1, user_id, binance_uid)
+        await register_binance_identity(group_2, user_id, binance_uid)
+
+        # Pending order in group_1 AND pending order in group_2 (competing orders!)
+        await create_order(email="c1@t.com", client_chat_id=group_1, original_message_id=1, package="2400", status="Pending Payment", category="B", raw_text="2400 c1@t.com")
+        await create_order(email="c2@t.com", client_chat_id=group_2, original_message_id=2, package="2400", status="Pending Payment", category="B", raw_text="2400 c2@t.com")
+
+        mock_payload = {
+            "code": "000000",
+            "message": "success",
+            "data": [{
+                "orderType": "C2C",
+                "transactionId": tx_id,
+                "amount": "10.0",
+                "currency": "USDT",
+                "payerInfo": {"binanceId": binance_uid}
+            }]
+        }
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_payload, "")):
+            res = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["credited_count"], 0)  # Must NOT credit due to competing orders!
+
+    async def test_binance_pay_matching_ambiguous_different_users(self):
+        import uuid
+        from database import register_binance_identity
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+
+        user_a = 888111
+        user_b = 888222
+        binance_uid = "999000111"
+        group_1 = -1005555
+        group_2 = -1006666
+        tx_id = f"PAY_AMBIGUOUS_USERS_{uuid.uuid4().hex[:6]}"
+
+        # Two DIFFERENT users registered the same Binance UID!
+        await register_binance_identity(group_1, user_a, binance_uid)
+        await register_binance_identity(group_2, user_b, binance_uid)
+
+        mock_payload = {
+            "code": "000000",
+            "message": "success",
+            "data": [{
+                "orderType": "C2C",
+                "transactionId": tx_id,
+                "amount": "25.0",
+                "currency": "USDT",
+                "payerInfo": {"binanceId": binance_uid}
+            }]
+        }
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier._execute_binance_signed_get_with_url", return_value=(True, 200, mock_payload, "")):
+            res = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["credited_count"], 0)  # Must NOT credit due to ambiguous multi-user link!
+
 
 if __name__ == "__main__":
     unittest.main()
