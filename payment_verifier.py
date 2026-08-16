@@ -432,22 +432,26 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
 
         logger.info(f"[PAYMENT_WATCHER] Duplicate: False | Processing new deposit {masked_tx}...")
 
-        # Match deposit to pending Category B customer orders
-        async with AsyncSessionLocal() as session:
-            stmt_ord = select(Order).where(
-                Order.category == "B",
-                Order.status == "Pending Payment"
-            ).order_by(Order.created_at.asc())
-            pending_b_orders = list((await session.execute(stmt_ord)).scalars().all())
+        payer_uid = dep.get("payer_binance_uid")
+        matched_user_id = None
+        matched_group_id = None
 
-        if pending_b_orders:
-            target_order = pending_b_orders[0]
-            group_id = target_order.client_chat_id
-            user_id = target_user_id or getattr(target_order, "created_by", 0) or 0
+        if payer_uid:
+            from database import AsyncSessionLocal, BinanceClientIdentity
+            async with AsyncSessionLocal() as session:
+                stmt_bin = select(BinanceClientIdentity).where(
+                    BinanceClientIdentity.binance_uid == str(payer_uid).strip(),
+                    BinanceClientIdentity.status == "LINKED"
+                )
+                ident = (await session.execute(stmt_bin)).scalar_one_or_none()
+                if ident:
+                    matched_group_id = ident.client_group_id
+                    matched_user_id = ident.telegram_user_id
 
+        if matched_group_id and matched_user_id:
             w_obj, ok_topup, reason = await topup_wallet(
-                client_group_id=group_id,
-                telegram_user_id=user_id,
+                client_group_id=matched_group_id,
+                telegram_user_id=matched_user_id,
                 amount=amount,
                 provider="BINANCE",
                 transaction_id=tx_id,
@@ -455,17 +459,53 @@ async def poll_and_auto_credit_binance_deposits(context=None, target_user_id: Op
             )
             if ok_topup:
                 credited_count += 1
-                logger.info(f"[PAYMENT_WATCHER] Wallet matched: True | Wallet credited successfully: ${amount} for Group {group_id} User {user_id}")
+                logger.info(f"[PAYMENT_WATCHER] Wallet matched via Binance UID {payer_uid}: True | Wallet credited successfully: ${amount} for Group {matched_group_id} User {matched_user_id}")
                 if context:
                     try:
                         from handlers import process_pending_category_b_orders
-                        await process_pending_category_b_orders(group_id, user_id, context)
+                        await process_pending_category_b_orders(matched_group_id, matched_user_id, context)
                     except Exception as ex_proc:
                         logger.error(f"[PAYMENT_WATCHER] Auto-processing orders error: {ex_proc}")
             else:
                 logger.warning(f"[PAYMENT_WATCHER] Wallet crediting failed: {reason}")
+        elif payer_uid:
+            # Unmatched Payer UID: DO NOT auto credit!
+            logger.warning(f"[PAYMENT_WATCHER] Unmatched Binance Payment | Payer UID: {payer_uid} | Amount: ${amount} {coin} | Transaction ID: {masked_tx}")
         else:
-            logger.info(f"[PAYMENT_WATCHER] Wallet matched: False | No pending Category B order waiting for deposit {masked_tx}.")
+            # Fallback to pending order group matching
+            async with AsyncSessionLocal() as session:
+                stmt_ord = select(Order).where(
+                    Order.category == "B",
+                    Order.status == "Pending Payment"
+                ).order_by(Order.created_at.asc())
+                pending_b_orders = list((await session.execute(stmt_ord)).scalars().all())
+
+            if pending_b_orders:
+                target_order = pending_b_orders[0]
+                group_id = target_order.client_chat_id
+                user_id = target_user_id or getattr(target_order, "created_by", 0) or 0
+
+                w_obj, ok_topup, reason = await topup_wallet(
+                    client_group_id=group_id,
+                    telegram_user_id=user_id,
+                    amount=amount,
+                    provider="BINANCE",
+                    transaction_id=tx_id,
+                    currency=coin
+                )
+                if ok_topup:
+                    credited_count += 1
+                    logger.info(f"[PAYMENT_WATCHER] Wallet matched: True | Wallet credited successfully: ${amount} for Group {group_id} User {user_id}")
+                    if context:
+                        try:
+                            from handlers import process_pending_category_b_orders
+                            await process_pending_category_b_orders(group_id, user_id, context)
+                        except Exception as ex_proc:
+                            logger.error(f"[PAYMENT_WATCHER] Auto-processing orders error: {ex_proc}")
+                else:
+                    logger.warning(f"[PAYMENT_WATCHER] Wallet crediting failed: {reason}")
+            else:
+                logger.info(f"[PAYMENT_WATCHER] Wallet matched: False | No pending Category B order waiting for deposit {masked_tx}.")
 
     return {"ok": True, "status": "SUCCESS", "credited_count": credited_count}
 

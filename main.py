@@ -60,6 +60,9 @@ from handlers import (
     topup_command_handler,
     wallet_command_handler,
     testbinance_command_handler,
+    setbinance_command_handler,
+    setbinance_callback_handler,
+    binanceid_command_handler,
     resend_command,
     delete_command,
     stats_command,
@@ -193,7 +196,9 @@ async def post_init(application: Application) -> None:
         BotCommand("wallet", "View Category B Wallet Balance"),
         BotCommand("balance", "View Category B Wallet Balance"),
         BotCommand("topup", "Admin Top-up Customer Wallet"),
-        BotCommand("testbinance", "Test Binance API Connectivity")
+        BotCommand("testbinance", "Test Binance API Connectivity"),
+        BotCommand("setbinance", "Link Binance UID"),
+        BotCommand("binanceid", "View Registered Binance Clients")
     ]
 
     valid_commands = []
@@ -296,8 +301,11 @@ def main() -> None:
     application.add_handler(CommandHandler("topup", topup_command_handler))
     application.add_handler(CommandHandler(["wallet", "balance"], wallet_command_handler))
     application.add_handler(CommandHandler("testbinance", testbinance_command_handler))
+    application.add_handler(CommandHandler("setbinance", setbinance_command_handler))
+    application.add_handler(CommandHandler(["binanceid", "binanceusers"], binanceid_command_handler))
 
     # Register Interactive Callback Query Handlers
+    application.add_handler(CallbackQueryHandler(setbinance_callback_handler, pattern="^setbin_"))
     application.add_handler(CallbackQueryHandler(client_cancellation_request_callback_handler, pattern="^cancel_req_"))
     application.add_handler(CallbackQueryHandler(duplicate_order_callback_handler, pattern="^dup_"))
     application.add_handler(CallbackQueryHandler(category_b_approval_callback_handler, pattern="^catb_"))

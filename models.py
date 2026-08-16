@@ -278,6 +278,39 @@ class Wallet(Base):
         return f"<Wallet(id={self.id}, group_id={self.client_group_id}, user_id={self.telegram_user_id}, balance={self.balance})>"
 
 
+class BinanceClientIdentity(Base):
+    """
+    Stores registered Binance UIDs per Category B Client Group & Telegram User.
+    Identity mapping: (client_group_id, telegram_user_id) -> binance_uid.
+    """
+    __tablename__ = "binance_client_identities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_group_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    binance_uid: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="LINKED")  # "LINKED", "UNLINKED"
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("client_group_id", "telegram_user_id", name="uq_binance_group_user"),
+        Index("idx_binance_uid_lookup", "binance_uid"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<BinanceClientIdentity(group_id={self.client_group_id}, user_id={self.telegram_user_id}, binance_uid='{self.binance_uid}')>"
+
+
 class WalletTransaction(Base):
     """
     Ledger recording all wallet operations (+ topups, - order deductions, refunds).

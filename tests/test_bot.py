@@ -4597,5 +4597,104 @@ class TestBinanceWatcherAndDepositVerification(unittest.IsolatedAsyncioTestCase)
         self.assertAlmostEqual(wallet_after.balance, 0.076, places=6)
 
 
+class TestBinanceClientIdentityRegistrationAndMatching(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from database import init_db, AsyncSessionLocal
+        from models import Wallet, WalletTransaction, PaymentTransaction, Order, BinanceClientIdentity
+        from sqlalchemy import delete
+        await init_db()
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(WalletTransaction))
+            await session.execute(delete(PaymentTransaction))
+            await session.execute(delete(Wallet))
+            await session.execute(delete(Order))
+            await session.execute(delete(BinanceClientIdentity))
+            await session.commit()
+
+    async def test_binance_uid_registration_and_group_isolation(self):
+        from database import register_binance_identity, get_binance_identity, get_user_by_binance_uid
+
+        group_b1 = -100111111
+        group_b2 = -100222222
+        user_111 = 111
+        user_222 = 222
+
+        # Register User 111 in B1 with Binance UID 555
+        id1, ok1, _ = await register_binance_identity(group_b1, user_111, "555555555")
+        self.assertTrue(ok1)
+
+        # Register User 222 in B2 with Binance UID 666
+        id2, ok2, _ = await register_binance_identity(group_b2, user_222, "666666666")
+        self.assertTrue(ok2)
+
+        # Verify B1 UID 555 resolves ONLY to User 111 in Group B1
+        found_u1 = await get_user_by_binance_uid(group_b1, "555555555")
+        self.assertEqual(found_u1, user_111)
+
+        # Verify B1 UID 555 does NOT resolve in Group B2
+        found_u1_in_b2 = await get_user_by_binance_uid(group_b2, "555555555")
+        self.assertIsNone(found_u1_in_b2)
+
+    async def test_binance_uid_payment_matching_and_unmatched_handling(self):
+        import uuid
+        from database import register_binance_identity, get_wallet_balance
+        from payment_verifier import poll_and_auto_credit_binance_deposits
+        from unittest.mock import patch
+
+        group_b1 = -1003978746139
+        user_altaf = 1573531032
+        binance_uid_altaf = "123456789"
+
+        # Register Altaf
+        await register_binance_identity(group_b1, user_altaf, binance_uid_altaf)
+
+        tx_altaf = f"TX_ALTAF_{uuid.uuid4().hex[:6]}"
+        tx_unknown = f"TX_UNKNOWN_{uuid.uuid4().hex[:6]}"
+
+        mock_deps = [
+            {"tx_id": tx_altaf, "coin": "USDT", "amount": 10.0, "status": "completed", "payer_binance_uid": binance_uid_altaf},
+            {"tx_id": tx_unknown, "coin": "USDT", "amount": 25.0, "status": "completed", "payer_binance_uid": "999999999"}
+        ]
+
+        with patch("payment_verifier.check_provider_api_configured", return_value=True), \
+             patch("payment_verifier.fetch_recent_binance_deposits", return_value=(True, "SUCCESS", mock_deps)):
+
+            res = await poll_and_auto_credit_binance_deposits()
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["credited_count"], 1)
+
+            # Altaf's wallet MUST be credited +$10.00
+            bal_altaf = await get_wallet_balance(group_b1, user_altaf)
+            self.assertEqual(bal_altaf, 10.0)
+
+    async def test_category_a_cannot_register_or_use_binance_uid(self):
+        from handlers import setbinance_command_handler
+        from database import CLIENT_GROUPS_CACHE
+
+        class MockUser:
+            id = 777
+            first_name = "UserA"
+
+        class MockChat:
+            id = -100777000
+            title = "Category A Group"
+
+        class MockMessage:
+            def __init__(self):
+                self.replied_text = None
+            async def reply_text(self, text, parse_mode=None):
+                self.replied_text = text
+
+        CLIENT_GROUPS_CACHE[-100777000] = "A"
+
+        msg_a = MockMessage()
+        up_a = type("Update", (), {"effective_user": MockUser(), "effective_chat": MockChat(), "message": msg_a})()
+        ctx_a = type("Context", (), {"args": ["123456789"]})()
+
+        await setbinance_command_handler(up_a, ctx_a)
+        self.assertIsNotNone(msg_a.replied_text)
+        self.assertIn("active only for Category B groups", msg_a.replied_text)
+
+
 if __name__ == "__main__":
     unittest.main()

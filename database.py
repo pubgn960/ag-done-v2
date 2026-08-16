@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import joinedload
 
 from config import Config
-from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger, CalculatorLedger, RunningTotalLedger, Wallet, WalletTransaction, PaymentTransaction
+from models import Base, Order, Image, Settings, AuthorizedUser, ClientGroup, Loader, DeliverySession, PackagePrice, DeliveryLedger, CalculatorLedger, RunningTotalLedger, Wallet, WalletTransaction, PaymentTransaction, BinanceClientIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -1748,6 +1748,86 @@ async def get_wallet_transaction_history(client_group_id: int, telegram_user_id:
         ).order_by(WalletTransaction.timestamp.desc()).limit(limit)
         res = await session.execute(stmt)
         return list(res.scalars().all())
+
+
+async def register_binance_identity(client_group_id: int, telegram_user_id: int, binance_uid: str) -> Tuple[Optional[BinanceClientIdentity], bool, str]:
+    """
+    Registers or updates a client's Binance UID for a specific Category B Group & Telegram User.
+    Identity mapping: (client_group_id, telegram_user_id) -> binance_uid.
+    """
+    uid_clean = binance_uid.strip()
+    if not uid_clean.isdigit() or not (5 <= len(uid_clean) <= 20):
+        return None, False, "INVALID_BINANCE_UID"
+
+    async with AsyncSessionLocal() as session:
+        try:
+            stmt = select(BinanceClientIdentity).where(
+                BinanceClientIdentity.client_group_id == client_group_id,
+                BinanceClientIdentity.telegram_user_id == telegram_user_id
+            )
+            identity = (await session.execute(stmt)).scalar_one_or_none()
+            if identity:
+                identity.binance_uid = uid_clean
+                identity.status = "LINKED"
+                identity.updated_at = datetime.now(timezone.utc)
+            else:
+                identity = BinanceClientIdentity(
+                    client_group_id=client_group_id,
+                    telegram_user_id=telegram_user_id,
+                    binance_uid=uid_clean,
+                    status="LINKED"
+                )
+                session.add(identity)
+
+            await session.commit()
+            await session.refresh(identity)
+            logger.info(f"[BINANCE_IDENTITY] Linked Binance UID {uid_clean} to Group {client_group_id} User {telegram_user_id}.")
+            return identity, True, "SUCCESS"
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[BINANCE_IDENTITY_ERROR] {e}")
+            return None, False, str(e)
+
+
+async def get_binance_identity(client_group_id: int, telegram_user_id: int) -> Optional[BinanceClientIdentity]:
+    """Retrieves registered Binance identity for (client_group_id, telegram_user_id)."""
+    async with AsyncSessionLocal() as session:
+        stmt = select(BinanceClientIdentity).where(
+            BinanceClientIdentity.client_group_id == client_group_id,
+            BinanceClientIdentity.telegram_user_id == telegram_user_id,
+            BinanceClientIdentity.status == "LINKED"
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_user_by_binance_uid(client_group_id: int, binance_uid: str) -> Optional[int]:
+    """
+    Finds the telegram_user_id registered with a specific binance_uid in a specific client_group_id.
+    Ensures group-isolated resolution.
+    """
+    uid_clean = binance_uid.strip()
+    async with AsyncSessionLocal() as session:
+        stmt = select(BinanceClientIdentity.telegram_user_id).where(
+            BinanceClientIdentity.client_group_id == client_group_id,
+            BinanceClientIdentity.binance_uid == uid_clean,
+            BinanceClientIdentity.status == "LINKED"
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_all_group_binance_identities(client_group_id: int) -> List[Tuple[BinanceClientIdentity, Optional[str]]]:
+    """
+    Retrieves all registered Binance identities for a specific Category B group.
+    Returns list of tuples: (identity, telegram_first_name_or_None).
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(BinanceClientIdentity).where(
+            BinanceClientIdentity.client_group_id == client_group_id,
+            BinanceClientIdentity.status == "LINKED"
+        ).order_by(BinanceClientIdentity.updated_at.desc())
+        res = await session.execute(stmt)
+        identities = list(res.scalars().all())
+        return [(ident, None) for ident in identities]
 
 
 # ==========================================
