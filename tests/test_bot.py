@@ -3279,10 +3279,10 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         btn_texts = [btn.text for row in kb.inline_keyboard for btn in row]
         self.assertEqual(len(btn_texts), 3)
         self.assertEqual(btn_texts[0], "✅ Password is Correct")
-        self.assertEqual(btn_texts[1], "🔄 Updating Password")
-        self.assertEqual(btn_texts[2], "❌ Cancel Order")
+        self.assertEqual(btn_texts[1], "🔄 Provide Correct Password")
+        self.assertEqual(btn_texts[2], "❌ Cancel Sending New Data")
 
-        # 3. Test "🔄 Updating Password" callback handler execution
+        # 3. Test "🔄 Provide Correct Password" callback handler execution
         sent_messages = []
         sent_reactions = []
         edited_messages = []
@@ -3320,8 +3320,8 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
 
         await customer_confirmation_callback_handler(mock_update, mock_context)
 
-        # ✓ Updating Password sends client "🔄 Please send new password."
-        self.assertIn("🔄 Please send new password.", edited_messages)
+        # ✓ Provide Correct Password sends client prompt
+        self.assertTrue(any("Provide Correct Password" in m or "Please send your corrected password" in m for m in edited_messages))
 
         # ✓ Loader receives password-update notification replying to original loader message (888)
         self.assertTrue(any("Please wait for the new password." in m["text"] for m in sent_messages))
@@ -3336,7 +3336,7 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated_order.id, order_id)
         self.assertIn("MySuperNewPass123", updated_order.raw_text)
 
-        # 5. Test "❌ Cancel Order" callback handler execution
+        # 5. Test "❌ Cancel Sending New Data" callback handler execution
         sent_messages.clear()
         sent_reactions.clear()
         edited_messages.clear()
@@ -3363,7 +3363,8 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(can_order.status, "CANCELLED")
 
         # ✓ Cancellation notification is sent to Loader Group replying to original loader message (888)
-        self.assertTrue(any("has been cancelled by the customer." in m["text"] for m in sent_messages))
+        self.assertTrue(any("Cancel Sending New Data" in m["text"] or "stop sending any further account data" in m["text"] for m in sent_messages))
+        self.assertTrue(any(m["reply_to_message_id"] == 888 for m in sent_messages))
         self.assertTrue(any(m["reply_to_message_id"] == 888 for m in sent_messages))
 
         # ✓ Original Loader message (888) receives ❌ reaction
@@ -3481,7 +3482,7 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent_messages), 1)
         self.assertEqual(sent_messages[0]["chat_id"], -100999)
         self.assertEqual(sent_messages[0]["reply_to_message_id"], 76)
-        self.assertIn("has been cancelled by the customer.", sent_messages[0]["text"])
+        self.assertTrue("Cancel Sending New Data" in sent_messages[0]["text"] or "stop sending any further account data" in sent_messages[0]["text"])
 
         # ✓ Cancelled order cannot be delivered
         from delivery import deliver_order_by_id
@@ -3573,9 +3574,9 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_reactions[0]["message_id"], 2770)
         self.assertNotEqual(sent_reactions[0]["message_id"], 2360)
 
-        # 6. Verify notification text explicitly mentions Order #277 and NOT #236
+        # 6. Verify notification text explicitly mentions Cancel Sending New Data and NOT #236
         self.assertEqual(len(sent_messages), 1)
-        self.assertIn(f"Order #{order_277.id} has been cancelled by the customer.", sent_messages[0]["text"])
+        self.assertIn("Cancel Sending New Data", sent_messages[0]["text"])
         self.assertNotIn(f"#{order_236.id}", sent_messages[0]["text"])
 
 

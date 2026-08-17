@@ -56,17 +56,18 @@ ISSUE_WORKFLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "keywords": ["wrong password", "wrongpassword", "password wrong", "incorrect password"],
         "requires_screenshot": False,
         "missing_screenshot_msg": "⚠️ Please attach a screenshot if available for Wrong Password verification.",
-        "customer_title": "⚠️ Password Verification Required",
-        "customer_message": "The loader reported that the password appears to be incorrect.",
-        "customer_text": "⚠️ <b>Password Verification Required</b>\n\nThe loader reported that the password appears to be incorrect.",
-        "customer_update_prompt": "🔄 Please send new password.",
+        "customer_title": "⚠️ Incorrect Password",
+        "customer_message": "The loader reported that the password provided for your account is incorrect.",
+        "customer_text": "⚠️ <b>Incorrect Password</b>\n\nThe loader reported that the password provided for your account is incorrect.\n\nPlease send your <b>CORRECT password</b> below, or select <b>CANCEL SENDING NEW DATA</b>.",
+        "customer_update_prompt": "🔄 Please send your corrected password.",
         "approve_label": "✅ Password is Correct",
-        "reject_label": "🔄 Updating Password",
-        "loader_success_msg": "✅ Customer confirmed the password is correct.\n\nYou may continue delivery.",
-        "loader_failure_msg": "❌ Order Cancelled\n\nOrder has been cancelled by the customer.\n\nPlease stop this delivery.",
+        "reject_label": "🔄 Provide Correct Password",
+        "cancel_label": "❌ Cancel Sending New Data",
+        "loader_success_msg": "✅ Customer confirmed the password is correct.\n\nYou may retry delivery now.",
+        "loader_failure_msg": "❌ Cancel Sending New Data\n\nCustomer selected CANCEL SENDING NEW DATA.\n\nPlease stop sending any further account data for this order.",
         "loader_updating_msg": "🔄 Customer is updating the password.\n\nPlease wait for the new password.",
-        "loader_yes_text": "✅ Customer confirmed the password is correct.\n\nYou may continue delivery.",
-        "loader_no_text": "❌ Order Cancelled\n\nOrder has been cancelled by the customer.\n\nPlease stop this delivery.",
+        "loader_yes_text": "✅ Customer confirmed the password is correct.\n\nYou may retry delivery now.",
+        "loader_no_text": "❌ Cancel Sending New Data\n\nCustomer selected CANCEL SENDING NEW DATA.\n\nPlease stop sending any further account data for this order.",
         "log_tag": "[WRONG_PASSWORD]"
     },
     LoaderIssueType.GOOGLE_LINKED: {
@@ -197,8 +198,8 @@ def build_customer_issue_keyboard(order_id: int, issue_type: Union[str, LoaderIs
     if issue_type_str in (LoaderIssueType.WRONG_PASSWORD.value, "wrong_password", "wrongpassword"):
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Password is Correct", callback_data=f"cust_confirm:pw_correct:{order_id}:wrong_password")],
-            [InlineKeyboardButton("🔄 Updating Password", callback_data=f"cust_confirm:pw_updating:{order_id}:wrong_password")],
-            [InlineKeyboardButton("❌ Cancel Order", callback_data=f"cust_confirm:pw_cancel:{order_id}:wrong_password")]
+            [InlineKeyboardButton("🔄 Provide Correct Password", callback_data=f"cust_confirm:pw_updating:{order_id}:wrong_password")],
+            [InlineKeyboardButton("❌ Cancel Sending New Data", callback_data=f"cust_confirm:pw_cancel:{order_id}:wrong_password")]
         ])
 
     issue_cfg = ISSUE_WORKFLOW_CONFIG.get(issue_type_str, ISSUE_WORKFLOW_CONFIG.get(LoaderIssueType.WRONG_NAME))

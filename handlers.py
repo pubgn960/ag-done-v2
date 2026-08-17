@@ -862,7 +862,7 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             cust_ack = "✅ <b>Password Confirmed</b>\n\nThank you! You confirmed that the password is correct."
             loader_notify_text = (
                 "✅ Customer confirmed the password is correct.\n\n"
-                "You may continue delivery."
+                "You may retry delivery."
             )
             reaction_emoji = "✅"
 
@@ -871,7 +871,7 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             await update_order_issue_state(order.id, "PASSWORD_UPDATE_IN_PROGRESS", "wrong_password")
             await update_order_status(order.id, "PASSWORD_UPDATE_IN_PROGRESS")
 
-            cust_ack = "🔄 Please send new password."
+            cust_ack = "🔄 <b>Provide Correct Password</b>\n\nPlease send your corrected password below."
             loader_notify_text = (
                 "🔄 Customer is updating the password.\n\n"
                 "Please wait for the new password."
@@ -888,13 +888,13 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             await update_order_issue_state(order.id, "CANCELLED", "wrong_password")
 
             cust_ack = (
-                "❌ <b>Order Cancelled</b>\n\n"
-                "Your order has been cancelled successfully."
+                "❌ <b>Sending New Data Cancelled</b>\n\n"
+                "You have cancelled sending new data for this order."
             )
             loader_notify_text = (
-                "❌ Order Cancelled\n\n"
-                f"Order #{order.id} has been cancelled by the customer.\n\n"
-                "Please stop this delivery."
+                "❌ <b>Cancel Sending New Data</b>\n\n"
+                "Customer selected CANCEL SENDING NEW DATA.\n\n"
+                "Please stop sending any further account data for this order."
             )
             reaction_emoji = "❌"
         else:
