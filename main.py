@@ -60,10 +60,6 @@ from handlers import (
     topup_command_handler,
     wallet_command_handler,
     testbinance_command_handler,
-    testbinancepay_command_handler,
-    setbinance_command_handler,
-    setbinance_callback_handler,
-    binanceid_command_handler,
     resend_command,
     delete_command,
     stats_command,
@@ -139,19 +135,6 @@ async def periodic_maintenance_task() -> None:
             logger.error(f"Error in periodic maintenance task: {e}")
 
 
-async def periodic_binance_watcher_task(application: Application) -> None:
-    """Periodic background task running every 60 seconds to poll Binance deposit history and auto-credit Category B wallets."""
-    while True:
-        try:
-            await asyncio.sleep(60)
-            from payment_verifier import poll_and_auto_credit_binance_deposits
-            await poll_and_auto_credit_binance_deposits(context=application)
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"Error in Binance payment watcher task: {e}")
-
-
 async def post_init(application: Application) -> None:
     """Post-initialization callback run inside the active application event loop."""
     logger.info("Initializing database schema...")
@@ -197,10 +180,7 @@ async def post_init(application: Application) -> None:
         BotCommand("wallet", "View Category B Wallet Balance"),
         BotCommand("balance", "View Category B Wallet Balance"),
         BotCommand("topup", "Admin Top-up Customer Wallet"),
-        BotCommand("testbinance", "Test Binance API Connectivity"),
-        BotCommand("testbinancepay", "Test Binance Pay API Diagnostic"),
-        BotCommand("setbinance", "Link Binance UID"),
-        BotCommand("binanceid", "View Registered Binance Clients")
+        BotCommand("testbinance", "Test Binance API Connectivity")
     ]
 
     valid_commands = []
@@ -226,9 +206,8 @@ async def post_init(application: Application) -> None:
         if cleaned > 0:
             logger.info(f"Startup retention check purged {cleaned} expired records.")
 
-    # Schedule background maintenance task and Binance watcher task in active event loop
+    # Schedule background maintenance task in active event loop
     asyncio.create_task(periodic_maintenance_task())
-    asyncio.create_task(periodic_binance_watcher_task(application))
 
     logger.info("Bot initialization complete. Active and listening for updates...")
 
@@ -303,12 +282,8 @@ def main() -> None:
     application.add_handler(CommandHandler("topup", topup_command_handler))
     application.add_handler(CommandHandler(["wallet", "balance"], wallet_command_handler))
     application.add_handler(CommandHandler("testbinance", testbinance_command_handler))
-    application.add_handler(CommandHandler("testbinancepay", testbinancepay_command_handler))
-    application.add_handler(CommandHandler("setbinance", setbinance_command_handler))
-    application.add_handler(CommandHandler(["binanceid", "binanceusers"], binanceid_command_handler))
 
     # Register Interactive Callback Query Handlers
-    application.add_handler(CallbackQueryHandler(setbinance_callback_handler, pattern="^setbin_"))
     application.add_handler(CallbackQueryHandler(client_cancellation_request_callback_handler, pattern="^cancel_req_"))
     application.add_handler(CallbackQueryHandler(duplicate_order_callback_handler, pattern="^dup_"))
     application.add_handler(CallbackQueryHandler(category_b_approval_callback_handler, pattern="^catb_"))
