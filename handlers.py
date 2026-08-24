@@ -555,7 +555,7 @@ async def edited_message_handler(update: Update, context: ContextTypes.DEFAULT_T
     """
     Monitors edited messages in Group 1 (Client Group).
     When a normal customer edits their order message content, informs the customer that the order will be placed manually.
-    Ignores reaction updates (❤️, 👍, ❌, 🔥, etc.) and edits from Super Admins, Delivery Users, or Bots.
+    Ignores reaction updates (❤️, 👍, ❌, 🔥, etc.), non-order chat messages, unchanged text, and edits from Super Admins, Delivery Users, or Bots.
     """
     if not update:
         return
@@ -594,7 +594,36 @@ async def edited_message_handler(update: Update, context: ContextTypes.DEFAULT_T
     if user_id and (is_super_admin(user_id) or is_delivery_user(user_id)):
         return
 
-    logger.info(f"[CLIENT] Customer edited message #{message.message_id}.")
+    # Extract new message text/caption
+    new_text = (message.text or message.caption or "").strip()
+    if not new_text:
+        logger.info(f"[CLIENT] Message #{message.message_id} edit ignored: empty text/caption.")
+        return
+
+    # Check if this message is associated with an existing Order in DB
+    existing_order = await get_order_by_original_message_id(message.message_id, client_chat_id=chat.id)
+    if not existing_order:
+        existing_order = await get_order_by_original_message_id(message.message_id)
+
+    # If NO existing order in DB, check if the text is even an order message
+    if not existing_order:
+        from order_parser import parse_order_v2
+        category = CLIENT_GROUPS_CACHE.get(chat.id, "A")
+        parsed = parse_order_v2(new_text, category=category)
+        if not parsed.get("order_detected"):
+            # Normal chat message in group (e.g. "I'm fine bro thanks and You?") - IGNORE!
+            logger.info(f"[CLIENT] Message #{message.message_id} edit ignored: non-order chat message.")
+            return
+
+    # If existing order found, check if text actually changed from stored raw_text
+    if existing_order:
+        stored_raw = (existing_order.raw_text or "").strip()
+        if stored_raw and new_text == stored_raw:
+            # Text did NOT change (reaction update / emoji reaction / metadata edit) - IGNORE!
+            logger.info(f"[CLIENT] Message #{message.message_id} edit ignored: raw_text unchanged from DB record.")
+            return
+
+    logger.info(f"[CLIENT] Customer edited order message #{message.message_id}.")
 
     reply_text = "This order will be placed again manually wait for team"
     try:

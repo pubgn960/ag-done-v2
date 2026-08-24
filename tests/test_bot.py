@@ -3825,20 +3825,21 @@ class TestClientReactionAndMessageEditFilter(unittest.IsolatedAsyncioTestCase):
         # ✓ Verify no reply notice was sent
         self.assertEqual(len(replied_messages), 0)
 
-    async def test_genuine_customer_edited_message_triggers_manual_placement_notice(self):
+    async def test_reaction_or_emoji_on_non_order_chat_message_ignored(self):
         from handlers import edited_message_handler, BOT_SETTINGS
 
         replied_messages = []
 
         class MockUser:
-            id = 999888777  # Normal Customer ID (not admin/delivery)
+            id = 999888777  # Normal Customer ID
 
         class MockChat:
             id = -100123456
 
         class MockEditedMessage:
-            message_id = 1475
-            text = "10800"
+            message_id = 2762
+            text = "I'm fine bro thanks and You?"
+            caption = None
 
             async def reply_text(self, text, reply_to_message_id=None):
                 replied_messages.append({
@@ -3859,9 +3860,122 @@ class TestClientReactionAndMessageEditFilter(unittest.IsolatedAsyncioTestCase):
         mock_update = MockUpdate()
         mock_context = type("Context", (), {"bot": type("Bot", (), {"id": 999000})()})()
 
+        # Non-order message reaction/edit -> MUST be ignored completely!
+        await edited_message_handler(mock_update, mock_context)
+        self.assertEqual(len(replied_messages), 0)
+
+    async def test_reaction_or_emoji_on_existing_order_with_unchanged_text_ignored(self):
+        from handlers import edited_message_handler, BOT_SETTINGS
+        from database import init_db, create_order, get_order_by_id
+
+        await init_db()
+
+        chat_id = -100123456
+        msg_id = 2763
+        order_text = "#105 Activision Safe 12000 Fast test@example.com Pass: 123 Nick: Gamer"
+
+        # Create Order in DB
+        order = await create_order(
+            email="test@example.com",
+            client_chat_id=chat_id,
+            original_message_id=msg_id,
+            package="12000",
+            status="Pending",
+            category="A",
+            raw_text=order_text
+        )
+
+        replied_messages = []
+
+        class MockUser:
+            id = 999888777
+
+        class MockChat:
+            id = chat_id
+
+        class MockEditedMessage:
+            message_id = msg_id
+            text = order_text  # Text did NOT change!
+            caption = None
+
+            async def reply_text(self, text, reply_to_message_id=None):
+                replied_messages.append({
+                    "text": text,
+                    "reply_to_message_id": reply_to_message_id
+                })
+
+        class MockUpdate:
+            edited_message = MockEditedMessage()
+            message_reaction = None
+            message_reaction_count = None
+            effective_message = MockEditedMessage()
+            effective_chat = MockChat()
+            effective_user = MockUser()
+
+        BOT_SETTINGS["source_group_id"] = chat_id
+
+        mock_update = MockUpdate()
+        mock_context = type("Context", (), {"bot": type("Bot", (), {"id": 999000})()})()
+
+        # Reaction / metadata update on existing order without text change -> MUST be ignored!
+        await edited_message_handler(mock_update, mock_context)
+        self.assertEqual(len(replied_messages), 0)
+
+    async def test_genuine_customer_edited_message_triggers_manual_placement_notice(self):
+        from handlers import edited_message_handler, BOT_SETTINGS
+        from database import init_db, create_order
+
+        await init_db()
+
+        chat_id = -100123456
+        msg_id = 1475
+
+        # Create existing order in DB with original text
+        await create_order(
+            email="tokio@example.com",
+            client_chat_id=chat_id,
+            original_message_id=msg_id,
+            package="10800",
+            status="Pending",
+            category="A",
+            raw_text="#106 Activision Safe 10800 Fast tokio@example.com Pass: oldpass Nick: Gamer"
+        )
+
+        replied_messages = []
+
+        class MockUser:
+            id = 999888777  # Normal Customer ID (not admin/delivery)
+
+        class MockChat:
+            id = chat_id
+
+        class MockEditedMessage:
+            message_id = msg_id
+            text = "#106 Activision Safe 10800 Fast tokio@example.com Pass: NEWPASS123 Nick: Gamer"
+            caption = None
+
+            async def reply_text(self, text, reply_to_message_id=None):
+                replied_messages.append({
+                    "text": text,
+                    "reply_to_message_id": reply_to_message_id
+                })
+
+        class MockUpdate:
+            edited_message = MockEditedMessage()
+            message_reaction = None
+            message_reaction_count = None
+            effective_message = MockEditedMessage()
+            effective_chat = MockChat()
+            effective_user = MockUser()
+
+        BOT_SETTINGS["source_group_id"] = chat_id
+
+        mock_update = MockUpdate()
+        mock_context = type("Context", (), {"bot": type("Bot", (), {"id": 999000})()})()
+
         await edited_message_handler(mock_update, mock_context)
 
-        # ✓ Verify manual placement notice was sent for genuine customer message edit
+        # ✓ Verify manual placement notice was sent for genuine customer message text edit
         self.assertEqual(len(replied_messages), 1)
         self.assertIn("This order will be placed again manually wait for team", replied_messages[0]["text"])
         self.assertEqual(replied_messages[0]["reply_to_message_id"], 1475)
