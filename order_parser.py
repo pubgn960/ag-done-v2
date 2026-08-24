@@ -272,6 +272,19 @@ def parse_order_v2(
             ignored_lines.add(idx)
             continue
 
+        # Check Direct Recovery Code Line (e.g. "0674 5886", "0796 5268", "1726 2601", "1234-5678", "06745886", "0674")
+        clean_code_line = re.sub(r'^[*\s•\-]+', '', l_strip).strip()
+        is_direct_rec_code = (
+            bool(re.match(r'^\d{4}[\s\-]\d{4}$', clean_code_line))
+            or bool(re.match(r'^\d{4}[\s\-]\d{4}$', l_strip))
+            or (bool(re.match(r'^\d{8}$', clean_code_line)) and clean_code_line not in price_db and clean_code_line not in aliases)
+            or (clean_code_line.startswith("0") and len(clean_code_line) >= 4 and clean_code_line not in aliases and clean_code_line not in price_db)
+        )
+        if is_direct_rec_code:
+            recovery_codes.append(clean_code_line if clean_code_line else l_strip)
+            ignored_lines.add(idx)
+            continue
+
         # Check Recovery Code Section Header
         if RECOVERY_HEADER_REGEX.search(l_strip) or l_lower.startswith("codes") or l_lower.startswith("código") or l_lower.startswith("codigo") or l_lower.startswith("codigos"):
             in_recovery_sec = True
@@ -377,7 +390,7 @@ def parse_order_v2(
             for n in nums:
                 n_clean = re.sub(r'[.,]', '', n)
                 n_norm = normalize_package_alias(n_clean, aliases)
-                if n_norm in price_db or n_clean in price_db or (n_clean.isdigit() and int(n_clean) >= 400):
+                if n_norm in price_db or n_clean in price_db or n_norm in aliases or n_clean in aliases or (n_clean.isdigit() and int(n_clean) >= 400):
                     has_pkg_token = True
                     break
 
@@ -394,6 +407,33 @@ def parse_order_v2(
         if has_pkg_token:
             package_candidate_lines.append(l_strip)
             continue
+
+    # Unlabeled Credential Inference (when email is present but password/username have no explicit labels)
+    if email:
+        email_line_idx = -1
+        for idx, line in enumerate(lines):
+            if EMAIL_REGEX.search(line):
+                email_line_idx = idx
+                break
+
+        if email_line_idx != -1:
+            # Unlabeled password: line after email if not ignored and not package/2FA
+            if not password:
+                for idx in range(email_line_idx + 1, len(lines)):
+                    l_str = lines[idx].strip()
+                    if idx not in ignored_lines and l_str and not l_str.startswith("0"):
+                        password = l_str
+                        ignored_lines.add(idx)
+                        break
+
+            # Unlabeled username: line before email if not ignored and not customer_ref
+            if not username:
+                for idx in range(email_line_idx - 1, -1, -1):
+                    l_str = lines[idx].strip()
+                    if idx not in ignored_lines and l_str and not CUSTOMER_REF_REGEX.match(l_str) and not l_str.endswith("#"):
+                        username = l_str
+                        ignored_lines.add(idx)
+                        break
 
     # Priority 1: Explicit CP PACK field takes absolute priority
     if has_explicit_cp_pack and explicit_cp_pack_candidates:
@@ -482,13 +522,16 @@ def parse_order_v2(
         # Always normalize pkg to its canonical package name
         pkg = normalize_package_alias(pkg, aliases)
 
-        pkg_int = int(pkg)
+        pkg_int = int(pkg) if pkg.isdigit() else 0
         has_cp = bool(re.search(r'cp', seg, re.IGNORECASE))
-        if not has_cp and pkg not in price_db and pkg_int < 400:
-            continue
 
         unit_price = price_db.get(pkg)
         is_known = (unit_price is not None)
+
+        # Ignore 2FA code fragments (starting with 0 or matching 4+4 digits) from unknown packages
+        if not is_known:
+            if pkg.startswith("0") or re.match(r'^\d{4}\s*\d{4}$', pkg) or (pkg_int < 400 and not has_cp):
+                continue
 
         for _ in range(qty):
             if is_known:

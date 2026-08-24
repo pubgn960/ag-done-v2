@@ -4692,6 +4692,32 @@ class TestCategoryAOrderDetectionRestoration(unittest.TestCase):
         self.assertTrue(matched)
         self.assertEqual(kw, "activision")
 
+    def test_facebook_recovery_codes_and_last_line_5k_package_detection(self):
+        from order_parser import parse_order_v2, extract_customer_ref_id
+
+        text = (
+            "Ridaz cp seller ⭐\n"
+            "280#\n"
+            "Mr.Rembrandt\n\n"
+            "Rembrandtbohorquez416@gmail.com\n\n"
+            "r3m6r4n5T\n\n"
+            "0674 5886\n"
+            "0796 5268\n"
+            "1726 2601\n"
+            "5k"
+        )
+
+        parsed = parse_order_v2(text, category="A")
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["email"], "rembrandtbohorquez416@gmail.com")
+        self.assertEqual(parsed["password"], "r3m6r4n5T")
+        self.assertEqual(parsed["username"], "Mr.Rembrandt")
+        self.assertEqual(extract_customer_ref_id(text), "280")
+        self.assertEqual(parsed["recovery_codes"], ["0674 5886", "0796 5268", "1726 2601"])
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "5040")
+        self.assertEqual(parsed["unknown_packages"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
