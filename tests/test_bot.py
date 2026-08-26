@@ -4719,5 +4719,90 @@ class TestCategoryAOrderDetectionRestoration(unittest.TestCase):
         self.assertEqual(parsed["unknown_packages"], [])
 
 
+class TestCrossBotLoaderReplyIsolation(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_to_external_bot_message_ignored(self):
+        from handlers import delivery_group_handler, BOT_SETTINGS, LOADERS_CACHE, AUTH_USERS_CACHE
+        from database import init_db, create_order, get_order_by_id
+
+        await init_db()
+
+        loader_group_id = -1002055608818
+        BOT_SETTINGS["delivery_group_id"] = loader_group_id
+        LOADERS_CACHE[1] = {"id": 1, "name": "Loader 1", "group_id": loader_group_id}
+
+        # Delivery user authorized in bot
+        loader_user_id = 998877
+        AUTH_USERS_CACHE[loader_user_id] = "delivery"
+
+        # Create Order in DB for Client Group -1004384376029
+        order = await create_order(
+            email="fb2@gmail.com",
+            client_chat_id=-1004384376029,
+            original_message_id=5555,
+            package="10800",
+            status="Pending",
+            category="A"
+        )
+        self.assertIsNotNone(order.id)
+
+        # Mock External Bot User (e.g. AG Done bot with ID 777888)
+        class ExternalBotUser:
+            id = 777888
+            is_bot = True
+            username = "AGDoneBot"
+            first_name = "AG Done"
+
+        # Mock Loader Message replied to External Bot message
+        class RepliedMsg:
+            message_id = 888111
+            from_user = ExternalBotUser()
+            text = f"Christtian Atay\nOrder #:{order.id} Login: Activision Email: fb2@gmail.com"
+            caption = None
+
+        class LoaderUser:
+            id = loader_user_id
+            first_name = "Loader"
+            username = "loader"
+            is_bot = False
+
+        class LoaderChat:
+            id = loader_group_id
+            title = "Shared Loader Group"
+
+        class PhotoSize:
+            file_id = "ph_file_123"
+
+        class LoaderMsg:
+            message_id = 999222
+            from_user = LoaderUser()
+            chat = LoaderChat()
+            reply_to_message = RepliedMsg()
+            photo = [PhotoSize()]
+            document = None
+            text = None
+            caption = "fb2@gmail.com"
+
+            async def reply_text(self, text, parse_mode=None, **kwargs):
+                pass
+
+        up = type("Update", (), {
+            "effective_user": LoaderUser(),
+            "effective_chat": LoaderChat(),
+            "message": LoaderMsg(),
+            "effective_message": LoaderMsg()
+        })()
+
+        mock_bot = type("Bot", (), {"id": 999000})()  # THIS bot's ID is 999000
+        ctx = type("Context", (), {"bot": mock_bot})()
+
+        # Invoke delivery_group_handler
+        await delivery_group_handler(up, ctx)
+
+        # Verify Order remains unchanged in Pending status and NOT delivered!
+        check_order = await get_order_by_id(order.id)
+        self.assertEqual(check_order.status, "Pending")
+        self.assertNotEqual(check_order.status, "Delivered")
+
+
 if __name__ == "__main__":
     unittest.main()

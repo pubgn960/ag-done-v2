@@ -1479,6 +1479,10 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
     reply_to = message.reply_to_message
     if not reply_to:
         return
+    if reply_to.from_user and getattr(reply_to.from_user, "is_bot", False) is True:
+        bot_id = getattr(context.bot, "id", None)
+        if bot_id and getattr(reply_to.from_user, "id", None) != bot_id:
+            return
     reply_msg_id = reply_to.message_id
     rep_text = reply_to.text or reply_to.caption or ""
     if is_bot_system_notification_text(rep_text):
@@ -2616,6 +2620,13 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
         logger.info("[LOADER] Ignored non-reply message.")
         return
 
+    # Check: Ignore replies to messages posted by external bots or other users
+    if reply_to.from_user and getattr(reply_to.from_user, "is_bot", False) is True:
+        bot_id = getattr(context.bot, "id", None)
+        if bot_id and getattr(reply_to.from_user, "id", None) != bot_id:
+            logger.info(f"[LOADER] Ignored reply in Loader Group {chat.id} to message sent by external bot (ID: {reply_to.from_user.id}).")
+            return
+
     text_content = message.text or message.caption or ""
 
     # Rule 2: Identify order from database using active DeliverySession, replied message ID, or text Order ID
@@ -2626,14 +2637,22 @@ async def delivery_group_handler(update: Update, context: ContextTypes.DEFAULT_T
         order = await get_order_by_id(active_delivery_session.order_id)
     else:
         order = await get_order_by_loader_msg_id(reply_to.message_id)
-        if not order:
+        # Text fallback ONLY for messages sent by THIS bot to prevent cross-bot Order ID collisions
+        if not order and reply_to.from_user and reply_to.from_user.id == context.bot.id:
             reply_text = reply_to.text or reply_to.caption or ""
             order_id_from_text = extract_order_id(reply_text)
             if order_id_from_text:
-                order = await get_order_by_id(order_id_from_text)
+                candidate = await get_order_by_id(order_id_from_text)
+                if candidate and (candidate.loader_group_id == chat.id or candidate.loader_message_id == reply_to.message_id):
+                    order = candidate
 
     if not order:
         logger.info("[LOADER] Ignored reply that does not match any valid order.")
+        return
+
+    # Extra Guard: Verify candidate order belongs to this loader group chat
+    if order.loader_group_id and order.loader_group_id != chat.id:
+        logger.warning(f"[LOADER] Order #{order.id} loader_group_id ({order.loader_group_id}) does not match current chat {chat.id}. Ignored.")
         return
 
     is_media = bool(message.photo or (message.document and (message.document.mime_type or "").startswith("image/")))
