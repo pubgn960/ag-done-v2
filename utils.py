@@ -187,18 +187,10 @@ def detect_loader_issue(caption_text: str) -> Optional[Tuple[Dict[str, Any], str
 
 def build_customer_issue_keyboard(order_id: int, issue_type: Union[str, LoaderIssueType]) -> InlineKeyboardMarkup:
     """
-    Builds customer issue response inline keyboard with clear options:
+    Builds customer issue response inline keyboard with exactly 2 options:
       [✅ It's Correct]  [❌ Cancel]
-    For WRONG_PASSWORD, also includes [🔄 Provide Correct Password].
     """
     issue_type_str = issue_type.value if hasattr(issue_type, 'value') else str(issue_type or "")
-    if issue_type_str in (LoaderIssueType.WRONG_PASSWORD.value, "wrong_password", "wrongpassword"):
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ It's Correct", callback_data=f"cust_confirm:pw_correct:{order_id}:wrong_password")],
-            [InlineKeyboardButton("🔄 Provide Correct Password", callback_data=f"cust_confirm:pw_updating:{order_id}:wrong_password")],
-            [InlineKeyboardButton("❌ Cancel", callback_data=f"cust_confirm:pw_cancel:{order_id}:wrong_password")]
-        ])
-
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ It's Correct", callback_data=f"cust_confirm:yes:{order_id}:{issue_type_str}"),

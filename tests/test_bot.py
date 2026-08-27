@@ -3274,13 +3274,12 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(order)
         order_id = order.id
 
-        # 2. Loader reports wrong password -> Verify 3 buttons generated
+        # 2. Loader reports wrong password -> Verify 2 buttons generated: It's Correct & Cancel
         kb = build_customer_issue_keyboard(order_id, LoaderIssueType.WRONG_PASSWORD)
         btn_texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        self.assertEqual(len(btn_texts), 3)
+        self.assertEqual(len(btn_texts), 2)
         self.assertEqual(btn_texts[0], "✅ It's Correct")
-        self.assertEqual(btn_texts[1], "🔄 Provide Correct Password")
-        self.assertEqual(btn_texts[2], "❌ Cancel")
+        self.assertEqual(btn_texts[1], "❌ Cancel")
 
         # 3. Test "🔄 Provide Correct Password" callback handler execution
         sent_messages = []
