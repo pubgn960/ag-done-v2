@@ -371,7 +371,7 @@ async def check_admin_permission(update: Update) -> bool:
     return False
 
 
-ALLOWED_REACTION_EMOJIS: Set[str] = {"👍", "❤️", "✅", "❌", "⏳"}
+ALLOWED_REACTION_EMOJIS: Set[str] = {"👍", "👎", "❤️", "✅", "❌", "⏳"}
 
 
 async def safe_set_message_reaction(

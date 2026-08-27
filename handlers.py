@@ -921,7 +921,7 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
                 "Customer selected ❌ Cancel.\n\n"
                 "Please stop processing this order."
             )
-            reaction_emoji = "❌"
+            reaction_emoji = "👎"
         else:
             return
 
@@ -941,7 +941,7 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             await update_order_issue_state(order.id, "CANCELLED", issue_id)
             cust_ack = "❌ <b>Order Cancelled</b>\n\nYou have cancelled this order."
             loader_notify_text = f"❌ <b>Order #{order.id} Cancelled by Customer</b>\n\nCustomer selected ❌ Cancel.\n\nPlease stop processing this order."
-            reaction_emoji = "❌"
+            reaction_emoji = "👎"
         else:
             return
 
@@ -4007,23 +4007,23 @@ async def client_cancellation_request_callback_handler(update: Update, context: 
         if success:
             logger.info(f"[ORDER #{order.id}] Loader selected CANCEL ORDER.")
 
-            # React ❌ to original loader message
+            # React 👎 to original loader message
             if order.loader_group_id and order.loader_message_id:
                 await safe_set_message_reaction(
                     bot=context.bot,
                     chat_id=order.loader_group_id,
                     message_id=order.loader_message_id,
-                    emoji="❌",
+                    emoji="👎",
                     log_tag="[CANCEL_LOADER_REACTION]"
                 )
 
-            # React ❌ to original client message
+            # React 👎 to original client message
             if order.client_chat_id and order.original_message_id:
                 await safe_set_message_reaction(
                     bot=context.bot,
                     chat_id=order.client_chat_id,
                     message_id=order.original_message_id,
-                    emoji="❌",
+                    emoji="👎",
                     log_tag="[CANCEL_CLIENT_REACTION]"
                 )
 

@@ -1168,7 +1168,7 @@ class TestDeliverySessionRouting(unittest.TestCase):
         from utils import ALLOWED_REACTION_EMOJIS, ISSUE_WORKFLOW_CONFIG, LoaderIssueType
 
         # 1. Allowed reactions must contain standard Unicode emojis
-        self.assertEqual(ALLOWED_REACTION_EMOJIS, {"👍", "❤️", "✅", "❌", "⏳"})
+        self.assertEqual(ALLOWED_REACTION_EMOJIS, {"👍", "👎", "❤️", "✅", "❌", "⏳"})
 
         # 2. Check customer approval success message for Wrong Name
         wn_cfg = ISSUE_WORKFLOW_CONFIG[LoaderIssueType.WRONG_NAME]
