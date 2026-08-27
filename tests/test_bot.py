@@ -3278,9 +3278,9 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         kb = build_customer_issue_keyboard(order_id, LoaderIssueType.WRONG_PASSWORD)
         btn_texts = [btn.text for row in kb.inline_keyboard for btn in row]
         self.assertEqual(len(btn_texts), 3)
-        self.assertEqual(btn_texts[0], "✅ Password is Correct")
+        self.assertEqual(btn_texts[0], "✅ It's Correct")
         self.assertEqual(btn_texts[1], "🔄 Provide Correct Password")
-        self.assertEqual(btn_texts[2], "❌ Cancel Sending New Data")
+        self.assertEqual(btn_texts[2], "❌ Cancel")
 
         # 3. Test "🔄 Provide Correct Password" callback handler execution
         sent_messages = []
@@ -3363,12 +3363,12 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(can_order.status, "CANCELLED")
 
         # ✓ Cancellation notification is sent to Loader Group replying to original loader message (888)
-        self.assertTrue(any("Cancel Sending New Data" in m["text"] or "stop sending any further account data" in m["text"] for m in sent_messages))
-        self.assertTrue(any(m["reply_to_message_id"] == 888 for m in sent_messages))
+        self.assertTrue(any("Cancelled by Customer" in m["text"] or "Cancelled" in m["text"] for m in sent_messages))
         self.assertTrue(any(m["reply_to_message_id"] == 888 for m in sent_messages))
 
-        # ✓ Original Loader message (888) receives ❌ reaction
+        # ✓ Loader message (888) and Client message (999) receive ❌ reaction
         self.assertTrue(any(r["message_id"] == 888 for r in sent_reactions))
+        self.assertTrue(any(r["message_id"] == 999 for r in sent_reactions))
 
         # ✓ Cancelled order cannot be delivered
         from delivery import deliver_order_by_id
@@ -3473,16 +3473,15 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         can_order = await get_order_by_id(order_id)
         self.assertEqual(can_order.status, "CANCELLED")
 
-        # ✓ ❌ reaction added to loader_message_id (76) in loader_group_id (-100999)
-        self.assertEqual(len(sent_reactions), 1)
-        self.assertEqual(sent_reactions[0]["chat_id"], -100999)
-        self.assertEqual(sent_reactions[0]["message_id"], 76)
+        # ✓ ❌ reaction added to loader_message_id (76) and client_original_message_id (500)
+        self.assertTrue(any(r["message_id"] == 76 for r in sent_reactions))
+        self.assertTrue(any(r["message_id"] == 500 for r in sent_reactions))
 
         # ✓ Cancellation notification sent replying to loader_message_id (76)
         self.assertEqual(len(sent_messages), 1)
         self.assertEqual(sent_messages[0]["chat_id"], -100999)
         self.assertEqual(sent_messages[0]["reply_to_message_id"], 76)
-        self.assertTrue("Cancel Sending New Data" in sent_messages[0]["text"] or "stop sending any further account data" in sent_messages[0]["text"])
+        self.assertTrue("Cancelled" in sent_messages[0]["text"])
 
         # ✓ Cancelled order cannot be delivered
         from delivery import deliver_order_by_id
@@ -3570,13 +3569,12 @@ class TestWrongPasswordCustomerFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res_236.status, "Pending")
 
         # 5. Verify ❌ reaction on Order #277's loader message (2770) and NOT #236 (2360)
-        self.assertEqual(len(sent_reactions), 1)
-        self.assertEqual(sent_reactions[0]["message_id"], 2770)
-        self.assertNotEqual(sent_reactions[0]["message_id"], 2360)
+        self.assertTrue(any(r["message_id"] == 2770 for r in sent_reactions))
+        self.assertFalse(any(r["message_id"] == 2360 for r in sent_reactions))
 
-        # 6. Verify notification text explicitly mentions Cancel Sending New Data and NOT #236
+        # 6. Verify notification text explicitly mentions Cancelled and NOT #236
         self.assertEqual(len(sent_messages), 1)
-        self.assertIn("Cancel Sending New Data", sent_messages[0]["text"])
+        self.assertIn("Cancelled", sent_messages[0]["text"])
         self.assertNotIn(f"#{order_236.id}", sent_messages[0]["text"])
 
 

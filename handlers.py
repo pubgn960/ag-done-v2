@@ -881,21 +881,21 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
     loader_chat_id = order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
     target_loader_msg_id = order.loader_message_id
 
-    # Wrong Password Workflow (3 buttons: pw_correct, pw_updating, pw_cancel)
+    # Wrong Password Workflow
     if issue_id == "wrong_password" or issue_id == LoaderIssueType.WRONG_PASSWORD:
         if action in ("pw_correct", "yes"):
-            logger.info(f"[ORDER #{order.id}] Customer confirmed password is correct.")
+            logger.info(f"[ORDER #{order.id}] Customer confirmed details/password are correct.")
             await update_order_issue_state(order.id, "Resolved", "wrong_password")
             await update_order_status(order.id, "READY_FOR_DELIVERY")
 
-            cust_ack = "✅ <b>Password Confirmed</b>\n\nThank you! You confirmed that the password is correct."
+            cust_ack = "✅ <b>Order Confirmed</b>\n\nThank you! You confirmed that the details are correct. The loader will resume delivery."
             loader_notify_text = (
-                "✅ Customer confirmed the password is correct.\n\n"
+                "✅ Customer confirmed the details are correct.\n\n"
                 "You may retry delivery."
             )
             reaction_emoji = "✅"
 
-        elif action in ("pw_updating", "no"):
+        elif action in ("pw_updating",):
             logger.info(f"[ORDER #{order.id}] Customer selected password update.")
             await update_order_issue_state(order.id, "PASSWORD_UPDATE_IN_PROGRESS", "wrong_password")
             await update_order_status(order.id, "PASSWORD_UPDATE_IN_PROGRESS")
@@ -907,47 +907,43 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             )
             reaction_emoji = "🔄"
 
-        elif action == "pw_cancel":
-            logger.info(f"[CANCEL] Customer requested cancellation for Order #{order.id}")
-            logger.info(f"[CANCEL] Loaded Order #{order.id}")
-            logger.info(f"[CANCEL] Loader Group: {loader_chat_id}")
-            logger.info(f"[CANCEL] Loader Message: {target_loader_msg_id}")
-
+        elif action in ("pw_cancel", "cancel", "no"):
+            logger.info(f"[CANCEL] Customer cancelled Order #{order.id} via issue prompt.")
             await update_order_status(order.id, "CANCELLED")
             await update_order_issue_state(order.id, "CANCELLED", "wrong_password")
 
             cust_ack = (
-                "❌ <b>Sending New Data Cancelled</b>\n\n"
-                "You have cancelled sending new data for this order."
+                "❌ <b>Order Cancelled</b>\n\n"
+                "You have cancelled this order."
             )
             loader_notify_text = (
-                "❌ <b>Cancel Sending New Data</b>\n\n"
-                "Customer selected CANCEL SENDING NEW DATA.\n\n"
-                "Please stop sending any further account data for this order."
+                f"❌ <b>Order #{order.id} Cancelled by Customer</b>\n\n"
+                "Customer selected ❌ Cancel.\n\n"
+                "Please stop processing this order."
             )
             reaction_emoji = "❌"
         else:
             return
 
-    # Legacy 2-button workflows for other issue types
+    # Standard 2-button workflows for other issue types (It's Correct / Cancel)
     else:
         issue_cfg = ISSUE_WORKFLOW_CONFIG.get(issue_id, ISSUE_WORKFLOW_CONFIG[LoaderIssueType.WRONG_NAME])
-        if action == "yes":
+        if action in ("yes", "pw_correct"):
             logger.info(f"[CUSTOMER_APPROVED]\nCustomer approved issue '{issue_id}' for Order #{order.id}.")
             await update_order_issue_state(order.id, "Confirmed", issue_id)
-            cust_ack = "✅ <b>Confirmation Recorded</b>\n\nThank you! Your confirmation has been sent to the loader."
+            await update_order_status(order.id, "READY_FOR_DELIVERY")
+            cust_ack = "✅ <b>Order Confirmed</b>\n\nThank you! You confirmed that the details are correct. The loader will resume delivery."
             loader_notify_text = issue_cfg.get("loader_success_msg", "✅ Customer confirmed details. Please continue delivery.")
             reaction_emoji = "✅"
-        else:
-            logger.info(f"[CUSTOMER_REJECTED]\nCustomer rejected issue '{issue_id}' for Order #{order.id}.")
-            await update_order_status(order.id, "Waiting Customer Update")
-            await update_order_issue_state(order.id, "Waiting_Customer_Update", issue_id)
-            cust_ack = issue_cfg.get(
-                "customer_update_prompt",
-                "❌ <b>Order Paused</b>\n\nPlease reply with your updated account details below."
-            )
-            loader_notify_text = issue_cfg.get("loader_failure_msg", "❌ Customer stated details are incorrect. Please wait for updated account info.")
+        elif action in ("cancel", "pw_cancel", "no"):
+            logger.info(f"[CUSTOMER_CANCELLED]\nCustomer cancelled issue '{issue_id}' for Order #{order.id}.")
+            await update_order_status(order.id, "CANCELLED")
+            await update_order_issue_state(order.id, "CANCELLED", issue_id)
+            cust_ack = "❌ <b>Order Cancelled</b>\n\nYou have cancelled this order."
+            loader_notify_text = f"❌ <b>Order #{order.id} Cancelled by Customer</b>\n\nCustomer selected ❌ Cancel.\n\nPlease stop processing this order."
             reaction_emoji = "❌"
+        else:
+            return
 
     # 1. Edit customer prompt message in Client Group (caption if photo/doc, text otherwise)
     try:
@@ -957,25 +953,35 @@ async def customer_confirmation_callback_handler(update: Update, context: Contex
             await query.edit_message_text(text=cust_ack, parse_mode="HTML")
         await query.answer("Response recorded!")
     except Exception as e:
-        logger.warning(f"[CUSTOMER_CONFIRM] Could not edit customer reply text: {e}")
+        logger.warning(f"[CUSTOMER_CONFIRM] Could not edit customer reply text for Order #{order.id}: {e}")
 
-    # 2. Reply directly to ORIGINAL loader message in Loader Group & set reaction
+    # 2. Set reaction on Client's original order message in Client Group
+    if order.client_chat_id and order.original_message_id:
+        try:
+            await safe_set_message_reaction(
+                bot=context.bot,
+                chat_id=order.client_chat_id,
+                message_id=order.original_message_id,
+                emoji=reaction_emoji,
+                fallback_emoji=None,
+                log_tag=f"[CLIENT_REACTION #{order.id}]"
+            )
+        except Exception as e:
+            logger.warning(f"[CLIENT_REACTION #{order.id}] Failed to set reaction on client message: {e}")
+
+    # 3. Set reaction on Loader's order message in Loader Group & notify Loader Group
     if loader_chat_id and target_loader_msg_id:
         try:
-            success = await safe_set_message_reaction(
+            await safe_set_message_reaction(
                 bot=context.bot,
                 chat_id=loader_chat_id,
                 message_id=target_loader_msg_id,
                 emoji=reaction_emoji,
                 fallback_emoji=None,
-                log_tag=f"[ORDER #{order.id}]"
+                log_tag=f"[LOADER_REACTION #{order.id}]"
             )
-            if success and action == "pw_cancel":
-                logger.info(f"[CANCEL] ❌ reaction applied to Order #{order.id} loader message")
-            elif not success:
-                logger.warning(f"[ORDER #{order.id}] Failed to react to loader message.")
-        except Exception:
-            logger.warning(f"[ORDER #{order.id}] Failed to react to loader message.")
+        except Exception as e:
+            logger.warning(f"[LOADER_REACTION #{order.id}] Failed to set reaction on loader message: {e}")
 
         try:
             await context.bot.send_message(

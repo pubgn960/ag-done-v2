@@ -187,29 +187,22 @@ def detect_loader_issue(caption_text: str) -> Optional[Tuple[Dict[str, Any], str
 
 def build_customer_issue_keyboard(order_id: int, issue_type: Union[str, LoaderIssueType]) -> InlineKeyboardMarkup:
     """
-    Builds customer issue response inline keyboard.
-    For WRONG_PASSWORD, returns 3 buttons:
-      [✅ Password is Correct]
-      [🔄 Updating Password]
-      [❌ Cancel Order]
-    For other issue types, returns 2 buttons (Approve / Reject).
+    Builds customer issue response inline keyboard with clear options:
+      [✅ It's Correct]  [❌ Cancel]
+    For WRONG_PASSWORD, also includes [🔄 Provide Correct Password].
     """
     issue_type_str = issue_type.value if hasattr(issue_type, 'value') else str(issue_type or "")
     if issue_type_str in (LoaderIssueType.WRONG_PASSWORD.value, "wrong_password", "wrongpassword"):
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Password is Correct", callback_data=f"cust_confirm:pw_correct:{order_id}:wrong_password")],
+            [InlineKeyboardButton("✅ It's Correct", callback_data=f"cust_confirm:pw_correct:{order_id}:wrong_password")],
             [InlineKeyboardButton("🔄 Provide Correct Password", callback_data=f"cust_confirm:pw_updating:{order_id}:wrong_password")],
-            [InlineKeyboardButton("❌ Cancel Sending New Data", callback_data=f"cust_confirm:pw_cancel:{order_id}:wrong_password")]
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"cust_confirm:pw_cancel:{order_id}:wrong_password")]
         ])
-
-    issue_cfg = ISSUE_WORKFLOW_CONFIG.get(issue_type_str, ISSUE_WORKFLOW_CONFIG.get(LoaderIssueType.WRONG_NAME))
-    approve_lbl = issue_cfg.get("approve_label", "✅ Approve") if issue_cfg else "✅ Approve"
-    reject_lbl = issue_cfg.get("reject_label", "❌ Update Account") if issue_cfg else "❌ Update Account"
 
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(approve_lbl, callback_data=f"cust_confirm:yes:{order_id}:{issue_type_str}"),
-            InlineKeyboardButton(reject_lbl, callback_data=f"cust_confirm:no:{order_id}:{issue_type_str}")
+            InlineKeyboardButton("✅ It's Correct", callback_data=f"cust_confirm:yes:{order_id}:{issue_type_str}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cust_confirm:cancel:{order_id}:{issue_type_str}")
         ]
     ])
 
