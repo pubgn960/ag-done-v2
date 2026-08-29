@@ -1351,7 +1351,7 @@ async def get_order_waiting_for_customer_update(client_chat_id: int) -> Optional
             .order_by(Order.id.desc())
         )
         res = await session.execute(stmt)
-        return res.unique().scalar_one_or_none()
+        return res.unique().scalars().first()
 
 
 async def create_delivery_session(order_id: int, loader_id: int, session_msg_id: int, selected_packages: Optional[str] = None) -> DeliverySession:

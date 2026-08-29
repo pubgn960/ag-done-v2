@@ -236,7 +236,11 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 return
 
     # Check if this customer message is an updated account detail submission for a paused order
-    waiting_order = await get_order_waiting_for_customer_update(chat.id)
+    try:
+        waiting_order = await get_order_waiting_for_customer_update(chat.id)
+    except Exception as e:
+        logger.error(f"[CLIENT] Error checking waiting order for chat {chat.id}: {e}")
+        waiting_order = None
     if waiting_order:
         active_issue_type = waiting_order.issue_type or "wrong_name"
         if validate_customer_update_for_issue(text_content, active_issue_type):

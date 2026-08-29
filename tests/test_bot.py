@@ -579,15 +579,21 @@ class TestTwoGroupDatabaseWorkflow(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(none_ord)
 
         # 2. Create order & set status to Waiting Customer Update
-        order = await create_order(email=email, client_chat_id=client_chat_id, package="10800")
-        await update_order_status(order.id, "Waiting Customer Update")
+        order1 = await create_order(email=email, client_chat_id=client_chat_id, package="10800")
+        await update_order_status(order1.id, "Waiting Customer Update")
 
+        # Create a 2nd order in same chat ID also waiting
+        order2 = await create_order(email="waiting_update_test2@example.com", client_chat_id=client_chat_id, package="21600")
+        await update_order_status(order2.id, "WAITING_FOR_CUSTOMER_PASSWORD")
+
+        # Must return the latest waiting order (order2) without throwing MultipleResultsFound exception
         matched_ord = await get_order_waiting_for_customer_update(client_chat_id)
         self.assertIsNotNone(matched_ord)
-        self.assertEqual(matched_ord.id, order.id)
+        self.assertEqual(matched_ord.id, order2.id)
 
         # Clean up
         await delete_orders_by_email(email)
+        await delete_orders_by_email("waiting_update_test2@example.com")
         await delete_orders_by_email("cancel_test@example.com")
 
 
