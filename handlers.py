@@ -211,6 +211,11 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     is_client_group = (chat.id == BOT_SETTINGS["source_group_id"]) or (chat.id in CLIENT_GROUPS_CACHE)
 
     if not is_client_group:
+        is_known_loader = (chat.id == BOT_SETTINGS.get("delivery_group_id")) or any(
+            l.get("group_id") == chat.id for l in LOADERS_CACHE.values()
+        )
+        if is_known_loader or chat.type == "private" or chat.id == BOT_SETTINGS.get("payment_review_group_id"):
+            return
         logger.warning(f"[CLIENT] Client Group is not configured yet. Ignored message in chat {chat.id} ({chat.title}).")
         return
 
