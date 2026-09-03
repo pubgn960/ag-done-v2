@@ -69,6 +69,12 @@ class Config:
     # Post-delivery option: delete order from DB after successful delivery
     DELETE_AFTER_DELIVERY: bool = os.getenv("DELETE_AFTER_DELIVERY", "false").lower() in ("true", "1", "yes")
 
+    # Dashboard & WebApp Configuration
+    DASHBOARD_PORT: int = safe_int("PORT", 8080)
+    DASHBOARD_URL: str = os.getenv("DASHBOARD_URL", "").strip()
+    DASHBOARD_ADMIN_PASSWORD: str = os.getenv("DASHBOARD_ADMIN_PASSWORD", "admin123").strip()
+    SESSION_SECRET: str = os.getenv("SESSION_SECRET", "super_secret_dashboard_key_12345").strip()
+
     @classmethod
     def load_and_validate(cls) -> None:
         """Parses and validates environment settings."""
@@ -82,6 +88,10 @@ class Config:
         cls.RETRY_DELAY = safe_float("RETRY_DELAY", 2.0)
         cls.CLEANUP_DAYS = safe_int("CLEANUP_DAYS", 30)
         cls.DELETE_AFTER_DELIVERY = os.getenv("DELETE_AFTER_DELIVERY", "false").lower() in ("true", "1", "yes")
+        cls.DASHBOARD_PORT = safe_int("PORT", 8080)
+        cls.DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").strip()
+        cls.DASHBOARD_ADMIN_PASSWORD = os.getenv("DASHBOARD_ADMIN_PASSWORD", "admin123").strip()
+        cls.SESSION_SECRET = os.getenv("SESSION_SECRET", "super_secret_dashboard_key_12345").strip()
 
         # Parse Admin IDs
         if cls.RAW_ADMIN_IDS:

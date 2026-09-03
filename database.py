@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from sqlalchemy import select, func, delete, update, or_
+from sqlalchemy import select, func, delete, update, or_, cast, String
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import joinedload
 
@@ -2489,3 +2489,282 @@ async def undo_last_running_total_action(admin_id: int, chat_id: Optional[int] =
             await session.rollback()
             logger.error(f"[UNDO] Failed to undo running total action: {e}")
             raise e
+
+
+# ==========================================
+# DASHBOARD & WEBAPP QUERY HELPERS
+# ==========================================
+
+async def get_dashboard_overview_metrics() -> Dict[str, Any]:
+    """
+    Computes high-level dashboard metrics:
+    Total Orders, Today Orders, Delivered, Pending, Cancelled, Today Revenue, Total Volume.
+    """
+    async with AsyncSessionLocal() as session:
+        now_utc = datetime.now(timezone.utc)
+        today_start = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+
+        # 1. Total Orders
+        total_stmt = select(func.count(Order.id))
+        total_orders = (await session.execute(total_stmt)).scalar() or 0
+
+        # 2. Today Orders
+        today_stmt = select(func.count(Order.id)).where(Order.created_at >= today_start)
+        today_orders = (await session.execute(today_stmt)).scalar() or 0
+
+        # 3. Delivered Orders
+        deliv_stmt = select(func.count(Order.id)).where(func.lower(Order.status) == "delivered")
+        delivered_orders = (await session.execute(deliv_stmt)).scalar() or 0
+
+        # 4. Pending / Active Orders
+        pending_stmt = select(func.count(Order.id)).where(
+            func.lower(Order.status).in_(["pending", "partially delivered", "waiting customer update", "waiting_for_customer_password", "ready_for_delivery", "pending approval"])
+        )
+        pending_orders = (await session.execute(pending_stmt)).scalar() or 0
+
+        # 5. Cancelled Orders
+        cancel_stmt = select(func.count(Order.id)).where(func.lower(Order.status) == "cancelled")
+        cancelled_orders = (await session.execute(cancel_stmt)).scalar() or 0
+
+        # 6. Total Revenue (Delivered Orders with parsed price)
+        # 7. Active Client Groups
+        groups_stmt = select(func.count(ClientGroup.id))
+        total_groups = (await session.execute(groups_stmt)).scalar() or 0
+
+        # 8. Active Loaders
+        loaders_stmt = select(func.count(Loader.id))
+        total_loaders = (await session.execute(loaders_stmt)).scalar() or 0
+
+        # 9. Total Wallet Balance Sum
+        wallets_stmt = select(func.sum(Wallet.balance))
+        total_wallet_balance = (await session.execute(wallets_stmt)).scalar() or 0.0
+
+        # Calculate Delivered Volume (Sum of price on delivered orders)
+        price_stmt = select(Order.price).where(func.lower(Order.status) == "delivered", Order.price.isnot(None))
+        price_rows = (await session.execute(price_stmt)).scalars().all()
+        total_delivered_volume = 0.0
+        for p in price_rows:
+            try:
+                if p:
+                    # Clean price string (e.g. "$32.50" -> 32.50)
+                    cleaned = re.sub(r'[^\d.]', '', str(p))
+                    if cleaned:
+                        total_delivered_volume += float(cleaned)
+            except Exception:
+                pass
+
+        # Calculate Today Volume
+        today_price_stmt = select(Order.price).where(
+            func.lower(Order.status) == "delivered",
+            Order.created_at >= today_start,
+            Order.price.isnot(None)
+        )
+        today_price_rows = (await session.execute(today_price_stmt)).scalars().all()
+        today_delivered_volume = 0.0
+        for p in today_price_rows:
+            try:
+                if p:
+                    cleaned = re.sub(r'[^\d.]', '', str(p))
+                    if cleaned:
+                        today_delivered_volume += float(cleaned)
+            except Exception:
+                pass
+
+        success_rate = round((delivered_orders / total_orders * 100), 1) if total_orders > 0 else 0.0
+
+        return {
+            "total_orders": total_orders,
+            "today_orders": today_orders,
+            "delivered_orders": delivered_orders,
+            "pending_orders": pending_orders,
+            "cancelled_orders": cancelled_orders,
+            "success_rate": success_rate,
+            "total_groups": total_groups,
+            "total_loaders": total_loaders,
+            "total_wallet_balance": round(float(total_wallet_balance), 2),
+            "total_delivered_volume": round(total_delivered_volume, 2),
+            "today_delivered_volume": round(today_delivered_volume, 2),
+        }
+
+
+async def get_dashboard_orders_paginated(
+    page: int = 1,
+    page_size: int = 20,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    client_chat_id: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Returns paginated, searchable list of Orders for the web dashboard.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(Order).options(joinedload(Order.images))
+
+        # Filters
+        if status and status.strip():
+            st = status.strip().lower()
+            if st == "delivered":
+                stmt = stmt.where(func.lower(Order.status) == "delivered")
+            elif st == "pending":
+                stmt = stmt.where(func.lower(Order.status).in_(["pending", "partially delivered", "ready_for_delivery", "pending approval"]))
+            elif st == "cancelled":
+                stmt = stmt.where(func.lower(Order.status) == "cancelled")
+            elif st == "waiting":
+                stmt = stmt.where(func.lower(Order.status).in_(["waiting customer update", "waiting_for_customer_password", "password_update_in_progress"]))
+            else:
+                stmt = stmt.where(func.lower(Order.status) == st)
+
+        if client_chat_id:
+            stmt = stmt.where(Order.client_chat_id == client_chat_id)
+
+        if search and search.strip():
+            s = f"%{search.strip()}%"
+            stmt = stmt.where(
+                or_(
+                    Order.email.ilike(s),
+                    Order.package.ilike(s),
+                    Order.category.ilike(s),
+                    cast(Order.id, String).ilike(s)
+                )
+            )
+
+        # Count total
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = (await session.execute(count_stmt)).scalar() or 0
+
+        # Pagination & Ordering
+        offset = max(0, (page - 1) * page_size)
+        stmt = stmt.order_by(Order.id.desc()).offset(offset).limit(page_size)
+        res = await session.execute(stmt)
+        orders = res.unique().scalars().all()
+
+        items = []
+        for o in orders:
+            items.append({
+                "id": o.id,
+                "email": o.email,
+                "package": o.package,
+                "price": o.price,
+                "status": o.status or "Pending",
+                "client_chat_id": o.client_chat_id,
+                "created_at": o.created_at.strftime("%Y-%m-%d %H:%M:%S") if o.created_at else "",
+                "delivered_at": o.delivered_at.strftime("%Y-%m-%d %H:%M:%S") if o.delivered_at else None,
+                "image_count": len(o.images) if o.images else 0,
+                "category": o.category or "A"
+            })
+
+        total_pages = max(1, (total + page_size - 1) // page_size) if total > 0 else 1
+
+        return {
+            "items": items,
+            "order_list": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages
+        }
+
+
+async def get_dashboard_groups_summary() -> List[Dict[str, Any]]:
+    """
+    Returns summary of all configured client groups with balance and order stats.
+    """
+    async with AsyncSessionLocal() as session:
+        groups_stmt = select(ClientGroup).order_by(ClientGroup.group_name.asc())
+        groups = (await session.execute(groups_stmt)).scalars().all()
+
+        results = []
+        for g in groups:
+            # Get wallet balance
+            w_stmt = select(func.sum(Wallet.balance)).where(Wallet.client_group_id == g.chat_id)
+            balance = (await session.execute(w_stmt)).scalar() or 0.0
+
+            # Get order counts
+            ord_cnt_stmt = select(func.count(Order.id)).where(Order.client_chat_id == g.chat_id)
+            total_orders = (await session.execute(ord_cnt_stmt)).scalar() or 0
+
+            deliv_cnt_stmt = select(func.count(Order.id)).where(
+                Order.client_chat_id == g.chat_id,
+                func.lower(Order.status) == "delivered"
+            )
+            delivered_orders = (await session.execute(deliv_cnt_stmt)).scalar() or 0
+
+            results.append({
+                "id": g.id,
+                "group_id": g.chat_id,
+                "group_title": g.group_name or f"Group {g.chat_id}",
+                "category": g.category or "A",
+                "balance": round(float(balance), 2),
+                "total_orders": total_orders,
+                "delivered_orders": delivered_orders
+            })
+
+        return results
+
+
+async def get_dashboard_loaders_summary() -> List[Dict[str, Any]]:
+    """
+    Returns summary of loaders and their delivery counts.
+    """
+    async with AsyncSessionLocal() as session:
+        loaders_stmt = select(Loader).order_by(Loader.loader_name.asc())
+        loaders = (await session.execute(loaders_stmt)).scalars().all()
+
+        results = []
+        for l in loaders:
+            # Count orders for this loader's group
+            cnt_stmt = select(func.count(Order.id)).where(
+                Order.loader_group_id == l.group_id,
+                func.lower(Order.status) == "delivered"
+            )
+            delivered_count = (await session.execute(cnt_stmt)).scalar() or 0
+
+            results.append({
+                "id": l.id,
+                "name": l.loader_name or f"Loader {l.id}",
+                "group_id": l.group_id,
+                "delivered_count": delivered_count
+            })
+
+        return results
+
+
+async def get_dashboard_daily_trends(days: int = 7) -> Dict[str, Any]:
+    """
+    Returns daily order counts (Delivered vs Cancelled) for chart rendering.
+    """
+    async with AsyncSessionLocal() as session:
+        now_utc = datetime.now(timezone.utc)
+        labels = []
+        delivered_counts = []
+        cancelled_counts = []
+
+        for i in range(days - 1, -1, -1):
+            day_dt = now_utc - timedelta(days=i)
+            day_start = datetime(day_dt.year, day_dt.month, day_dt.day, 0, 0, 0, tzinfo=timezone.utc)
+            day_end = datetime(day_dt.year, day_dt.month, day_dt.day, 23, 59, 59, tzinfo=timezone.utc)
+            label = day_dt.strftime("%b %d")
+            labels.append(label)
+
+            deliv_stmt = select(func.count(Order.id)).where(
+                func.lower(Order.status) == "delivered",
+                Order.created_at >= day_start,
+                Order.created_at <= day_end
+            )
+            deliv_c = (await session.execute(deliv_stmt)).scalar() or 0
+            delivered_counts.append(deliv_c)
+
+            cancel_stmt = select(func.count(Order.id)).where(
+                func.lower(Order.status) == "cancelled",
+                Order.created_at >= day_start,
+                Order.created_at <= day_end
+            )
+            cancel_c = (await session.execute(cancel_stmt)).scalar() or 0
+            cancelled_counts.append(cancel_c)
+
+        return {
+            "labels": labels,
+            "delivered": delivered_counts,
+            "cancelled": cancelled_counts
+        }
+

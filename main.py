@@ -52,6 +52,7 @@ from handlers import (
     users_command,
     start_command,
     help_command,
+    dashboard_command,
     find_command,
     order_info_command,
     cancel_command,
@@ -149,6 +150,7 @@ async def post_init(application: Application) -> None:
     raw_commands = [
         BotCommand("start", "Start Bot"),
         BotCommand("help", "Help"),
+        BotCommand("dashboard", "Open Live Web Dashboard & Mini-App"),
         BotCommand("setup", "Setup Guide"),
         BotCommand("source", "Set Client Group"),
         BotCommand("delivery", "Set Loader Group"),
@@ -255,6 +257,7 @@ def main() -> None:
     application.add_handler(CommandHandler("users", users_command))
 
     # Register Core & Admin Commands
+    application.add_handler(CommandHandler(["dashboard", "panel"], dashboard_command))
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("pending", pending_command))
@@ -358,9 +361,63 @@ def main() -> None:
         group=2
     )
 
-    logger.info("Bot running in polling mode. Press Ctrl+C to stop.")
-    application.run_polling(drop_pending_updates=True)
+    return application
+
+
+async def run_services() -> None:
+    """Runs Telegram Bot Polling and FastAPI Web Server concurrently in a single async event loop."""
+    import uvicorn
+    from web.app import app as fastapi_app
+
+    application = build_application()
+
+    # 1. Initialize and start Telegram Bot polling non-blockingly
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(drop_pending_updates=True)
+    logger.info("Telegram Bot active and polling for updates.")
+
+    # 2. Configure Uvicorn Web Server for Railway & local dashboard access
+    port = Config.DASHBOARD_PORT
+    uvicorn_config = uvicorn.Config(
+        app=fastapi_app,
+        host="0.0.0.0",
+        port=port,
+        log_level="warning",
+        access_log=False
+    )
+    server = uvicorn.Server(uvicorn_config)
+    logger.info(f"Dashboard Web Server running on http://0.0.0.0:{port}")
+
+    try:
+        await server.serve()
+    finally:
+        logger.info("Shutting down Telegram Bot...")
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+
+
+def build_application() -> Application:
+    """Builds and returns the configured Application instance."""
+    return (
+        ApplicationBuilder()
+        .token(Config.BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+
+
+def main() -> None:
+    """Entry point for launching both Telegram Bot and Dashboard."""
+    if not Config.BOT_TOKEN:
+        logger.critical("BOT_TOKEN is missing! Please configure it in .env file or environment variables.")
+        sys.exit(1)
+
+    logger.info("Starting Telegram Email Image Delivery Bot & Live Dashboard...")
+    asyncio.run(run_services())
 
 
 if __name__ == "__main__":
     main()
+

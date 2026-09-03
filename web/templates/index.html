@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartBot V2 • Live Railway Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Plus Jakarta Sans', 'sans-serif'] }
+                }
+            }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 999px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col antialiased selection:bg-blue-500 selection:text-white">
+
+    <!-- Top Navigation Bar -->
+    <header class="sticky top-0 z-30 bg-slate-900/80 backdrop-blur-xl border-b border-slate-800">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center shadow-lg shadow-blue-500/20 ring-1 ring-white/20">
+                    <i class="fa-solid fa-bolt text-lg text-white"></i>
+                </div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span class="font-bold text-base tracking-tight text-white">SmartBot V2</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> LIVE
+                        </span>
+                    </div>
+                    <p class="text-[11px] text-slate-400">Railway Production Dashboard</p>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-3">
+                <button onclick="refreshDashboard()" id="refreshBtn" class="px-3 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-800 text-slate-300 text-xs font-medium border border-slate-700/60 transition flex items-center gap-1.5 shadow-sm">
+                    <i class="fa-solid fa-rotate text-slate-400 text-xs" id="refreshIcon"></i>
+                    <span>Refresh</span>
+                </button>
+                {% if not is_mini_app %}
+                <a href="/logout" class="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-medium border border-rose-500/20 transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-right-from-bracket text-xs"></i>
+                    <span class="hidden sm:inline">Logout</span>
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+        <!-- 1. Top Metrics Cards Grid -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            
+            <!-- Total Orders -->
+            <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-5 relative overflow-hidden backdrop-blur-sm group hover:border-slate-700 transition">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Orders</span>
+                    <div class="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-400 flex items-center justify-center border border-blue-500/20">
+                        <i class="fa-solid fa-cubes text-sm"></i>
+                    </div>
+                </div>
+                <div class="flex items-baseline gap-2">
+                    <span class="text-2xl sm:text-3xl font-extrabold text-white" id="m_total">{{ metrics.total_orders }}</span>
+                    <span class="text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20" id="m_today">+{{ metrics.today_orders }} today</span>
+                </div>
+            </div>
+
+            <!-- Delivered Orders -->
+            <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-5 relative overflow-hidden backdrop-blur-sm group hover:border-slate-700 transition">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Delivered</span>
+                    <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center border border-emerald-500/20">
+                        <i class="fa-solid fa-circle-check text-sm"></i>
+                    </div>
+                </div>
+                <div class="flex items-baseline gap-2">
+                    <span class="text-2xl sm:text-3xl font-extrabold text-white" id="m_delivered">{{ metrics.delivered_orders }}</span>
+                    <span class="text-xs font-semibold text-emerald-400" id="m_rate">{{ metrics.success_rate }}% rate</span>
+                </div>
+            </div>
+
+            <!-- Active / Pending Orders -->
+            <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-5 relative overflow-hidden backdrop-blur-sm group hover:border-slate-700 transition">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Pending / Active</span>
+                    <div class="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center border border-amber-500/20">
+                        <i class="fa-solid fa-clock text-sm"></i>
+                    </div>
+                </div>
+                <div class="flex items-baseline gap-2">
+                    <span class="text-2xl sm:text-3xl font-extrabold text-white" id="m_pending">{{ metrics.pending_orders }}</span>
+                    <span class="text-xs text-amber-400/80">processing</span>
+                </div>
+            </div>
+
+            <!-- Cancelled Orders -->
+            <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-5 relative overflow-hidden backdrop-blur-sm group hover:border-slate-700 transition">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Cancelled</span>
+                    <div class="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-400 flex items-center justify-center border border-rose-500/20">
+                        <i class="fa-solid fa-thumbs-down text-sm"></i>
+                    </div>
+                </div>
+                <div class="flex items-baseline gap-2">
+                    <span class="text-2xl sm:text-3xl font-extrabold text-white" id="m_cancelled">{{ metrics.cancelled_orders }}</span>
+                    <span class="text-xs text-rose-400/80">orders</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. Financial Overview & Weekly Trends -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Financial Summary Card -->
+            <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-sm flex flex-col justify-between">
+                <div>
+                    <h2 class="text-sm font-semibold text-slate-300 flex items-center gap-2 mb-4">
+                        <i class="fa-solid fa-wallet text-emerald-400"></i> Financial Summary
+                    </h2>
+                    <div class="space-y-4">
+                        <div class="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                            <div class="text-xs text-slate-400">Total Delivered Volume</div>
+                            <div class="text-2xl font-black text-emerald-400 mt-1" id="m_volume">${{ metrics.total_delivered_volume }}</div>
+                        </div>
+                        <div class="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                            <div class="text-xs text-slate-400">Today Delivered Volume</div>
+                            <div class="text-xl font-bold text-slate-100 mt-1" id="m_today_vol">${{ metrics.today_delivered_volume }}</div>
+                        </div>
+                        <div class="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                            <div class="text-xs text-slate-400">Client Wallets Balance (Total)</div>
+                            <div class="text-xl font-bold text-blue-400 mt-1" id="m_wallet">${{ metrics.total_wallet_balance }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-4 pt-4 border-t border-slate-800/60 flex items-center justify-between text-xs text-slate-400">
+                    <span>Active Groups: <b class="text-slate-200" id="m_groups">{{ metrics.total_groups }}</b></span>
+                    <span>Loaders: <b class="text-slate-200" id="m_loaders">{{ metrics.total_loaders }}</b></span>
+                </div>
+            </div>
+
+            <!-- Weekly Trends Chart -->
+            <div class="lg:col-span-2 bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-sm">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-chart-line text-blue-400"></i> 7-Day Activity Trends
+                    </h2>
+                    <span class="text-xs text-slate-500">Delivered vs Cancelled</span>
+                </div>
+                <div class="h-64 w-full">
+                    <canvas id="trendsChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. Live Orders Management Section -->
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-sm space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                    <h2 class="text-base font-bold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-list-check text-blue-400"></i> Live Orders Feed
+                    </h2>
+                    <p class="text-xs text-slate-400 mt-0.5">Real-time searchable database of all processed orders</p>
+                </div>
+
+                <!-- Search & Filters -->
+                <div class="flex flex-wrap items-center gap-2">
+                    <div class="relative min-w-[200px] flex-1 sm:flex-initial">
+                        <input 
+                            type="text" 
+                            id="orderSearch" 
+                            placeholder="Search ID, Email, Package..." 
+                            onkeyup="handleSearch(event)"
+                            class="w-full bg-slate-950/70 border border-slate-700/80 rounded-xl px-3 py-1.5 pl-8 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                        >
+                        <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-2.5 text-slate-500 text-xs"></i>
+                    </div>
+
+                    <select id="statusFilter" onchange="filterOrders()" class="bg-slate-950/70 border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 transition">
+                        <option value="">All Statuses</option>
+                        <option value="delivered">✅ Delivered</option>
+                        <option value="pending">⏳ Pending / Active</option>
+                        <option value="waiting">⚠️ Waiting Update</option>
+                        <option value="cancelled">❌ Cancelled</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Orders Table Container -->
+            <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+                <table class="w-full text-left text-xs text-slate-300">
+                    <thead class="bg-slate-950/80 text-slate-400 text-[11px] uppercase tracking-wider font-semibold border-b border-slate-800">
+                        <tr>
+                            <th class="py-3 px-4">Order ID</th>
+                            <th class="py-3 px-4">Email / Details</th>
+                            <th class="py-3 px-4">Package</th>
+                            <th class="py-3 px-4">Price</th>
+                            <th class="py-3 px-4">Group / Client</th>
+                            <th class="py-3 px-4">Status</th>
+                            <th class="py-3 px-4">Images</th>
+                            <th class="py-3 px-4">Created</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ordersTableBody" class="divide-y divide-slate-800/60 font-medium">
+                        {% for o in orders.order_list %}
+                        <tr class="hover:bg-slate-800/30 transition">
+                            <td class="py-3 px-4 font-bold text-white">#{{ o.id }}</td>
+                            <td class="py-3 px-4 font-mono text-slate-200">{{ o.email }}</td>
+                            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-semibold">{{ o.package }}</span></td>
+                            <td class="py-3 px-4 font-semibold text-emerald-400">{{ o.price or '-' }}</td>
+                            <td class="py-3 px-4 text-slate-400">{{ o.client_name or o.client_chat_id }}</td>
+                            <td class="py-3 px-4">
+                                {% if o.status == 'Delivered' %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Delivered</span>
+                                {% elif o.status == 'CANCELLED' or o.status == 'Cancelled' %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">Cancelled</span>
+                                {% else %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">{{ o.status }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="py-3 px-4 text-slate-400">
+                                {% if o.image_count > 0 %}
+                                <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[11px]"><i class="fa-regular fa-image mr-1"></i>{{ o.image_count }}</span>
+                                {% else %}
+                                <span class="text-slate-600">-</span>
+                                {% endif %}
+                            </td>
+                            <td class="py-3 px-4 text-slate-400 text-[11px]">{{ o.created_at }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Pagination Bar -->
+            <div class="flex items-center justify-between pt-2 text-xs text-slate-400">
+                <span id="paginationInfo">Page {{ orders.page }} of {{ orders.total_pages }} ({{ orders.total }} total orders)</span>
+                <div class="flex items-center gap-2">
+                    <button onclick="changePage(-1)" id="prevBtn" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition">
+                        <i class="fa-solid fa-chevron-left mr-1"></i> Prev
+                    </button>
+                    <button onclick="changePage(1)" id="nextBtn" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition">
+                        Next <i class="fa-solid fa-chevron-right ml-1"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. Client Groups & Loader Summaries Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            
+            <!-- Client Groups Card -->
+            <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-sm space-y-3">
+                <h2 class="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                    <i class="fa-solid fa-users text-blue-400"></i> Client Groups & Balances
+                </h2>
+                <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-950/80 text-slate-400 text-[11px] uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr>
+                                <th class="py-2.5 px-3">Group Title</th>
+                                <th class="py-2.5 px-3">Cat</th>
+                                <th class="py-2.5 px-3">Balance</th>
+                                <th class="py-2.5 px-3">Orders</th>
+                            </tr>
+                        </thead>
+                        <tbody id="groupsTableBody" class="divide-y divide-slate-800/60 font-medium">
+                            {% for g in groups %}
+                            <tr class="hover:bg-slate-800/30">
+                                <td class="py-2 px-3 font-semibold text-white">{{ g.group_title }}</td>
+                                <td class="py-2 px-3"><span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300">{{ g.category }}</span></td>
+                                <td class="py-2 px-3 font-bold text-emerald-400">${{ g.balance }}</td>
+                                <td class="py-2 px-3 text-slate-400">{{ g.delivered_orders }} / {{ g.total_orders }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Loader Performance Card -->
+            <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-sm space-y-3">
+                <h2 class="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                    <i class="fa-solid fa-truck-fast text-emerald-400"></i> Loader Activity
+                </h2>
+                <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-950/80 text-slate-400 text-[11px] uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr>
+                                <th class="py-2.5 px-3">Loader Name</th>
+                                <th class="py-2.5 px-3">Group ID</th>
+                                <th class="py-2.5 px-3">Delivered Count</th>
+                            </tr>
+                        </thead>
+                        <tbody id="loadersTableBody" class="divide-y divide-slate-800/60 font-medium">
+                            {% for l in loaders %}
+                            <tr class="hover:bg-slate-800/30">
+                                <td class="py-2 px-3 font-semibold text-white">{{ l.name }}</td>
+                                <td class="py-2 px-3 font-mono text-slate-400">{{ l.group_id }}</td>
+                                <td class="py-2 px-3 font-bold text-emerald-400"><i class="fa-solid fa-check mr-1 text-[10px]"></i>{{ l.delivered_count }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="mt-auto border-t border-slate-800/80 py-4 text-center text-xs text-slate-500">
+        SmartBot V2 Engine • High-Speed Telegram Delivery Automation
+    </footer>
+
+    <!-- Dashboard JavaScript Logic -->
+    <script>
+        let currentPage = 1;
+        let totalPages = {{ orders.total_pages }};
+        let trendsChartInstance = null;
+
+        // Initialize Telegram WebApp Integration (if opened inside Telegram)
+        if (window.Telegram && window.Telegram.WebApp) {
+            window.Telegram.WebApp.ready();
+            window.Telegram.WebApp.expand();
+            
+            const initData = window.Telegram.WebApp.initData;
+            if (initData) {
+                fetch('/api/auth/webapp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ initData: initData })
+                }).catch(e => console.log('Telegram Auth:', e));
+            }
+        }
+
+        // Initialize 7-Day Chart
+        function initTrendsChart(labels, delivered, cancelled) {
+            const ctx = document.getElementById('trendsChart').getContext('2d');
+            if (trendsChartInstance) trendsChartInstance.destroy();
+
+            trendsChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Delivered',
+                            data: delivered,
+                            backgroundColor: 'rgba(16, 185, 129, 0.8)',
+                            borderRadius: 6,
+                        },
+                        {
+                            label: 'Cancelled',
+                            data: cancelled,
+                            backgroundColor: 'rgba(244, 63, 94, 0.8)',
+                            borderRadius: 6,
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: '#94a3b8', font: { family: 'Plus Jakarta Sans', size: 11 } } },
+                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', font: { family: 'Plus Jakarta Sans', size: 11 }, precision: 0 } }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#cbd5e1', font: { family: 'Plus Jakarta Sans', size: 12 } } }
+                    }
+                }
+            });
+        }
+
+        // Initial Chart Load
+        const initialTrends = {{ trends | tojson }};
+        initTrendsChart(initialTrends.labels, initialTrends.delivered, initialTrends.cancelled);
+
+        // Fetch and Update Live Orders
+        async function fetchOrders(page = 1) {
+            const search = document.getElementById('orderSearch').value;
+            const status = document.getElementById('statusFilter').value;
+
+            try {
+                const res = await fetch(`/api/orders?page=${page}&search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                
+                currentPage = data.page;
+                totalPages = data.total_pages;
+
+                const tbody = document.getElementById('ordersTableBody');
+                tbody.innerHTML = '';
+
+                data.items.forEach(o => {
+                    let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">${o.status}</span>`;
+                    if (o.status && o.status.toLowerCase() === 'delivered') {
+                        statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Delivered</span>`;
+                    } else if (o.status && o.status.toLowerCase() === 'cancelled') {
+                        statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">Cancelled</span>`;
+                    }
+
+                    const imgBadge = o.image_count > 0 
+                        ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[11px]"><i class="fa-regular fa-image mr-1"></i>${o.image_count}</span>` 
+                        : `<span class="text-slate-600">-</span>`;
+
+                    const row = `
+                        <tr class="hover:bg-slate-800/30 transition">
+                            <td class="py-3 px-4 font-bold text-white">#${o.id}</td>
+                            <td class="py-3 px-4 font-mono text-slate-200">${o.email || '-'}</td>
+                            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-semibold">${o.package || '-'}</span></td>
+                            <td class="py-3 px-4 font-semibold text-emerald-400">${o.price || '-'}</td>
+                            <td class="py-3 px-4 text-slate-400">${o.client_name || o.client_chat_id || '-'}</td>
+                            <td class="py-3 px-4">${statusBadge}</td>
+                            <td class="py-3 px-4">${imgBadge}</td>
+                            <td class="py-3 px-4 text-slate-400 text-[11px]">${o.created_at || '-'}</td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += row;
+                });
+
+                document.getElementById('paginationInfo').innerText = `Page ${data.page} of ${data.total_pages} (${data.total} total orders)`;
+                document.getElementById('prevBtn').disabled = (data.page <= 1);
+                document.getElementById('nextBtn').disabled = (data.page >= data.total_pages);
+            } catch (err) {
+                console.error('Fetch orders error:', err);
+            }
+        }
+
+        function changePage(delta) {
+            const next = currentPage + delta;
+            if (next >= 1 && next <= totalPages) {
+                fetchOrders(next);
+            }
+        }
+
+        let searchTimeout = null;
+        function handleSearch(e) {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                fetchOrders(1);
+            }, 300);
+        }
+
+        function filterOrders() {
+            fetchOrders(1);
+        }
+
+        async function refreshDashboard() {
+            const icon = document.getElementById('refreshIcon');
+            icon.classList.add('fa-spin');
+
+            try {
+                // Refresh Metrics
+                const mRes = await fetch('/api/metrics');
+                if (mRes.ok) {
+                    const m = await mRes.json();
+                    document.getElementById('m_total').innerText = m.total_orders;
+                    document.getElementById('m_today').innerText = `+${m.today_orders} today`;
+                    document.getElementById('m_delivered').innerText = m.delivered_orders;
+                    document.getElementById('m_rate').innerText = `${m.success_rate}% rate`;
+                    document.getElementById('m_pending').innerText = m.pending_orders;
+                    document.getElementById('m_cancelled').innerText = m.cancelled_orders;
+                    document.getElementById('m_volume').innerText = `$${m.total_delivered_volume}`;
+                    document.getElementById('m_today_vol').innerText = `$${m.today_delivered_volume}`;
+                    document.getElementById('m_wallet').innerText = `$${m.total_wallet_balance}`;
+                    document.getElementById('m_groups').innerText = m.total_groups;
+                    document.getElementById('m_loaders').innerText = m.total_loaders;
+                }
+
+                // Refresh Orders
+                await fetchOrders(currentPage);
+            } catch (err) {
+                console.error('Refresh error:', err);
+            } finally {
+                setTimeout(() => icon.classList.remove('fa-spin'), 600);
+            }
+        }
+
+        // Auto Refresh every 15 seconds
+        setInterval(refreshDashboard, 15000);
+    </script>
+</body>
+</html>

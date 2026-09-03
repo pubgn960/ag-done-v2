@@ -21,7 +21,7 @@ import shutil
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ForceReply, WebAppInfo
 from telegram.ext import ContextTypes
 from telegram.error import TelegramError
 from sqlalchemy import update as update_sql, select
@@ -3747,6 +3747,37 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         logger.exception(f"Error restoring database backup: {e}")
         await update.effective_message.reply_text(f"❌ Database restore failed: {e}")
+
+
+async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handles /dashboard and /panel commands.
+    Sends Telegram Mini-App button and direct Web Dashboard URL for Super Admins.
+    """
+    if not await check_admin_permission(update):
+        return
+
+    dashboard_url = Config.DASHBOARD_URL.rstrip('/') if Config.DASHBOARD_URL else ""
+    webapp_url = f"{dashboard_url}/webapp" if dashboard_url else ""
+
+    text = (
+        "📊 <b>SmartBot V2 Live Dashboard</b>\n\n"
+        "Real-time analytics, order tracking, client group balances, and loader performance directly inside Telegram or via your web browser."
+    )
+
+    buttons = []
+    if webapp_url:
+        buttons.append([InlineKeyboardButton("📱 Open Telegram Mini-App", web_app=WebAppInfo(url=webapp_url))])
+        buttons.append([InlineKeyboardButton("🌐 Open in Web Browser", url=dashboard_url)])
+    else:
+        text += (
+            "\n\n🔗 <b>Local / Railway Access:</b>\n"
+            f"Port: <code>{Config.DASHBOARD_PORT}</code>\n"
+            "<i>(Tip: Add <code>DASHBOARD_URL=https://your-railway-domain.up.railway.app</code> in Railway Variables to enable 1-click Mini-App button)</i>"
+        )
+
+    keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
