@@ -366,6 +366,7 @@ async def run_services() -> None:
 
     # 1. Initialize and start Telegram Bot polling non-blockingly
     await application.initialize()
+    await post_init(application)
     await application.start()
     await application.updater.start_polling(drop_pending_updates=True)
     logger.info("Telegram Bot active and polling for updates.")
