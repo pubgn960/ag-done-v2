@@ -214,15 +214,8 @@ async def post_init(application: Application) -> None:
     logger.info("Bot initialization complete. Active and listening for updates...")
 
 
-def main() -> None:
-    """Configures and launches the Telegram Bot Application."""
-    if not Config.BOT_TOKEN:
-        logger.critical("BOT_TOKEN is missing! Please configure it in .env file or environment variables.")
-        sys.exit(1)
-
-    logger.info("Starting Telegram Email Image Delivery Bot v1.2.0...")
-
-    # Build python-telegram-bot application
+def build_application() -> Application:
+    """Builds and returns the configured Application instance with all registered handlers."""
     application = (
         ApplicationBuilder()
         .token(Config.BOT_TOKEN)
@@ -396,16 +389,6 @@ async def run_services() -> None:
         await application.updater.stop()
         await application.stop()
         await application.shutdown()
-
-
-def build_application() -> Application:
-    """Builds and returns the configured Application instance."""
-    return (
-        ApplicationBuilder()
-        .token(Config.BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
 
 
 def main() -> None:
