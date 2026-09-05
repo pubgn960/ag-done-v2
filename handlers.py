@@ -246,74 +246,86 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"[CLIENT] Error checking waiting order for chat {chat.id}: {e}")
         waiting_order = None
+
     if waiting_order:
-        active_issue_type = waiting_order.issue_type or "wrong_name"
-        if validate_customer_update_for_issue(text_content, active_issue_type):
-            logger.info(f"[CUSTOMER_UPDATED]\nCustomer submitted updated account details for Order #{waiting_order.id}.")
-            logger.info(f"[DELIVERY_RESUMED]\nDelivery resumed for Order #{waiting_order.id}.")
+        category_chk = CLIENT_GROUPS_CACHE.get(chat.id, "A")
+        parsed_chk = parse_order_v2(text_content, category=category_chk)
+        is_full_new_order = parsed_chk.get("order_detected") and len(parsed_chk.get("packages", [])) > 0
 
-            clean_issue = (active_issue_type.value if hasattr(active_issue_type, 'value') else str(active_issue_type or "")).lower()
-            if clean_issue in ("wrong_password", LoaderIssueType.WRONG_PASSWORD.value):
-                new_raw_text = build_updated_raw_text_with_passwords(waiting_order.raw_text or "", text_content)
-            else:
-                new_raw_text = text_content
+        is_reply_to_original = False
+        if message.reply_to_message:
+            rep_id = message.reply_to_message.message_id
+            if rep_id in (waiting_order.original_message_id, waiting_order.loader_message_id):
+                is_reply_to_original = True
 
-            new_email = extract_email(text_content) or waiting_order.email
-            updated_order = await update_order_raw_text(waiting_order.id, new_raw_text, new_email)
+        if not (is_full_new_order and not is_reply_to_original):
+            active_issue_type = waiting_order.issue_type or "wrong_name"
+            if validate_customer_update_for_issue(text_content, active_issue_type):
+                logger.info(f"[CUSTOMER_UPDATED]\nCustomer submitted updated account details for Order #{waiting_order.id}.")
+                logger.info(f"[DELIVERY_RESUMED]\nDelivery resumed for Order #{waiting_order.id}.")
 
-            restored_status = "Pending"
-            if waiting_order.package_progress:
-                try:
-                    p_items = json.loads(waiting_order.package_progress)
-                    if any(it.get("status") == "Delivered" for it in p_items):
-                        restored_status = "Partially Delivered"
-                except Exception:
-                    pass
+                clean_issue = (active_issue_type.value if hasattr(active_issue_type, 'value') else str(active_issue_type or "")).lower()
+                if clean_issue in ("wrong_password", LoaderIssueType.WRONG_PASSWORD.value):
+                    new_raw_text = build_updated_raw_text_with_passwords(waiting_order.raw_text or "", text_content)
+                else:
+                    new_raw_text = text_content
 
-            await update_order_status(waiting_order.id, restored_status)
-            await update_order_issue_state(waiting_order.id, "Resolved")
+                new_email = extract_email(text_content) or waiting_order.email
+                updated_order = await update_order_raw_text(waiting_order.id, new_raw_text, new_email)
 
-            loader_chat_id = waiting_order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
-            if loader_chat_id and waiting_order.loader_message_id:
-                try:
-                    updated_card_text = format_full_loader_order_card(updated_order or waiting_order)
-                    progress_items = json.loads(updated_order.package_progress) if updated_order and updated_order.package_progress else []
-                    loader_kb = build_loader_package_keyboard(waiting_order.id, progress_items, None)
-
+                restored_status = "Pending"
+                if waiting_order.package_progress:
                     try:
-                        await context.bot.edit_message_caption(
-                            chat_id=loader_chat_id,
-                            message_id=waiting_order.loader_message_id,
-                            caption=updated_card_text,
-                            reply_markup=loader_kb
-                        )
+                        p_items = json.loads(waiting_order.package_progress)
+                        if any(it.get("status") == "Delivered" for it in p_items):
+                            restored_status = "Partially Delivered"
                     except Exception:
-                        await context.bot.edit_message_text(
+                        pass
+
+                await update_order_status(waiting_order.id, restored_status)
+                await update_order_issue_state(waiting_order.id, "Resolved")
+
+                loader_chat_id = waiting_order.loader_group_id or BOT_SETTINGS["delivery_group_id"]
+                if loader_chat_id and waiting_order.loader_message_id:
+                    try:
+                        updated_card_text = format_full_loader_order_card(updated_order or waiting_order)
+                        progress_items = json.loads(updated_order.package_progress) if updated_order and updated_order.package_progress else []
+                        loader_kb = build_loader_package_keyboard(waiting_order.id, progress_items, None)
+
+                        try:
+                            await context.bot.edit_message_caption(
+                                chat_id=loader_chat_id,
+                                message_id=waiting_order.loader_message_id,
+                                caption=updated_card_text,
+                                reply_markup=loader_kb
+                            )
+                        except Exception:
+                            await context.bot.edit_message_text(
+                                chat_id=loader_chat_id,
+                                message_id=waiting_order.loader_message_id,
+                                text=updated_card_text,
+                                reply_markup=loader_kb
+                            )
+
+                        await context.bot.send_message(
                             chat_id=loader_chat_id,
-                            message_id=waiting_order.loader_message_id,
-                            text=updated_card_text,
-                            reply_markup=loader_kb
+                            text="🔄 Customer updated the account details.\n\nYou may continue the delivery.",
+                            reply_to_message_id=waiting_order.loader_message_id
                         )
+                    except Exception as e:
+                        logger.exception(f"[CUSTOMER_UPDATED] Failed to update Loader Order Card for Order #{waiting_order.id}: {e}")
 
-                    await context.bot.send_message(
-                        chat_id=loader_chat_id,
-                        text="🔄 Customer updated the account details.\n\nYou may continue the delivery.",
-                        reply_to_message_id=waiting_order.loader_message_id
-                    )
-                except Exception as e:
-                    logger.exception(f"[CUSTOMER_UPDATED] Failed to update Loader Order Card for Order #{waiting_order.id}: {e}")
-
-            await safe_set_message_reaction(
-                bot=context.bot,
-                chat_id=chat.id,
-                message_id=message.message_id,
-                emoji="👍",
-                fallback_emoji=None,
-                log_tag="[REACTION]"
-            )
-            return
-        else:
-            logger.info(f"[CLIENT] Ignored customer message without valid account detail fields for paused Order #{waiting_order.id}.")
+                await safe_set_message_reaction(
+                    bot=context.bot,
+                    chat_id=chat.id,
+                    message_id=message.message_id,
+                    emoji="👍",
+                    fallback_emoji=None,
+                    log_tag="[REACTION]"
+                )
+                return
+            else:
+                logger.info(f"[CLIENT] Ignored customer message without valid account detail fields for paused Order #{waiting_order.id}.")
 
     # Keyword-Based Order Detection
     matched, keyword = contains_order_keyword(text_content)
