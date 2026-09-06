@@ -61,9 +61,9 @@ PHONE_REGEX = re.compile(
     r'(?:\+|\b00)\d{1,3}[\s.-]?\d{6,14}\b'
 )
 
-# Customer Reference / Order ID Prefix Regex (e.g. "Order #:54", "Order #54", "Order: #54", "991#", "#54", "#105")
+# Customer Reference / Order ID Prefix Regex (e.g. "Order #:54", "Order #54", "Order: #54", "991#", "#54", "#105", "635*Activision*")
 CUSTOMER_REF_REGEX = re.compile(
-    r'\border\s*#?\s*[:=\-]?\s*#?\s*(\d+)\b|^\s*#(\d+)\b|^\s*#?(\d+)#',
+    r'\border\s*#?\s*[:=\-]?\s*#?\s*(\d+)\b|^\s*#(\d+)\b|^\s*#?(\d+)#|^\s*(\d{2,4})\s*(?:#|[\-_\s*]+(?:activision|facebook|fb|meta)\b)',
     re.IGNORECASE | re.MULTILINE
 )
 
@@ -143,7 +143,7 @@ def extract_customer_ref_id(text: Optional[str]) -> Optional[str]:
         return None
     match = CUSTOMER_REF_REGEX.search(text)
     if match:
-        return match.group(1) or match.group(2) or match.group(3)
+        return match.group(1) or match.group(2) or match.group(3) or match.group(4)
     return None
 
 
@@ -235,10 +235,8 @@ def parse_order_v2(
             continue
 
         # Ignore standalone platform headers like "*facebook*", "*Activision*", "Activación"
-        if l_strip.startswith("*") and l_strip.endswith("*"):
-            ignored_lines.add(idx)
-            continue
-        if l_lower in ("facebook", "fb", "meta", "activision", "activacion", "activación", "activision id"):
+        l_clean = re.sub(r'^[*_\s]+|[*_\s]+$', '', l_strip)
+        if l_clean.lower() in ("facebook", "fb", "meta", "activision", "activacion", "activación", "activision id"):
             ignored_lines.add(idx)
             continue
 
@@ -390,7 +388,7 @@ def parse_order_v2(
             for n in nums:
                 n_clean = re.sub(r'[.,]', '', n)
                 n_norm = normalize_package_alias(n_clean, aliases)
-                if n_norm in price_db or n_clean in price_db or n_norm in aliases or n_clean in aliases or (n_clean.isdigit() and int(n_clean) >= 400):
+                if n_norm in price_db or n_clean in price_db or n_norm in aliases or n_clean in aliases or (n_clean.isdigit() and 400 <= int(n_clean) < 10000000):
                     has_pkg_token = True
                     break
 
@@ -464,7 +462,7 @@ def parse_order_v2(
         raw_pkg_text = re.sub(r'\b' + re.escape(alias) + r'\b', target_pkg, raw_pkg_text, flags=re.IGNORECASE)
 
     # Normalize multiplier spaces
-    raw_pkg_text = re.sub(r'\s*([*xX×])\s*', r'\1', raw_pkg_text)
+    raw_pkg_text = re.sub(r'[ \t]*([*xX×])[ \t]*', r'\1', raw_pkg_text)
     # Normalize separators into +
     raw_pkg_text = re.sub(r'[,&/\n\r+|]+', '+', raw_pkg_text)
     raw_pkg_text = re.sub(r'\s+', '+', raw_pkg_text)
@@ -528,9 +526,9 @@ def parse_order_v2(
         unit_price = price_db.get(pkg)
         is_known = (unit_price is not None)
 
-        # Ignore 2FA code fragments (starting with 0 or matching 4+4 digits) from unknown packages
+        # Ignore 2FA code fragments (starting with 0 or matching 4+4 digits) or non-CP numbers (<400 or >=10M) from unknown packages
         if not is_known:
-            if pkg.startswith("0") or re.match(r'^\d{4}\s*\d{4}$', pkg) or (pkg_int < 400 and not has_cp):
+            if pkg.startswith("0") or re.match(r'^\d{4}\s*\d{4}$', pkg) or ((pkg_int < 400 or pkg_int >= 10000000) and not has_cp and not has_explicit_cp_pack):
                 continue
 
         for _ in range(qty):

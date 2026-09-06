@@ -17,6 +17,7 @@ import asyncio
 from telegram import BotCommand
 
 from email_parser import extract_email, extract_order_id, extract_package, extract_last_email
+from order_parser import parse_order_v2, extract_customer_ref_id
 from keywords import contains_order_keyword
 from delivery import chunk_list
 from media_collector import user_session_manager
@@ -4805,6 +4806,43 @@ class TestCrossBotLoaderReplyIsolation(unittest.IsolatedAsyncioTestCase):
         check_order = await get_order_by_id(order.id)
         self.assertEqual(check_order.status, "Pending")
         self.assertNotEqual(check_order.status, "Delivered")
+
+
+class TestOrderParserV2(unittest.TestCase):
+    """Tests parse_order_v2 customer ref prefix detection and bounded package parsing."""
+
+    def test_activision_header_ref_id(self):
+        raw = "635*Activision*\n\nNick: Maracay..\nCorreo: junior.antonioviloria@gmail.com\nContraseña: 23793556\n\n5k"
+        parsed = parse_order_v2(raw)
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["customer_ref_id"], "635")
+        self.assertEqual(parsed["email"], "junior.antonioviloria@gmail.com")
+        self.assertEqual(parsed["login_method"], "Activision")
+        self.assertEqual(parsed["username"], "Maracay..")
+        self.assertEqual(parsed["password"], "23793556")
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "5040")
+        self.assertEqual(parsed["unknown_packages"], [])
+
+    def test_facebook_header_ref_id(self):
+        raw = "635 FB\n\nNick: Test..\nCorreo: test@gmail.com\nContraseña: 12345678\n\n12.000"
+        parsed = parse_order_v2(raw)
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["customer_ref_id"], "635")
+        self.assertEqual(parsed["email"], "test@gmail.com")
+        self.assertEqual(parsed["login_method"], "Facebook")
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "12000")
+
+    def test_large_numeric_password_not_unknown_package(self):
+        raw = "Order #100\nCorreo: test2@gmail.com\nContraseña: 718569324\n5k"
+        parsed = parse_order_v2(raw)
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["customer_ref_id"], "100")
+        self.assertEqual(parsed["password"], "718569324")
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "5040")
+        self.assertEqual(parsed["unknown_packages"], [])
 
 
 if __name__ == "__main__":
