@@ -16,6 +16,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    ContextTypes,
     filters
 )
 
@@ -115,6 +116,11 @@ def validate_bot_command(cmd: BotCommand) -> bool:
     if not (1 <= len(cmd.description) <= 256):
         return False
     return True
+
+
+async def error_handler(update: Optional[object], context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Logs unexpected exceptions thrown during update processing in Telegram Application clearly."""
+    logger.error("Exception occurred while handling an update:", exc_info=context.error)
 
 
 async def periodic_maintenance_task() -> None:
@@ -222,6 +228,9 @@ def build_application() -> Application:
         .post_init(post_init)
         .build()
     )
+
+    # Register Global Application Error Handler
+    application.add_error_handler(error_handler)
 
     # Register Setup & Group Configuration Commands (supporting both lowercase and uppercase aliases)
     application.add_handler(CommandHandler("setup", setup_command))

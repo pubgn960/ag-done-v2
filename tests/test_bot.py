@@ -4844,6 +4844,20 @@ class TestOrderParserV2(unittest.TestCase):
         self.assertEqual(parsed["packages"][0]["package"], "5040")
         self.assertEqual(parsed["unknown_packages"], [])
 
+    def test_order_43_pickup_format(self):
+        raw = "43#\nJktxx03\n+584249290951\nKay24$\n\n74047761\n76499406\n82195550\n\n2400"
+        parsed = parse_order_v2(raw)
+        self.assertTrue(parsed["order_detected"])
+        self.assertEqual(parsed["customer_ref_id"], "43")
+        self.assertEqual(parsed["username"], "Jktxx03")
+        self.assertEqual(parsed["phone"], "+584249290951")
+        self.assertEqual(parsed["password"], "Kay24$")
+        self.assertEqual(parsed["recovery_codes"], ["74047761", "76499406", "82195550"])
+        self.assertEqual(len(parsed["packages"]), 1)
+        self.assertEqual(parsed["packages"][0]["package"], "2400")
+        self.assertEqual(parsed["packages"][0]["unit_price"], 16.5)
+        self.assertEqual(parsed["unknown_packages"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
