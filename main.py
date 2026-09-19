@@ -9,6 +9,7 @@ import re
 import sys
 import asyncio
 import logging
+from typing import Optional
 from telegram import BotCommand
 from telegram.ext import (
     Application,
