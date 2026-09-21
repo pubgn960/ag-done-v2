@@ -90,7 +90,7 @@ def get_dynamic_package_prices(category: str = "A") -> Dict[str, float]:
     cat = (category or "A").upper()
     fallback = {
         "108000": 563.0, "96000": 503.0, "72000": 375.0, "55200": 291.0,
-        "48000": 254.0, "43200": 229.0, "38400": 211.0, "24000": 132.0,
+        "48000": 254.0, "43200": 229.0, "38400": 211.0, "32400": 192.0, "24000": 132.0,
         "21600": 119.0, "19200": 109.0, "16800": 95.0, "14400": 82.0,
         "12000": 69.0, "10800": 64.0, "9600": 55.0, "7200": 42.0,
         "5040": 33.0, "4800": 29.0, "2400": 16.5, "880": 8.0,
@@ -303,6 +303,8 @@ def parse_order_v2(
                 h in l_lower for h in ("order", "pedido", "paquete", "cp pack", "cp", "mode", "time", "email", "correo", "password", "contraseña", "clave", "ign", "nick", "login")
             ) or (
                 clean_code_line.lower() in aliases or l_lower in aliases or clean_code_line in price_db or l_lower in price_db
+            ) or (
+                clean_code_line.isdigit() and 400 <= int(clean_code_line) <= 200000
             )
 
             if is_field_header and not is_rec_code:
@@ -372,10 +374,16 @@ def parse_order_v2(
                 "password:", "pass:", "pwd:", "contraseña:", "contrasena:", "clave:",
                 "contraseña de fb", "contrasena de fb"
             )
-            if val and val.lower() not in header_pass_kw:
-                password = val
+            if ":" in line:
+                if val:
+                    password = val
+                else:
+                    next_line_is_password = True
             else:
-                next_line_is_password = True
+                if val and val.lower() not in header_pass_kw:
+                    password = val
+                else:
+                    next_line_is_password = True
             continue
 
         # Check if line is a package candidate line

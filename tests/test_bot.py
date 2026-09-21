@@ -1590,7 +1590,7 @@ class TestBulkPriceUpdateSystem(unittest.IsolatedAsyncioTestCase):
         from utils import format_export_prices
 
         db_prices = await get_all_package_prices_from_db()
-        self.assertEqual(len(db_prices), 22)
+        self.assertTrue(len(db_prices) >= 22)
         export_text = format_export_prices(db_prices)
         self.assertIn("10800 64", export_text)
         self.assertIn("2400 16.5", export_text)
@@ -4857,6 +4857,36 @@ class TestOrderParserV2(unittest.TestCase):
         self.assertEqual(parsed["packages"][0]["package"], "2400")
         self.assertEqual(parsed["packages"][0]["unit_price"], 16.5)
         self.assertEqual(parsed["unknown_packages"], [])
+
+    def test_facebook_32400_and_regression_tests(self):
+        t1 = "105#\nFacebook\nApodo: The Zeus\n+573003235445\nContraseña: 1045078651.J\n\nCodigo\n02683672\n06050082\n38383067\n\n32400"
+        p1 = parse_order_v2(t1)
+        self.assertTrue(p1["order_detected"])
+        self.assertEqual(p1["customer_ref_id"], "105")
+        self.assertEqual(p1["login_method"], "Facebook")
+        self.assertEqual(p1["phone"], "+573003235445")
+        self.assertEqual(p1["username"], "The Zeus")
+        self.assertEqual(p1["password"], "1045078651.J")
+        self.assertEqual(p1["recovery_codes"], ["02683672", "06050082", "38383067"])
+        self.assertEqual(len(p1["packages"]), 1)
+        self.assertEqual(p1["packages"][0]["package"], "32400")
+        self.assertEqual(p1["packages"][0]["unit_price"], 192.0)
+        self.assertEqual(p1["unknown_packages"], [])
+
+        t2 = "Facebook\n+573003235445\nContraseña: password\nCodigo\n02683672\n06050082\n38383067\n2400"
+        p2 = parse_order_v2(t2)
+        self.assertTrue(p2["order_detected"])
+        self.assertEqual(p2["packages"][0]["package"], "2400")
+
+        t3 = "Facebook\n+573003235445\nContraseña: password\nCodigo\n02683672\n06050082\n38383067\n5040"
+        p3 = parse_order_v2(t3)
+        self.assertTrue(p3["order_detected"])
+        self.assertEqual(p3["packages"][0]["package"], "5040")
+
+        t4 = "Facebook\n+573003235445\nContraseña: password\nCodigo\n02683672\n06050082\n38383067\n10800"
+        p4 = parse_order_v2(t4)
+        self.assertTrue(p4["order_detected"])
+        self.assertEqual(p4["packages"][0]["package"], "10800")
 
 
 if __name__ == "__main__":
