@@ -97,7 +97,9 @@ from handlers import (
     pay_running_total_command_handler,
     manual_running_total_text_handler,
     running_total_undo_command_handler,
-    running_total_undo_callback_handler
+    running_total_undo_callback_handler,
+    turnoff_command,
+    turnon_command
 )
 
 # Initialize application logging
@@ -171,7 +173,9 @@ async def post_init(application: Application) -> None:
         BotCommand("user", "Manage Delivery Users"),
         BotCommand("users", "List Authorized Users"),
         BotCommand("groups", "Group Configuration"),
-        BotCommand("status", "Bot Status"),
+        BotCommand("status", "Bot Status & Diagnostics"),
+        BotCommand("turnoff", "Turn Off / Pause Bot Order Pickup"),
+        BotCommand("turnon", "Turn On / Resume Bot Order Pickup"),
         BotCommand("pending", "Pending Orders"),
         BotCommand("find", "Find Order"),
         BotCommand("stats", "Statistics"),
@@ -246,6 +250,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("reject", reject_order_command))
     application.add_handler(CommandHandler("groups", groups_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler(["turnoff", "pause", "stop"], turnoff_command))
+    application.add_handler(CommandHandler(["turnon", "resume"], turnon_command))
     application.add_handler(CommandHandler("removesource", removesource_command))
     application.add_handler(CommandHandler("removedelivery", removedelivery_command))
     application.add_handler(CommandHandler("resetgroups", resetgroups_command))

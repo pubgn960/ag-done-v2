@@ -4889,5 +4889,47 @@ class TestOrderParserV2(unittest.TestCase):
         self.assertEqual(p4["packages"][0]["package"], "10800")
 
 
+class TestBotPauseResumeCommands(unittest.IsolatedAsyncioTestCase):
+    """Tests /turnoff, /turnon, and /status commands."""
+
+    async def test_turnoff_turnon_state(self):
+        from database import BOT_SETTINGS, reload_auth_users_cache, reload_bot_settings_cache
+        from handlers import turnoff_command, turnon_command, status_command
+
+        class DummyUser:
+            id = 1573531032  # Super Admin ID
+
+        class DummyMessage:
+            def __init__(self):
+                self.replied_text = ""
+
+            async def reply_text(self, text, parse_mode=None):
+                self.replied_text = text
+
+        msg = DummyMessage()
+        up = type("Update", (), {
+            "effective_user": DummyUser(),
+            "effective_message": msg
+        })()
+
+        # Call /turnoff
+        await turnoff_command(up, None)
+        self.assertFalse(BOT_SETTINGS.get("bot_active"))
+        self.assertIn("OFF", msg.replied_text)
+
+        # Call /status
+        await status_command(up, None)
+        self.assertIn("OFF", msg.replied_text)
+
+        # Call /turnon
+        await turnon_command(up, None)
+        self.assertTrue(BOT_SETTINGS.get("bot_active"))
+        self.assertIn("ON", msg.replied_text)
+
+        # Call /status again
+        await status_command(up, None)
+        self.assertIn("ON", msg.replied_text)
+
+
 if __name__ == "__main__":
     unittest.main()

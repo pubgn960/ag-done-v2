@@ -46,7 +46,8 @@ BOT_SETTINGS: Dict[str, Any] = {
     "payment_review_group_id": Config.PAYMENT_REVIEW_GROUP_ID,
     "source_group_title": None,
     "delivery_group_title": None,
-    "payment_review_group_title": "Payment Review Group"
+    "payment_review_group_title": "Payment Review Group",
+    "bot_active": True
 }
 
 # Global in-memory user permission cache: telegram_user_id -> role ('admin' or 'delivery')
@@ -229,6 +230,7 @@ async def reload_bot_settings_cache() -> Dict[str, Any]:
     BOT_SETTINGS["source_group_title"] = settings.source_group_title
     BOT_SETTINGS["delivery_group_title"] = settings.delivery_group_title
     BOT_SETTINGS["payment_review_group_title"] = getattr(settings, "payment_review_group_title", None) or "Payment Review Group"
+    BOT_SETTINGS["bot_active"] = BOT_SETTINGS.get("bot_active", True)
 
     # Pre-load Client Groups into CLIENT_GROUPS_CACHE in RAM
     async with AsyncSessionLocal() as session:

@@ -234,6 +234,11 @@ async def source_group_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.debug(f"[CLIENT] Message {message.message_id} in Client Group has no text/caption content.")
         return
 
+    # Check if bot order pickup is turned OFF / paused (/turnoff)
+    if not BOT_SETTINGS.get("bot_active", True):
+        logger.info(f"[CLIENT] Bot order pickup is turned OFF (/turnoff active). Ignored message in chat {chat.id}.")
+        return
+
     # Check if this customer message is a cancellation request replying to an order message
     if message.reply_to_message:
         if re.match(r'^(?:/?cancel|/?cancel\s*order)$', text_content.strip(), re.IGNORECASE):
@@ -3382,6 +3387,38 @@ async def resetgroups_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.effective_message.reply_text("✅ All group settings have been reset.", parse_mode="HTML")
 
 
+async def turnoff_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles /turnoff (or /pause, /stop) command to turn OFF bot order pickup in Client Groups."""
+    if not await check_admin_permission(update):
+        return
+
+    BOT_SETTINGS["bot_active"] = False
+    logger.info(f"[BOT_STATE] Bot order pickup turned OFF by user {update.effective_user.id}")
+
+    msg = (
+        "🔴 <b>Bot Order Pickup Turned OFF</b>\n\n"
+        "Order detection in Client Groups is now <b>PAUSED</b>.\n"
+        "Customers' new messages will be ignored until <code>/turnon</code> is called."
+    )
+    await update.effective_message.reply_text(msg, parse_mode="HTML")
+
+
+async def turnon_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles /turnon (or /resume) command to turn ON bot order pickup in Client Groups."""
+    if not await check_admin_permission(update):
+        return
+
+    BOT_SETTINGS["bot_active"] = True
+    logger.info(f"[BOT_STATE] Bot order pickup turned ON by user {update.effective_user.id}")
+
+    msg = (
+        "🟢 <b>Bot Order Pickup Turned ON</b>\n\n"
+        "Order detection in Client Groups is now <b>ACTIVE</b>.\n"
+        "The bot is actively processing customer orders."
+    )
+    await update.effective_message.reply_text(msg, parse_mode="HTML")
+
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles /status command displaying system diagnostics."""
     if not await check_admin_permission(update):
@@ -3398,9 +3435,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if settings.delivery_group_id:
         del_str += f" ({settings.delivery_group_id})"
 
+    is_active = BOT_SETTINGS.get("bot_active", True)
+    status_str = "🟢 Active (ON)" if is_active else "🔴 Turned Off / Paused (OFF)"
+
     msg = (
-        "🤖 <b>Bot Status</b>\n\n"
-        f"<b>Status:</b> Online\n"
+        "🤖 <b>Bot Status & Diagnostics</b>\n\n"
+        f"<b>Order Pickup Status:</b> {status_str}\n"
+        f"<b>System Status:</b> Online\n"
         f"<b>Database:</b> Connected ({get_db_type_name()})\n"
         f"<b>Client Group:</b> {src_str}\n"
         f"<b>Loader Group:</b> {del_str}\n"
