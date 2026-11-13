@@ -4931,5 +4931,125 @@ class TestBotPauseResumeCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ON", msg.replied_text)
 
 
+class TestDoubleCPEventPricing(unittest.TestCase):
+    """Tests CODM Double CP Event pricing rules, real orders #67, #68, #69, and combined CP formats."""
+
+    def test_exact_double_cp_mappings(self):
+        from utils import calculate_test_price
+        from order_parser import parse_order_v2
+
+        expected_mappings = {
+            "400+400": 4.75,
+            "800+800": 9.0,
+            "2000+2000": 21.0,
+            "4000+4000": 42.0,
+            "8000+8000": 82.0,
+        }
+        for pkg_str, expected_price in expected_mappings.items():
+            parsed = parse_order_v2(pkg_str)
+            self.assertEqual(len(parsed["packages"]), 1, f"Expected 1 package for {pkg_str}")
+            self.assertEqual(parsed["packages"][0]["package"], pkg_str)
+            self.assertEqual(parsed["packages"][0]["unit_price"], expected_price)
+            self.assertEqual(parsed["unknown_packages"], [])
+            self.assertEqual(parsed["total_price"], expected_price)
+            self.assertEqual(calculate_test_price(pkg_str), expected_price)
+
+    def test_real_orders_67_68_69(self):
+        from order_parser import parse_order_v2
+        from utils import calculate_test_price
+
+        order_67 = (
+            "Order #67:\n"
+            "Email: customer67@gmail.com\n"
+            "Pass: Secret67!\n"
+            "Package: 4000+4000"
+        )
+        p67 = parse_order_v2(order_67)
+        self.assertTrue(p67["order_detected"])
+        self.assertEqual(p67["customer_ref_id"], "67")
+        self.assertEqual(len(p67["packages"]), 1)
+        self.assertEqual(p67["packages"][0]["package"], "4000+4000")
+        self.assertEqual(p67["unknown_packages"], [])
+        self.assertEqual(p67["total_price"], 42.0)
+        self.assertEqual(calculate_test_price(order_67), 42.0)
+
+        order_68 = (
+            "Order #68:\n"
+            "Email: customer68@gmail.com\n"
+            "Pass: Secret68!\n"
+            "Package: 8000+8000"
+        )
+        p68 = parse_order_v2(order_68)
+        self.assertTrue(p68["order_detected"])
+        self.assertEqual(p68["customer_ref_id"], "68")
+        self.assertEqual(len(p68["packages"]), 1)
+        self.assertEqual(p68["packages"][0]["package"], "8000+8000")
+        self.assertEqual(p68["unknown_packages"], [])
+        self.assertEqual(p68["total_price"], 82.0)
+        self.assertEqual(calculate_test_price(order_68), 82.0)
+
+        order_69 = (
+            "Order #69:\n"
+            "Email: customer69@gmail.com\n"
+            "Pass: Secret69!\n"
+            "Package: 2000+2000"
+        )
+        p69 = parse_order_v2(order_69)
+        self.assertTrue(p69["order_detected"])
+        self.assertEqual(p69["customer_ref_id"], "69")
+        self.assertEqual(len(p69["packages"]), 1)
+        self.assertEqual(p69["packages"][0]["package"], "2000+2000")
+        self.assertEqual(p69["unknown_packages"], [])
+        self.assertEqual(p69["total_price"], 21.0)
+        self.assertEqual(calculate_test_price(order_69), 21.0)
+
+    def test_parenthesized_combined_totals_and_formatting_variants(self):
+        from order_parser import parse_order_v2
+        from utils import calculate_test_price
+
+        variants = [
+            ("400+400 (800)", "400+400", 4.75),
+            ("800+800 (1,600)", "800+800", 9.0),
+            ("2,000+2,000 (4,000)", "2000+2000", 21.0),
+            ("4,000+4,000 (8,000)", "4000+4000", 42.0),
+            ("8,000+8,000 (16,000)", "8000+8000", 82.0),
+            ("4000 + 4000", "4000+4000", 42.0),
+            ("4k+4k", "4000+4000", 42.0),
+            ("8k+8k", "8000+8000", 82.0),
+            ("2k+2k", "2000+2000", 21.0),
+        ]
+        for text, expected_pkg, expected_price in variants:
+            parsed = parse_order_v2(text)
+            self.assertEqual(len(parsed["packages"]), 1, f"Failed single package check for '{text}': {parsed['packages']}")
+            self.assertEqual(parsed["packages"][0]["package"], expected_pkg)
+            self.assertEqual(parsed["unknown_packages"], [])
+            self.assertEqual(parsed["total_price"], expected_price)
+            self.assertEqual(calculate_test_price(text), expected_price)
+
+    def test_multipliers_combinations_and_normal_packages_preserved(self):
+        from utils import calculate_test_price, parse_bulk_prices_input
+
+        # Multipliers and combinations with Double CP
+        self.assertEqual(calculate_test_price("4000+4000*2"), 84.0)
+        self.assertEqual(calculate_test_price("2*4000+4000"), 84.0)
+        self.assertEqual(calculate_test_price("4000+4000 + 2400"), 58.5)
+
+        # Normal packages preserved
+        self.assertEqual(calculate_test_price("420"), 4.5)
+        self.assertEqual(calculate_test_price("880"), 8.0)
+        self.assertEqual(calculate_test_price("2400"), 16.5)
+        self.assertEqual(calculate_test_price("5040"), 33.0)
+        self.assertEqual(calculate_test_price("5000"), 33.0)
+        self.assertEqual(calculate_test_price("10800"), 64.0)
+        self.assertEqual(calculate_test_price("5000+2400"), 49.5)
+
+        # Bulk price input parser supports Double CP notation
+        parsed_map, err = parse_bulk_prices_input("4000+4000 42\n8000+8000 = 82\n2000+2000 : 21")
+        self.assertIsNone(err)
+        self.assertEqual(parsed_map["4000+4000"], 42.0)
+        self.assertEqual(parsed_map["8000+8000"], 82.0)
+        self.assertEqual(parsed_map["2000+2000"], 21.0)
+
+
 if __name__ == "__main__":
     unittest.main()

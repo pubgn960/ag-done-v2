@@ -148,7 +148,11 @@ def extract_order_section(text: Optional[str]) -> Optional[str]:
                 continue
             # Package line containing catalog numbers or aliases when not under an unrelated header
             elif not any(line_lower.startswith(h) for h in OTHER_SECTION_HEADERS) and line_lower not in STANDALONE_HEADERS and not EMAIL_REGEX.search(line_strip):
-                if re.search(r'\b(?:108000|96000|72000|48000|43200|38400|24000|21600|19200|16800|14400|12000|10800|9600|7200|5040|2400|880|420|80|5k|10k|2\.4k|2,4k)\b', line_lower) or re.search(r'\b\d+(?:cp)?[*xX×]\d+', line_lower):
+                if (
+                    re.search(r'\b(?:108000|96000|72000|55200|48000|43200|38400|32400|24000|21600|19200|16800|16000|14400|12000|10800|9600|8000|7200|5040|4800|4000|2400|1600|880|420|80|5k|10k|2\.4k|2,4k)\b', line_lower)
+                    or re.search(r'\b\d+(?:cp)?[*xX×]\d+', line_lower)
+                    or re.search(r'\b(?:400|800|2[.,]?000|4[.,]?000|8[.,]?000|2k|4k|8k)\s*\+\s*(?:400|800|2[.,]?000|4[.,]?000|8[.,]?000|2k|4k|8k)\b', line_lower)
+                ):
                     in_order_section = True
                     extracted_lines.append(line_strip)
                     continue

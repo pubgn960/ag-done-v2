@@ -37,6 +37,14 @@ DEFAULT_PACKAGE_ALIASES: Dict[str, str] = {
     "10,8k": "10800",
     "5.04k": "5040",
     "5,04k": "5040",
+    "400+400": "400+400",
+    "800+800": "800+800",
+    "2000+2000": "2000+2000",
+    "4000+4000": "4000+4000",
+    "8000+8000": "8000+8000",
+    "2k+2k": "2000+2000",
+    "4k+4k": "4000+4000",
+    "8k+8k": "8000+8000",
 }
 
 # Supported Platforms (case-insensitive)
@@ -94,7 +102,10 @@ def get_dynamic_package_prices(category: str = "A") -> Dict[str, float]:
         "21600": 119.0, "19200": 109.0, "16800": 95.0, "14400": 82.0,
         "12000": 69.0, "10800": 64.0, "9600": 55.0, "7200": 42.0,
         "5040": 33.0, "4800": 29.0, "2400": 16.5, "880": 8.0,
-        "420": 4.5, "80": 1.0
+        "420": 4.5, "80": 1.0,
+        "8000+8000": 82.0, "4000+4000": 42.0, "2000+2000": 21.0,
+        "800+800": 9.0, "400+400": 4.75,
+        "16000": 82.0, "8000": 42.0, "4000": 21.0, "1600": 9.0
     }
     try:
         from utils import PACKAGE_PRICES_CAT_A, PACKAGE_PRICES_CAT_B, TEST_PACKAGE_PRICES
@@ -125,9 +136,16 @@ def normalize_package_alias(pkg_name: Optional[str], alias_map: Optional[Dict[st
         return ""
     pkg_str = str(pkg_name).strip()
 
-    # Strip dots/commas from thousands formatted numbers (e.g. 12.000 -> 12000, 4.800 -> 4800)
-    if re.match(r'^\d{1,3}[.,]\d{3}$', pkg_str):
-        pkg_str = re.sub(r'[.,]', '', pkg_str)
+    # Strip dots/commas from thousands formatted numbers (e.g. 12.000 -> 12000, 4.800 -> 4800, 4,000+4,000 -> 4000+4000)
+    pkg_str = re.sub(r'\b(\d{1,3})[.,](\d{3})\b', r'\1\2', pkg_str)
+
+    # Normalize Double CP spacing and optional parenthesized combined total e.g. "4000 + 4000 (8000)" -> "4000+4000"
+    pkg_str = re.sub(
+        r'^(400|800|2000|4000|8000|2k|4k|8k)\s*\+\s*\1(?:\s*\(\s*[\d.,]+\s*(?:cp)?\s*\))?(?:\s*cp)?$',
+        r'\1+\1',
+        pkg_str,
+        flags=re.IGNORECASE
+    )
 
     aliases = dict(DEFAULT_PACKAGE_ALIASES)
     if alias_map:
@@ -299,10 +317,11 @@ def parse_order_v2(
                 or bool(re.match(r'^\d{6,12}$', clean_code_line))
             )
 
+            norm_code_line = normalize_package_alias(clean_code_line, aliases)
             is_field_header = any(
-                h in l_lower for h in ("order", "pedido", "paquete", "cp pack", "cp", "mode", "time", "email", "correo", "password", "contraseña", "clave", "ign", "nick", "login")
+                h in l_lower for h in ("order", "pedido", "paquete", "package", "cp pack", "cp", "mode", "time", "email", "correo", "password", "contraseña", "clave", "ign", "nick", "login")
             ) or (
-                clean_code_line.lower() in aliases or l_lower in aliases or clean_code_line in price_db or l_lower in price_db
+                clean_code_line.lower() in aliases or l_lower in aliases or clean_code_line in price_db or l_lower in price_db or norm_code_line in price_db or norm_code_line in aliases
             ) or (
                 clean_code_line.isdigit() and 400 <= int(clean_code_line) <= 200000
             )
@@ -459,15 +478,27 @@ def parse_order_v2(
 
     raw_pkg_text = "\n".join(package_candidate_lines)
 
-    # Clean CP prefixes and suffixes e.g. "CP: 7200" -> "7200", "7200cp." -> "7200"
-    raw_pkg_text = re.sub(r'\bcp\s*[:=\-]?\s*', '', raw_pkg_text, flags=re.IGNORECASE)
+    # Clean CP/Package prefixes and suffixes e.g. "CP: 7200" -> "7200", "Package: 4000+4000" -> "4000+4000", "7200cp." -> "7200"
+    raw_pkg_text = re.sub(r'\b(?:cp|packages?|paquetes?)\s*[:=\-]?\s*', '', raw_pkg_text, flags=re.IGNORECASE)
     raw_pkg_text = re.sub(r'(\d+)\s*cp\.?\b', r'\1', raw_pkg_text, flags=re.IGNORECASE)
 
-    # Normalize thousands separators (12.000 -> 12000, 4.800 -> 4800, 7.200 -> 7200, 7,200 -> 7200)
+    # Normalize thousands separators (12.000 -> 12000, 4.800 -> 4800, 7.200 -> 7200, 7,200 -> 7200, 4,000+4,000 -> 4000+4000)
     raw_pkg_text = re.sub(r'\b(\d{1,3})[.,](\d{3})\b', r'\1\2', raw_pkg_text)
+
+    # Normalize Double CP shorthand k-notations and protect Double CP combined packages before '+' splitting
+    raw_pkg_text = re.sub(r'\b2k\s*\+\s*2k\b', '2000+2000', raw_pkg_text, flags=re.IGNORECASE)
+    raw_pkg_text = re.sub(r'\b4k\s*\+\s*4k\b', '4000+4000', raw_pkg_text, flags=re.IGNORECASE)
+    raw_pkg_text = re.sub(r'\b8k\s*\+\s*8k\b', '8000+8000', raw_pkg_text, flags=re.IGNORECASE)
+    raw_pkg_text = re.sub(
+        r'\b(400|800|2000|4000|8000)\s*\+\s*\1\b(?:\s*\(\s*\d+\s*\))?',
+        r'\1__DCP__\1',
+        raw_pkg_text
+    )
 
     # Normalize aliases first in pkg text (case-insensitive)
     for alias, target_pkg in sorted(aliases.items(), key=lambda x: -len(x[0])):
+        if "+" in alias:
+            continue
         raw_pkg_text = re.sub(r'\b' + re.escape(alias) + r'\b', target_pkg, raw_pkg_text, flags=re.IGNORECASE)
 
     # Normalize multiplier spaces
@@ -476,13 +507,13 @@ def parse_order_v2(
     raw_pkg_text = re.sub(r'[,&/\n\r+|]+', '+', raw_pkg_text)
     raw_pkg_text = re.sub(r'\s+', '+', raw_pkg_text)
 
-    segments = [s.strip() for s in raw_pkg_text.split('+') if s.strip()]
+    segments = [s.strip().replace("__DCP__", "+") for s in raw_pkg_text.split('+') if s.strip()]
 
     segment_regex = re.compile(
         r'^(?:'
-        r'(?P<num1>\d+)(?:cp)?[*xX×](?P<num2>\d+)(?:cp)?'
+        r'(?P<num1>\d+(?:\+\d+)?)(?:cp)?[*xX×](?P<num2>\d+(?:\+\d+)?)(?:cp)?'
         r'|'
-        r'(?P<pkg_standalone>\d+)(?:cp)?[\.]?'
+        r'(?P<pkg_standalone>\d+(?:\+\d+)?)(?:cp)?[\.]?'
         r')$',
         re.IGNORECASE
     )
@@ -503,19 +534,21 @@ def parse_order_v2(
             pkg = gd["pkg_standalone"]
             qty = 1
         elif gd.get("num1") and gd.get("num2"):
-            n1 = int(gd["num1"])
-            n2 = int(gd["num2"])
+            s1 = gd["num1"]
+            s2 = gd["num2"]
 
-            n1_norm = normalize_package_alias(str(n1), aliases)
-            n2_norm = normalize_package_alias(str(n2), aliases)
+            n1_norm = normalize_package_alias(s1, aliases)
+            n2_norm = normalize_package_alias(s2, aliases)
 
-            if n2_norm in price_db:
+            if n2_norm in price_db and s1.isdigit():
                 pkg = n2_norm
-                qty = n1
-            elif n1_norm in price_db:
+                qty = int(s1)
+            elif n1_norm in price_db and s2.isdigit():
                 pkg = n1_norm
-                qty = n2
-            else:
+                qty = int(s2)
+            elif s1.isdigit() and s2.isdigit():
+                n1 = int(s1)
+                n2 = int(s2)
                 if n1 >= n2:
                     pkg = n1_norm
                     qty = n2

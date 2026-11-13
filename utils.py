@@ -472,7 +472,9 @@ def get_db_type_name() -> str:
 SUPPORTED_PACKAGES: Set[str] = {
     "80", "420", "880", "2400", "4800", "5040", "7200", "9600", "10800",
     "12000", "14400", "16800", "19200", "21600", "24000", "32400", "38400", "43200",
-    "48000", "55200", "72000", "96000", "108000"
+    "48000", "55200", "72000", "96000", "108000",
+    "400+400", "800+800", "2000+2000", "4000+4000", "8000+8000",
+    "1600", "4000", "8000", "16000"
 }
 
 PACKAGE_PRICES: Dict[str, float] = {
@@ -499,6 +501,15 @@ PACKAGE_PRICES: Dict[str, float] = {
     "880": 8.0,
     "420": 4.5,
     "80": 1.0,
+    "8000+8000": 82.0,
+    "4000+4000": 42.0,
+    "2000+2000": 21.0,
+    "800+800": 9.0,
+    "400+400": 4.75,
+    "16000": 82.0,
+    "8000": 42.0,
+    "4000": 21.0,
+    "1600": 9.0,
 }
 
 PACKAGE_PRICES_CAT_A: Dict[str, float] = dict(PACKAGE_PRICES)
@@ -561,6 +572,7 @@ def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Opti
         if not clean_line:
             continue
 
+        clean_line = re.sub(r'(\d+)\s*\+\s*(\d+)', r'\1+\2', clean_line)
         parts = re.split(r'\s*(?:->|=>|=|\:|\s)\s*', clean_line)
         parts = [p for p in parts if p]
 
@@ -573,7 +585,7 @@ def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Opti
         pkg_clean = raw_pkg.replace('.', '').replace(',', '')
         canonical_pkg = normalize_package_alias(pkg_clean)
 
-        if not canonical_pkg.isdigit():
+        if not (canonical_pkg.isdigit() or re.match(r'^\d+\+\d+$', canonical_pkg)):
             return None, f"❌ Unknown Package\n\n{raw_pkg}"
 
         if canonical_pkg in seen_packages:
