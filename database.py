@@ -1438,7 +1438,7 @@ DEFAULT_PACKAGE_PRICES: Dict[str, float] = {
 
 async def seed_and_load_package_prices(category: str = "A") -> Dict[str, float]:
     """
-    Seeds default package prices into DB for specific category ('A' or 'B') if empty,
+    Seeds default package prices into DB for specific category ('A' or 'B') ONLY if empty,
     loads package prices from DB, and updates in-memory cache for that category.
     """
     from utils import reload_package_prices_cache
@@ -1449,17 +1449,16 @@ async def seed_and_load_package_prices(category: str = "A") -> Dict[str, float]:
         res = await session.execute(stmt)
         existing_prices = {p.package: p.price for p in res.scalars().all()}
 
-        missing = set(DEFAULT_PACKAGE_PRICES.keys()) - set(existing_prices.keys())
-        if missing:
-            for pkg in missing:
+        if not existing_prices:
+            for pkg, default_price in DEFAULT_PACKAGE_PRICES.items():
                 session.add(PackagePrice(
                     category=cat,
                     package=pkg,
-                    price=DEFAULT_PACKAGE_PRICES[pkg],
+                    price=default_price,
                     updated_at=datetime.now(timezone.utc)
                 ))
             await session.commit()
-            logger.info(f"[PRICE_DB] Seeded {len(missing)} missing default package prices into database for Category {cat}.")
+            logger.info(f"[PRICE_DB] Seeded {len(DEFAULT_PACKAGE_PRICES)} default package prices into empty database for Category {cat}.")
 
             res = await session.execute(select(PackagePrice).where(PackagePrice.category == cat))
             existing_prices = {p.package: p.price for p in res.scalars().all()}
@@ -1487,14 +1486,20 @@ async def bulk_update_package_prices_in_db(
     updated_by_id: Optional[int] = None
 ) -> bool:
     """
-    Atomically performs UPSERT for package prices in the database for Category 'A' or 'B'.
-    - Updates only specified category's price list.
+    Atomically performs FULL REPLACE for package prices in the database for Category 'A' or 'B'.
+    - Completely removes all previously saved Export Price entries for the specified category.
+    - Inserts ONLY the packages and prices from the newly submitted list.
     - Category A updates DO NOT affect Category B. Category B updates DO NOT affect Category A.
     - Reloads category in-memory cache directly from the database upon success.
     """
     from utils import reload_package_prices_cache
     from order_parser import normalize_package_alias
     cat = (category or "A").upper()
+
+    normalized_map: Dict[str, float] = {}
+    for raw_pkg, new_price in price_map.items():
+        canonical_pkg = normalize_package_alias(str(raw_pkg))
+        normalized_map[canonical_pkg] = float(new_price)
 
     async with AsyncSessionLocal() as session:
         try:
@@ -1503,28 +1508,23 @@ async def bulk_update_package_prices_in_db(
 
             now = datetime.now(timezone.utc)
 
-            for raw_pkg, new_price in price_map.items():
-                canonical_pkg = normalize_package_alias(str(raw_pkg))
-                old_p = old_prices.get(canonical_pkg)
-                stmt = select(PackagePrice).where(
-                    PackagePrice.category == cat,
-                    PackagePrice.package == canonical_pkg
-                )
-                existing = (await session.execute(stmt)).scalar_one_or_none()
-                if existing:
-                    existing.price = float(new_price)
-                    existing.updated_by = updated_by_id
-                    existing.updated_at = now
-                else:
-                    session.add(PackagePrice(
-                        category=cat,
-                        package=canonical_pkg,
-                        price=float(new_price),
-                        updated_by=updated_by_id,
-                        updated_at=now
-                    ))
+            # Atomic full replacement: delete all existing PackagePrice entries for this category
+            await session.execute(delete(PackagePrice).where(PackagePrice.category == cat))
 
+            for canonical_pkg, new_price in normalized_map.items():
+                old_p = old_prices.get(canonical_pkg)
+                session.add(PackagePrice(
+                    category=cat,
+                    package=canonical_pkg,
+                    price=float(new_price),
+                    updated_by=updated_by_id,
+                    updated_at=now
+                ))
                 logger.info(f"[PRICE_UPDATE] Category {cat} Package {canonical_pkg}: Old {old_p} -> New {new_price} | Updated By #{updated_by_id}")
+
+            removed_pkgs = set(old_prices.keys()) - set(normalized_map.keys())
+            if removed_pkgs:
+                logger.info(f"[PRICE_UPDATE] Category {cat} Removed {len(removed_pkgs)} old package(s): {sorted(removed_pkgs)}")
 
             await session.commit()
 
@@ -1532,7 +1532,7 @@ async def bulk_update_package_prices_in_db(
             res_all = await session.execute(select(PackagePrice).where(PackagePrice.category == cat))
             all_db_prices = {p.package: p.price for p in res_all.scalars().all()}
             reload_package_prices_cache(all_db_prices, category=cat)
-            logger.info(f"[PRICE_UPDATE] Successfully upserted {len(price_map)} Category {cat} prices in database. Total in Cat {cat}: {len(all_db_prices)}.")
+            logger.info(f"[PRICE_UPDATE] Successfully replaced Category {cat} price list with {len(all_db_prices)} package(s) in database.")
             return True
         except Exception as e:
             await session.rollback()
@@ -1548,13 +1548,46 @@ async def update_single_package_price_in_db(
 ) -> bool:
     """
     Updates price for a single package in DB via UPSERT and reloads in-memory cache for category.
-    Canonical package alias normalization is applied.
+    Canonical package alias normalization is applied. Does not delete other packages.
     """
+    from utils import reload_package_prices_cache
     from order_parser import normalize_package_alias
-    canonical_pkg = normalize_package_alias(pkg)
+    cat = (category or "A").upper()
+    canonical_pkg = normalize_package_alias(str(pkg))
 
-    success = await bulk_update_package_prices_in_db({canonical_pkg: price_val}, category=category, updated_by_id=updated_by_id)
-    return success
+    async with AsyncSessionLocal() as session:
+        try:
+            now = datetime.now(timezone.utc)
+            stmt = select(PackagePrice).where(
+                PackagePrice.category == cat,
+                PackagePrice.package == canonical_pkg
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            old_p = existing.price if existing else None
+            if existing:
+                existing.price = float(price_val)
+                existing.updated_by = updated_by_id
+                existing.updated_at = now
+            else:
+                session.add(PackagePrice(
+                    category=cat,
+                    package=canonical_pkg,
+                    price=float(price_val),
+                    updated_by=updated_by_id,
+                    updated_at=now
+                ))
+
+            await session.commit()
+
+            res_all = await session.execute(select(PackagePrice).where(PackagePrice.category == cat))
+            all_db_prices = {p.package: p.price for p in res_all.scalars().all()}
+            reload_package_prices_cache(all_db_prices, category=cat)
+            logger.info(f"[PRICE_UPDATE] Single package upsert Category {cat} Package {canonical_pkg}: Old {old_p} -> New {price_val} | Updated By #{updated_by_id}")
+            return True
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"[PRICE_UPDATE] Single package transaction rolled back due to error: {e}")
+            raise e
 
 
 # ==========================================

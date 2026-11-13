@@ -1725,7 +1725,7 @@ async def price_input_text_handler(update: Update, context: ContextTypes.DEFAULT
 
 async def exportprices_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Super Admin command /exportprices.
+    Super Admin command /exportprices [A|B].
     Reads ALL package prices from the database (NOT hardcoded values)
     and replies with the current production price list.
     """
@@ -1734,15 +1734,21 @@ async def exportprices_command_handler(update: Update, context: ContextTypes.DEF
         logger.warning(f"[PRICE_EXPORT] Unauthorized /exportprices attempt by user #{user.id if user else 'Unknown'}.")
         return
 
+    target_category = "A"
+    if getattr(context, "args", None):
+        arg_cat = str(context.args[0]).strip().upper()
+        if arg_cat in ("A", "B"):
+            target_category = arg_cat
+
     try:
-        prices = await get_all_package_prices_from_db()
+        prices = await get_all_package_prices_from_db(category=target_category)
         if not prices:
-            prices = PACKAGE_PRICES
+            prices = PACKAGE_PRICES_CAT_B if target_category == "B" else PACKAGE_PRICES
 
         export_text = format_export_prices(prices)
         await update.message.reply_text(export_text)
         now_str = datetime.now(timezone.utc).isoformat()
-        logger.info(f"[PRICE_EXPORT] Admin #{user.id}, Timestamp {now_str}, Number of Packages Exported: {len(prices)}")
+        logger.info(f"[PRICE_EXPORT] Admin #{user.id}, Category {target_category}, Timestamp {now_str}, Number of Packages Exported: {len(prices)}")
     except Exception as e:
         logger.exception(f"[PRICE_EXPORT] Failed to export prices for admin #{user.id}: {e}")
         await update.message.reply_text("❌ Failed to export price list.")

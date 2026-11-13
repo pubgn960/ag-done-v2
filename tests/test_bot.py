@@ -5051,5 +5051,173 @@ class TestDoubleCPEventPricing(unittest.TestCase):
         self.assertEqual(parsed_map["2000+2000"], 21.0)
 
 
+class TestExportPriceFullReplaceMode(unittest.IsolatedAsyncioTestCase):
+    """Regression test suite for Export Price List FULL REPLACE mode."""
+
+    async def asyncTearDown(self):
+        from database import AsyncSessionLocal, PackagePrice, DEFAULT_PACKAGE_PRICES
+        from sqlalchemy import delete
+        from utils import reload_package_prices_cache
+        async with AsyncSessionLocal() as s:
+            await s.execute(delete(PackagePrice))
+            for cat in ("A", "B"):
+                for k, v in DEFAULT_PACKAGE_PRICES.items():
+                    s.add(PackagePrice(category=cat, package=k, price=v))
+            await s.commit()
+        reload_package_prices_cache(DEFAULT_PACKAGE_PRICES, category="A")
+        reload_package_prices_cache(DEFAULT_PACKAGE_PRICES, category="B")
+
+    async def test_full_replace_example_and_restart_persistence(self):
+        """
+        Tests the exact user specification:
+        Old list:
+          420 = $4.75
+          880 = $9
+          2400 = $21
+          4800 = $41
+        New list:
+          420 = $5
+          2400 = $22
+        Expected export:
+          420 = $5
+          2400 = $22
+        880 and 4800 must no longer appear, even after simulated bot restart.
+        """
+        from utils import parse_bulk_prices_input, format_export_prices, PACKAGE_PRICES
+        from database import (
+            bulk_update_package_prices_in_db,
+            get_all_package_prices_from_db,
+            seed_and_load_package_prices,
+        )
+        from handlers import exportprices_command_handler
+        from unittest.mock import MagicMock, AsyncMock
+
+        admin_id = 1573531032
+
+        # 1. Submit Old List
+        old_list_text = (
+            "420 = $4.75\n"
+            "880 = $9\n"
+            "2400 = $21\n"
+            "4800 = $41"
+        )
+        old_map, err1 = parse_bulk_prices_input(old_list_text)
+        self.assertIsNone(err1)
+        self.assertEqual(old_map, {"420": 4.75, "880": 9.0, "2400": 21.0, "4800": 41.0})
+
+        ok1 = await bulk_update_package_prices_in_db(old_map, category="A", updated_by_id=admin_id)
+        self.assertTrue(ok1)
+
+        db_after_old = await get_all_package_prices_from_db(category="A")
+        self.assertEqual(db_after_old, {"420": 4.75, "880": 9.0, "2400": 21.0, "4800": 41.0})
+
+        # 2. Submit Smaller New List (FULL REPLACE)
+        new_list_text = (
+            "420 = $5\n"
+            "2400 = $22"
+        )
+        new_map, err2 = parse_bulk_prices_input(new_list_text)
+        self.assertIsNone(err2)
+        self.assertEqual(new_map, {"420": 5.0, "2400": 22.0})
+
+        ok2 = await bulk_update_package_prices_in_db(new_map, category="A", updated_by_id=admin_id)
+        self.assertTrue(ok2)
+
+        # Verify DB & cache contain ONLY 420 and 2400 (880 and 4800 deleted)
+        db_after_new = await get_all_package_prices_from_db(category="A")
+        self.assertEqual(db_after_new, {"420": 5.0, "2400": 22.0})
+        self.assertNotIn("880", db_after_new)
+        self.assertNotIn("4800", db_after_new)
+        self.assertEqual(dict(PACKAGE_PRICES), {"420": 5.0, "2400": 22.0})
+
+        # 3. Export prices via /exportprices and verify ONLY new entries appear
+        upd = MagicMock()
+        upd.effective_user.id = admin_id
+        upd.message.reply_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.args = []
+        await exportprices_command_handler(upd, ctx)
+
+        exported_text = upd.message.reply_text.call_args[0][0]
+        self.assertEqual(exported_text, "2400 22\n420 5")
+        self.assertNotIn("880", exported_text)
+        self.assertNotIn("4800", exported_text)
+
+        # 4. Simulate bot restart (seed_and_load_package_prices) and export again
+        restarted_prices = await seed_and_load_package_prices(category="A")
+        self.assertEqual(restarted_prices, {"420": 5.0, "2400": 22.0})
+        self.assertNotIn("880", restarted_prices)
+        self.assertNotIn("4800", restarted_prices)
+        self.assertNotIn("10800", restarted_prices)
+
+        upd2 = MagicMock()
+        upd2.effective_user.id = admin_id
+        upd2.message.reply_text = AsyncMock()
+        await exportprices_command_handler(upd2, ctx)
+        exported_after_restart = upd2.message.reply_text.call_args[0][0]
+        self.assertEqual(exported_after_restart, "2400 22\n420 5")
+        self.assertEqual(format_export_prices(restarted_prices), "2400 22\n420 5")
+
+    async def test_full_replace_with_double_cp_and_category_isolation(self):
+        """
+        Verifies Full Replace works with Double CP packages (400+400, 800+800, 2000+2000,
+        4000+4000, 8000+8000) and does NOT clear unrelated Category B prices or single-package Add Price upserts.
+        """
+        from utils import parse_bulk_prices_input, format_export_prices, PACKAGE_PRICES_CAT_B
+        from database import (
+            bulk_update_package_prices_in_db,
+            get_all_package_prices_from_db,
+            update_single_package_price_in_db,
+        )
+
+        # Set a custom Category B list first
+        cat_b_map, err_b = parse_bulk_prices_input("10800 70\n5040 36")
+        self.assertIsNone(err_b)
+        await bulk_update_package_prices_in_db(cat_b_map, category="B", updated_by_id=1)
+
+        # Replace Category A with Double CP + normal packages
+        double_cp_list = (
+            "400+400 = $4.75\n"
+            "800+800 = $9\n"
+            "2000+2000 = $21\n"
+            "4000+4000 = $42\n"
+            "8000+8000 = $82\n"
+            "420 = $5"
+        )
+        cat_a_map, err_a = parse_bulk_prices_input(double_cp_list)
+        self.assertIsNone(err_a)
+        await bulk_update_package_prices_in_db(cat_a_map, category="A", updated_by_id=1)
+
+        db_cat_a = await get_all_package_prices_from_db(category="A")
+        self.assertEqual(
+            db_cat_a,
+            {
+                "400+400": 4.75,
+                "800+800": 9.0,
+                "2000+2000": 21.0,
+                "4000+4000": 42.0,
+                "8000+8000": 82.0,
+                "420": 5.0,
+            },
+        )
+        export_a = format_export_prices(db_cat_a)
+        self.assertEqual(
+            export_a,
+            "420 5\n\n8000+8000 82\n4000+4000 42\n2000+2000 21\n800+800 9\n400+400 4.75",
+        )
+
+        # Verify Category B was NOT cleared or modified when Category A was replaced
+        db_cat_b = await get_all_package_prices_from_db(category="B")
+        self.assertEqual(db_cat_b, {"10800": 70.0, "5040": 36.0})
+        self.assertEqual(dict(PACKAGE_PRICES_CAT_B), {"10800": 70.0, "5040": 36.0})
+
+        # Verify single-package Add Price (update_single_package_price_in_db) upserts without wiping existing entries
+        await update_single_package_price_in_db("880", 8.5, category="A", updated_by_id=1)
+        db_cat_a_after_single = await get_all_package_prices_from_db(category="A")
+        self.assertEqual(len(db_cat_a_after_single), 7)
+        self.assertEqual(db_cat_a_after_single["880"], 8.5)
+        self.assertEqual(db_cat_a_after_single["4000+4000"], 42.0)
+
+
 if __name__ == "__main__":
     unittest.main()

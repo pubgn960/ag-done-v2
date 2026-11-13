@@ -514,7 +514,7 @@ PACKAGE_PRICES: Dict[str, float] = {
 
 PACKAGE_PRICES_CAT_A: Dict[str, float] = dict(PACKAGE_PRICES)
 PACKAGE_PRICES_CAT_B: Dict[str, float] = dict(PACKAGE_PRICES)
-TEST_PACKAGE_PRICES = PACKAGE_PRICES
+TEST_PACKAGE_PRICES: Dict[str, float] = dict(PACKAGE_PRICES)
 
 
 def reload_package_prices_cache(new_prices: Dict[str, float], category: str = "A") -> None:
@@ -541,7 +541,7 @@ def reload_package_prices_cache(new_prices: Dict[str, float], category: str = "A
 def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
     """
     Parses and validates a bulk price update text block.
-    Performs UPSERT parsing (accepting existing and new packages).
+    Performs full-replace parsing (accepting normal, bulk, and Double CP packages).
     Supports formats:
       10800 64
       108.000 563
@@ -552,6 +552,8 @@ def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Opti
       10800 => 64
       5k -> 34
       5000 -> 34
+      400+400 = $4.75
+      400+400 (800) = $4.75
     Strips noise tokens (CP, cp, $, ⚡, 🎉, etc.).
     Returns (price_map, None) on success, or (None, error_msg) on failure.
     """
@@ -572,7 +574,7 @@ def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Opti
         if not clean_line:
             continue
 
-        clean_line = re.sub(r'(\d+)\s*\+\s*(\d+)', r'\1+\2', clean_line)
+        clean_line = re.sub(r'([\d.,]+)\s*\+\s*([\d.,]+)(?:\s*\(\s*[\d.,]+\s*\))?', r'\1+\2', clean_line)
         parts = re.split(r'\s*(?:->|=>|=|\:|\s)\s*', clean_line)
         parts = [p for p in parts if p]
 
@@ -610,17 +612,27 @@ def parse_bulk_prices_input(text: str) -> Tuple[Optional[Dict[str, float]], Opti
 def format_export_prices(price_map: Dict[str, float]) -> str:
     """
     Formats prices for export in standard format matching requirements:
-    Standard Packs first, blank line, Special Packs and any newly added packages second.
+    Standard Packs first, blank line, Special Packs and Double CP packages second.
+    Displays ONLY the entries present in price_map.
     """
     standard_order = ["10800", "5040", "2400", "880", "420", "80"]
 
     def _fmt_price(val: float) -> str:
         return f"{int(val)}" if val.is_integer() else f"{val:g}"
 
+    def _pkg_sort_key(pkg_str: str) -> Tuple[int, int]:
+        if pkg_str.isdigit():
+            return (1, int(pkg_str))
+        if "+" in pkg_str:
+            left = pkg_str.split("+", 1)[0]
+            if left.isdigit():
+                return (0, int(left))
+        return (0, 0)
+
     std_lines = [f"{pkg} {_fmt_price(price_map[pkg])}" for pkg in standard_order if pkg in price_map]
 
     other_pkgs = [p for p in price_map.keys() if p not in standard_order]
-    other_pkgs_sorted = sorted(other_pkgs, key=lambda x: int(x) if x.isdigit() else 0, reverse=True)
+    other_pkgs_sorted = sorted(other_pkgs, key=_pkg_sort_key, reverse=True)
 
     spc_lines = [f"{pkg} {_fmt_price(price_map[pkg])}" for pkg in other_pkgs_sorted]
 
